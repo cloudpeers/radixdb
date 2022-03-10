@@ -1,8 +1,8 @@
 use anyhow::Context;
 use binary_merge::MergeOperation;
-use std::{fmt::Debug, marker::PhantomData, sync::Arc, collections::BTreeMap, cmp::Ordering};
+use std::{cmp::Ordering, collections::BTreeMap, fmt::Debug, marker::PhantomData, sync::Arc};
 
-use crate::merge_state::{VecMergeState, InPlaceVecMergeStateRef, MutateInput, MergeStateMut};
+use crate::merge_state::{MergeStateMut, VecMergeState};
 
 use super::*;
 
@@ -138,13 +138,27 @@ impl<T> FlexRef<T> {
             None
         }
     }
+
+    fn owned_arc_ref_mut(&mut self) -> Option<&mut Arc<T>> {
+        if is_pointer(self.0) {
+            Some(arc_ref_mut(&mut self.0))
+        } else {
+            None
+        }
+    }
 }
 
 fn slice_cast<T, U>(src: &[T]) -> anyhow::Result<&[U]> {
     let (ptr, tsize): (usize, usize) = unsafe { std::mem::transmute(src) };
     let bytes = tsize * std::mem::size_of::<T>();
-    anyhow::ensure!(ptr % std::mem::align_of::<U>() == 0, "pointer is not properly aligned for target type");    
-    anyhow::ensure!(bytes % std::mem::size_of::<U>() == 0, "byte size is not a multiple of target size");
+    anyhow::ensure!(
+        ptr % std::mem::align_of::<U>() == 0,
+        "pointer is not properly aligned for target type"
+    );
+    anyhow::ensure!(
+        bytes % std::mem::size_of::<U>() == 0,
+        "byte size is not a multiple of target size"
+    );
     let usize = bytes / std::mem::size_of::<U>();
     Ok(unsafe { std::mem::transmute((ptr, usize)) })
 }
@@ -183,6 +197,8 @@ pub trait BlobStore: Debug {
     fn append(&mut self, data: &[u8]) -> anyhow::Result<u64>;
 }
 
+pub type DynBlobStore = Box<dyn BlobStore>;
+
 #[repr(transparent)]
 #[derive(Clone)]
 pub struct Inline(FlexRef<()>);
@@ -205,7 +221,7 @@ impl TreeValue {
         Self(FlexRef::inline_or_owned_from_slice(data))
     }
 
-    fn load<'a>(&'a self, store: &'a Box<dyn BlobStore>) -> anyhow::Result<Option<&[u8]>> {
+    fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Option<&[u8]>> {
         if let Some(data) = self.0.inline_as_ref() {
             Ok(Some(data))
         } else if let Some(arc) = self.0.owned_arc_ref() {
@@ -220,12 +236,12 @@ impl TreeValue {
     }
 
     fn validate_serialized(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(self.0.is_inline() || self.0.is_id()|| self.0.is_none());
+        anyhow::ensure!(self.0.is_inline() || self.0.is_id() || self.0.is_none());
         Ok(())
     }
 
     /// detaches the value from the store. on success it will either be none, inline, or owned
-    fn detach(&mut self, store: &Box<dyn BlobStore>) -> anyhow::Result<()> {
+    fn detach(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
             let slice = store.bytes(id)?;
             self.0 = FlexRef::inline_or_owned_from_slice(slice);
@@ -233,7 +249,7 @@ impl TreeValue {
         Ok(())
     }
 
-    fn detached(&self, store: &Box<dyn BlobStore>) -> anyhow::Result<Self> {
+    fn detached(&self, store: &DynBlobStore) -> anyhow::Result<Self> {
         let mut t = self.clone();
         t.detach(store)?;
         Ok(t)
@@ -242,7 +258,7 @@ impl TreeValue {
     /// attaches the value to the store. on success it will either be none, inline or id
     ///
     /// if the value is already attached, it is assumed that it is to the store, so it is a noop
-    fn attach(&mut self, store: &mut Box<dyn BlobStore>) -> anyhow::Result<()> {
+    fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
         if let Some(arc) = self.0.owned_arc_ref() {
             let id = store.append(arc.as_ref())?;
             self.0 = FlexRef::id_from_u64(id).context("id too large")?;
@@ -254,20 +270,13 @@ impl TreeValue {
 impl Debug for TreeValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(data) = self.0.inline_as_ref() {
-            f.debug_tuple("Inline")
-                .field(&Hex(data))
-                .finish()
+            f.debug_tuple("Inline").field(&Hex(data)).finish()
         } else if let Some(arc) = self.0.owned_arc_ref() {
             let data = arc.as_ref();
             if data.len() <= 32 {
                 f.debug_tuple("Owned").field(&Hex(data)).finish()
             } else {
-                write!(
-                    f,
-                    "Owned({}...,{} bytes)",
-                    &Hex(&data[0..32]),
-                    data.len()
-                )
+                write!(f, "Owned({}...,{} bytes)", &Hex(&data[0..32]), data.len())
             }
         } else if let Some(id) = self.0.id_u64() {
             f.debug_tuple("Id").field(&id).finish()
@@ -300,7 +309,7 @@ impl TreePrefix {
         Self(FlexRef::inline_or_owned_from_slice(data))
     }
 
-    fn load<'a>(&'a self, store: &'a Box<dyn BlobStore>) -> anyhow::Result<&[u8]> {
+    fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<&[u8]> {
         if let Some(data) = self.0.inline_as_ref() {
             Ok(data)
         } else if let Some(arc) = self.0.owned_arc_ref() {
@@ -312,8 +321,18 @@ impl TreePrefix {
         }
     }
 
+    fn first(&self) -> Option<u8> {
+        if let Some(data) = self.0.inline_as_ref() {
+            data.get(0).cloned()
+        } else if let Some(arc) = self.0.owned_arc_ref() {
+            arc.as_ref().get(0).cloned()
+        } else {
+            None
+        }
+    }
+
     /// detaches the prefix from the store. on success it will either be inline or owned
-    fn detach(&mut self, store: &Box<dyn BlobStore>) -> anyhow::Result<()> {
+    fn detach(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
             let slice = store.bytes(id)?;
             self.0 = FlexRef::inline_or_owned_from_slice(slice);
@@ -324,34 +343,29 @@ impl TreePrefix {
     /// attaches the prefix to the store. on success it will either be inline or id
     ///
     /// if the prefix is already attached, it is assumed that it is to the store, so it is a noop
-    fn attach(&mut self, store: &mut Box<dyn BlobStore>) -> anyhow::Result<()> {
+    fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
         if let Some(arc) = self.0.owned_arc_ref() {
             let id = store.append(arc.as_ref())?;
             self.0 = FlexRef::id_from_u64(id).context("id too large")?;
         }
         Ok(())
     }
+
+    fn empty() -> Self {
+        Self(FlexRef::inline_empty_array())
+    }
 }
 
 impl Debug for TreePrefix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(data) = self.0.inline_as_ref() {
-            f.debug_tuple("Inline")
-                .field(&Hex(data))
-                .finish()
+            f.debug_tuple("Inline").field(&Hex(data)).finish()
         } else if let Some(arc) = self.0.owned_arc_ref() {
             let data = arc.as_ref();
             if data.len() <= 32 {
-                f.debug_tuple("Owned")
-                    .field(&Hex(data))
-                    .finish()
+                f.debug_tuple("Owned").field(&Hex(data)).finish()
             } else {
-                write!(
-                    f,
-                    "Owned({}...,{} bytes)",
-                    &Hex(&data[0..32]),
-                    data.len()
-                )
+                write!(f, "Owned({}...,{} bytes)", &Hex(&data[0..32]), data.len())
             }
         } else if let Some(id) = self.0.id_u64() {
             f.debug_tuple("Id").field(&id).finish()
@@ -363,7 +377,7 @@ impl Debug for TreePrefix {
 
 impl Default for TreePrefix {
     fn default() -> Self {
-        Self(FlexRef::inline_empty_array())
+        Self::empty()
     }
 }
 
@@ -401,7 +415,7 @@ impl TreeChildren {
         self.0.is_none()
     }
 
-    fn load<'a>(&'a self, store: &'a Box<dyn BlobStore>) -> anyhow::Result<&[TreeNode]> {
+    fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<&[TreeNode]> {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(arc.as_ref().as_ref())
         } else if let Some(id) = self.0.id_u64() {
@@ -414,12 +428,28 @@ impl TreeChildren {
         }
     }
 
+    fn load_prefixes(&self, store: &DynBlobStore) -> anyhow::Result<Vec<TreeNode>> {
+        let mut nodes = self.load(store)?.to_vec();
+        for node in &mut nodes {
+            node.prefix.detach(store)?;
+        }
+        Ok(nodes)
+    }
+
     fn validate_serialized(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(self.0.is_id()|| self.0.is_none());
+        anyhow::ensure!(self.0.is_id() || self.0.is_none());
         Ok(())
     }
 
-    fn detach(&mut self, store: &Box<dyn BlobStore>, recursive: bool) -> anyhow::Result<()> {
+    fn make_mut(&mut self) -> Option<&mut Vec<TreeNode>> {
+        if let Some(arc) = self.0.owned_arc_ref_mut() {
+            Some(Arc::make_mut(arc))
+        } else {
+            None
+        }
+    }
+
+    fn detach(&mut self, store: &DynBlobStore, recursive: bool) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
             let mut children = TreeNode::nodes_from_bytes(store.bytes(id)?)?.to_vec();
             if recursive {
@@ -433,7 +463,7 @@ impl TreeChildren {
     }
 
     /// attaches the children to the store. on success it be an id
-    fn attach(&mut self, store: &mut Box<dyn BlobStore>) -> anyhow::Result<()> {
+    fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
         if let Some(arc) = self.0.owned_arc_ref() {
             let mut children = arc.as_ref().clone();
             for child in &mut children {
@@ -445,7 +475,7 @@ impl TreeChildren {
         Ok(())
     }
 
-    fn detached(&self, store: &Box<dyn BlobStore>, recursive: bool) -> anyhow::Result<Self> {
+    fn detached(&self, store: &DynBlobStore, recursive: bool) -> anyhow::Result<Self> {
         let mut t = self.clone();
         t.detach(store, recursive)?;
         Ok(t)
@@ -482,7 +512,6 @@ pub struct TreeNode {
 }
 
 impl TreeNode {
-
     fn validate_serialized(&self) -> anyhow::Result<()> {
         self.prefix.validate_serialized()?;
         self.value.validate_serialized()?;
@@ -541,7 +570,7 @@ impl TreeNode {
     /// detach the node from its `store`.
     ///
     /// if `recursive` is true, the tree gets completely detached, otherwise just one level deep.
-    pub fn detach(&mut self, store: &Box<dyn BlobStore>, recursive: bool) -> anyhow::Result<()> {
+    pub fn detach(&mut self, store: &DynBlobStore, recursive: bool) -> anyhow::Result<()> {
         self.prefix.detach(store)?;
         self.value.detach(store)?;
         self.children.detach(store, recursive)?;
@@ -549,25 +578,50 @@ impl TreeNode {
     }
 
     /// attaches the node components to the store
-    pub fn attach(&mut self, store: &mut Box<dyn BlobStore>) -> anyhow::Result<()> {
+    pub fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
         self.prefix.attach(store)?;
         self.value.attach(store)?;
         self.children.attach(store)?;
         Ok(())
     }
 
-    pub fn detached_shortened(&self, store: &Box<dyn BlobStore>, n: usize, recursive: bool) -> anyhow::Result<Self> {
+    pub fn detached_shortened(
+        &self,
+        store: &DynBlobStore,
+        n: usize,
+        recursive: bool,
+    ) -> anyhow::Result<Self> {
         todo!()
     }
 
-    pub fn unsplit(&mut self) {
-        todo!()
+    pub fn unsplit(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.children.0.is_id());
+        if !self.children.is_empty() {
+            if let Some(children) = self.children.make_mut() {
+                children.retain(|x| !x.is_empty());                
+                // a single child and no own value is degenerate
+                if children.len() == 1 && self.value.is_none() {
+                    let mut child = children.pop().unwrap();
+                    child.prepend(self.prefix);
+                    self.children = children;
+                    self.value = value;
+                    todo!(); // self.prefix = self.prefix concat prefix
+                }
+            } else {
+                anyhow::bail!("called unsplit on an attached node");
+            }
+        }
+        if self.is_empty() {
+            // canonicalize prefix
+            self.prefix = TreePrefix::empty();
+        }
+        Ok(())
     }
 }
 
 #[derive(Default, Clone)]
 struct MemStore {
-    data: BTreeMap<u64, Arc<Vec<u8>>>
+    data: BTreeMap<u64, Arc<Vec<u8>>>,
 }
 
 impl Debug for MemStore {
@@ -581,7 +635,10 @@ impl Debug for MemStore {
 }
 impl BlobStore for MemStore {
     fn bytes(&self, id: u64) -> anyhow::Result<&[u8]> {
-        self.data.get(&id).map(|x| x.as_ref().as_ref()).context("value not found")
+        self.data
+            .get(&id)
+            .map(|x| x.as_ref().as_ref())
+            .context("value not found")
     }
 
     fn append(&mut self, data: &[u8]) -> anyhow::Result<u64> {
@@ -596,10 +653,10 @@ impl BlobStore for MemStore {
 /// Outer combine two trees with a function f
 fn outer_combine(
     a: &TreeNode,
-    ab: &Box<dyn BlobStore>,
+    ab: &DynBlobStore,
     b: &TreeNode,
-    bb: &Box<dyn BlobStore>,
-    f: impl Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+    bb: &DynBlobStore,
+    f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 ) -> anyhow::Result<TreeNode> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -625,40 +682,34 @@ fn outer_combine(
                 av()?
             } else {
                 // call the combine fn
-                f(av()?, bv()?)
+                f(av()?, bv()?)?
             }
         };
         children = VecMergeState::merge(
-            &a.children.load(ab)?,
-            ab,
-            &b.children.load(bb)?,
-            bb,
-            OuterCombineOp(f),
-        );
+            &a.children.load_prefixes(ab)?,
+            &b.children.load_prefixes(bb)?,
+            &OuterCombineOp { ab, bb, f },
+        )?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
         value = av()?;
         let b = b.detached_shortened(bb, n, true)?;
         children = VecMergeState::merge(
-            &a.children.load(ab)?,
-            ab,
-            &b.children.load(bb)?,
-            bb,
-            OuterCombineOp(f),
-        );
+            &a.children.load_prefixes(ab)?,
+            &b.children.load_prefixes(bb)?,
+            &OuterCombineOp { ab, bb, f },
+        )?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         value = bv()?;
         let a = a.detached_shortened(ab, n, true)?;
         children = VecMergeState::merge(
-            &a.children.load(ab)?,
-            ab,
-            &b.children.load(bb)?,
-            bb,
-            OuterCombineOp(f),
-        );
+            &a.children.load_prefixes(ab)?,
+            &b.children.load_prefixes(bb)?,
+            &OuterCombineOp { ab, bb, f },
+        )?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -672,7 +723,7 @@ fn outer_combine(
         children = Vec::with_capacity(2);
         children.push(a);
         children.push(b);
-    }    
+    }
     let mut res = TreeNode {
         prefix,
         value,
@@ -683,7 +734,11 @@ fn outer_combine(
 }
 
 /// In place merge operation
-struct OuterCombineOp<F>(F);
+struct OuterCombineOp<'a, F> {
+    f: F,
+    ab: &'a DynBlobStore,
+    bb: &'a DynBlobStore,
+}
 
 // impl<'a, F> MergeOperation<InPlaceVecMergeStateRef<'a, TreeNode>>
 //     for OuterCombineOp<F>
@@ -711,42 +766,29 @@ struct OuterCombineOp<F>(F);
 //     }
 // }
 
-impl<'a, F>
-    MergeOperation<VecMergeState<'a>> for OuterCombineOp<F>
+impl<'a, F> MergeOperation<VecMergeState<'a>> for OuterCombineOp<'a, F>
 where
-    F: Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+    F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 {
     fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-        todo!()
-        // a.prefix()[0].cmp(&b.prefix()[0])
+        a.prefix.first().unwrap().cmp(&b.prefix.first().unwrap())
     }
-    fn from_a(
-        &self,
-        m: &mut VecMergeState<'a>,
-        n: usize,
-    ) -> bool {
+    fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
         m.advance_a(n, true)
     }
-    fn from_b(
-        &self,
-        m: &mut VecMergeState<'a>,
-        n: usize,
-    ) -> bool {
+    fn from_b(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
         m.advance_b(n, true)
     }
-    fn collision(
-        &self,
-        m: &mut VecMergeState<'a>,
-    ) -> bool {
+    fn collision(&self, m: &mut VecMergeState<'a>) -> bool {
         let a = m.a.next().unwrap();
         let b = m.b.next().unwrap();
-        match outer_combine(a, m.ab, b, m.bb, self.0) {
+        match outer_combine(a, self.ab, b, self.bb, self.f) {
             Ok(res) => {
                 if !res.is_empty() {
                     m.r.push(res);
                 }
                 true
-            },
+            }
             Err(cause) => {
                 m.err = Some(cause);
                 false
@@ -755,14 +797,13 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc};
+    use std::sync::Arc;
 
-    use crate::owned::{TreeNode, MemStore, BlobStore};
+    use crate::owned::{BlobStore, MemStore, TreeNode, DynBlobStore};
 
-    use super::FlexRef;
+    use super::{FlexRef, outer_combine};
 
     #[test]
     fn flex_ref_debug() {
@@ -786,7 +827,7 @@ mod tests {
 
     #[test]
     fn tree_node_create() -> anyhow::Result<()> {
-        let store: Box<dyn BlobStore> = Box::new(MemStore::default());
+        let store: DynBlobStore = Box::new(MemStore::default());
         let node = TreeNode::leaf(b"abcd");
         assert!(node.prefix.load(&store)? == &[]);
         assert!(node.value.load(&store)? == Some(b"abcd"));
@@ -799,13 +840,13 @@ mod tests {
         let node = TreeNode::single(b"abcdefgh", b"ijklmnop");
         println!("{:?}", node);
         let node = TreeNode::new(b"a", None, &[node]);
-        println!("{:?}", node);        
+        println!("{:?}", node);
         Ok(())
     }
 
     #[test]
     fn tree_node_attach_detach() -> anyhow::Result<()> {
-        let mut store: Box<dyn BlobStore> = Box::new(MemStore::default());
+        let mut store: DynBlobStore = Box::new(MemStore::default());
         let node = TreeNode::single(b"abcdefgh", b"ijklmnop");
         let mut node = TreeNode::new(b"a", None, &[node]);
         println!("{:?}", node);
@@ -814,6 +855,18 @@ mod tests {
         node.detach(&mut store, true)?;
         println!("{:?}", node);
         println!("{:?}", store);
+        Ok(())
+    }
+
+    #[test]
+    fn union() -> anyhow::Result<()> {
+        let mut store: DynBlobStore = Box::new(MemStore::default());
+        let a = TreeNode::single(b"a", b"1");
+        let b = TreeNode::single(b"b", b"2");
+        let t = outer_combine(&a, &store, &b, &store, |a,b| {
+            Ok(b)
+        })?;
+        println!("{:?}", t);
         Ok(())
     }
 }

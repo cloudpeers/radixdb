@@ -1,10 +1,11 @@
 #![allow(dead_code)]
-use crate::{iterators::SliceIterator, owned::{TreeNode, BlobStore}};
+use crate::{
+    iterators::SliceIterator,
+    owned::{BlobStore, TreeNode},
+};
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
-use inplace_vec_builder::{InPlaceSmallVecBuilder, InPlaceVecBuilder};
-use smallvec::{Array, SmallVec};
-use std::{marker::PhantomData, sync::Arc};
+use inplace_vec_builder::InPlaceVecBuilder;
 
 /// A typical write part for the merge state
 pub(crate) trait MergeStateMut: MergeState {
@@ -152,9 +153,7 @@ impl<'a, A, B> MergeStateMut for BoolOpMergeState<'a, A, B> {
 /// A merge state where we build into a new vec
 pub(crate) struct VecMergeState<'a> {
     pub a: SliceIterator<'a, TreeNode>,
-    pub ab: &'a Box<dyn BlobStore>,
     pub b: SliceIterator<'a, TreeNode>,
-    pub bb: &'a Box<dyn BlobStore>,
     pub r: Vec<TreeNode>,
     pub err: Option<anyhow::Error>,
 }
@@ -165,32 +164,31 @@ impl<'a> Debug for VecMergeState<'a> {
     }
 }
 
-impl<'a> VecMergeState<'a>
-{
-    fn new(a: &'a [TreeNode], ab: &'a Box<dyn BlobStore>, b: &'a [TreeNode], bb: &'a Box<dyn BlobStore>, r: Vec<TreeNode>) -> Self {
+impl<'a> VecMergeState<'a> {
+    fn new(a: &'a [TreeNode], b: &'a [TreeNode], r: Vec<TreeNode>) -> Self {
         Self {
             a: SliceIterator(a),
-            ab,
             b: SliceIterator(b),
-            bb,
             r,
             err: None,
         }
     }
 
-    fn into_vec(self) -> Vec<TreeNode> {
-        self.r
+    fn into_vec(self) -> anyhow::Result<Vec<TreeNode>> {
+        if let Some(err) = self.err {
+            Err(err)
+        } else {
+            Ok(self.r)
+        }
     }
 
     pub fn merge<O: MergeOperation<Self>>(
         a: &'a [TreeNode],
-        ab: &'a Box<dyn BlobStore>,
         b: &'a [TreeNode],
-        bb: &'a Box<dyn BlobStore>,
-        o: O,
-    ) -> Vec<TreeNode> {
+        o: &'a O,
+    ) -> anyhow::Result<Vec<TreeNode>> {
         let t: Vec<TreeNode> = Vec::new();
-        let mut state = Self::new(a, ab, b, bb, t);
+        let mut state = Self::new(a, b, t);
         o.merge(&mut state);
         state.into_vec()
     }
@@ -207,9 +205,7 @@ impl<'a> MergeState for VecMergeState<'a> {
     }
 }
 
-impl<'a> MergeStateMut
-    for VecMergeState<'a>
-{
+impl<'a> MergeStateMut for VecMergeState<'a> {
     fn advance_a(&mut self, n: usize, take: bool) -> bool {
         if take {
             self.r.reserve(n);

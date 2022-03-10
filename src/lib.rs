@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-mod owned;
-mod merge_state;
 mod iterators;
+mod merge_state;
+mod owned;
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///
@@ -42,6 +42,11 @@ const fn arc<T>(value: [u8; 8]) -> Arc<T> {
 }
 
 const fn arc_ref<T>(value: &[u8; 8]) -> &Arc<T> {
+    // todo: pretty sure this is broken on 32 bit!
+    unsafe { std::mem::transmute(value) }
+}
+
+fn arc_ref_mut<T>(value: &mut [u8; 8]) -> &mut Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }

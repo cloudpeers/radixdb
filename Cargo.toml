@@ -10,5 +10,4 @@ anyhow = "1.0.56"
 binary-merge = "0.1.2"
 byte-slice-cast = "1.2.1"
 hex = "0.4.3"
-inplace-vec-builder = { version = "0.1.1", features = ["smallvec"] }
-smallvec = "1.8.0"
+inplace-vec-builder = "0.1.1"
