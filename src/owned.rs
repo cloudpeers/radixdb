@@ -1,6 +1,6 @@
 use anyhow::Context;
 use binary_merge::MergeOperation;
-use std::{cmp::Ordering, collections::BTreeMap, fmt::Debug, marker::PhantomData, sync::Arc};
+use std::{cmp::Ordering, collections::BTreeMap, fmt::Debug, marker::PhantomData, sync::Arc, path::Prefix};
 
 use crate::merge_state::{MergeStateMut, VecMergeState};
 
@@ -355,6 +355,12 @@ impl TreePrefix {
         Ok(())
     }
 
+    fn detached(&self, store: &DynBlobStore) -> anyhow::Result<Self> {
+        let mut t = self.clone();
+        t.detach(store)?;
+        Ok(t)
+    }
+
     /// attaches the prefix to the store. on success it will either be inline or id
     ///
     /// if the prefix is already attached, it is assumed that it is to the store, so it is a noop
@@ -600,6 +606,15 @@ impl TreeNode {
         Ok(())
     }
 
+    /// detach the node from its `store`.
+    ///
+    /// if `recursive` is true, the tree gets completely detached, otherwise just one level deep.
+    pub fn detached(&self, store: &DynBlobStore, recursive: bool) -> anyhow::Result<Self> {
+        let mut t = self.clone();
+        t.detach(store, recursive)?;
+        Ok(t)
+    }
+
     /// attaches the node components to the store
     pub fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
         self.prefix.attach(store)?;
@@ -742,23 +757,23 @@ fn outer_combine(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap, bp);
-    let prefix = TreePrefix::from_slice(&ap[..n]);
-    let mut children;
-    let value;
     let av = || a.value.detached(ab);
     let bv = || b.value.detached(bb);
+    let prefix = TreePrefix::from_slice(&ap[..n]);
+    let children;
+    let value;
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
-        value = if a.value.0.is_none() {
-            if b.value.0.is_none() {
+        value = if a.value.is_none() {
+            if b.value.is_none() {
                 // both none - none
-                TreeValue::default()
+                TreeValue::none()
             } else {
                 // detach and take b
                 bv()?
             }
         } else {
-            if b.value.0.is_none() {
+            if b.value.is_none() {
                 // detach and take a
                 av()?
             } else {
@@ -794,16 +809,14 @@ fn outer_combine(
     } else {
         // the two nodes are disjoint
         // value is none
-        value = TreeValue::default();
+        value = TreeValue::none();
         // children is just the shortened children a and b in the right order
         let mut a = a.clone_shortened(ab, n)?;
         let mut b = b.clone_shortened(bb, n)?;
         if ap[n] > bp[n] {
             std::mem::swap(&mut a, &mut b);
         }
-        children = Vec::with_capacity(2);
-        children.push(a);
-        children.push(b);
+        children = vec![a, b];
     }
     let mut res = TreeNode {
         prefix,
@@ -814,38 +827,147 @@ fn outer_combine(
     Ok(res)
 }
 
-/// In place merge operation
+/// Inner combine two trees with a function f
+fn inner_combine(
+    a: &TreeNode,
+    ab: &DynBlobStore,
+    b: &TreeNode,
+    bb: &DynBlobStore,
+    f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
+) -> anyhow::Result<TreeNode> {
+    let ap = a.prefix.load(ab)?;
+    let bp = b.prefix.load(bb)?;
+    let n = common_prefix(ap, bp);
+    let av = || a.value.detached(ab);
+    let bv = || b.value.detached(bb);
+    let prefix;
+    let children;
+    let value;
+    if n == ap.len() && n == bp.len() {        
+        // prefixes are identical
+        prefix = TreePrefix::from_slice(&ap[..n]);
+        value = if !a.value.is_none() && !b.value.is_none() {
+            // call the combine fn
+            f(av()?, bv()?)?
+        } else {
+            // any none - none
+            TreeValue::none()
+        };
+        children = VecMergeState::merge(
+            &a.children.load_prefixes(ab)?,
+            &b.children.load_prefixes(bb)?,
+            &InnerCombineOp { ab, bb, f },
+        )?;
+    } else if n == ap.len() {
+        // a is a prefix of b
+        // value is value of a
+        prefix = TreePrefix::from_slice(&ap[..n]);
+        value = TreeValue::none();
+        let b = b.clone_shortened(bb, n)?;
+        children = VecMergeState::merge(
+            &a.children.load_prefixes(ab)?,
+            &[b],
+            &InnerCombineOp { ab, bb, f },
+        )?;
+    } else if n == bp.len() {
+        // b is a prefix of a
+        // value is value of b
+        prefix = TreePrefix::from_slice(&ap[..n]);
+        value = TreeValue::none();
+        let a = a.clone_shortened(ab, n)?;
+        children = VecMergeState::merge(
+            &[a],
+            &b.children.load_prefixes(bb)?,
+            &InnerCombineOp { ab, bb, f },
+        )?;
+    } else {
+        // the two nodes are disjoint
+        // value is none
+        prefix = TreePrefix::empty();
+        children = Vec::new();
+        value = TreeValue::none();
+    }
+    let mut res = TreeNode {
+        prefix,
+        value,
+        children: TreeChildren::from_vec(children),
+    };
+    res.unsplit()?;
+    Ok(res)
+}
+
+/// Left combine two trees with a function f
+fn left_combine(
+    a: &TreeNode,
+    ab: &DynBlobStore,
+    b: &TreeNode,
+    bb: &DynBlobStore,
+    f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
+) -> anyhow::Result<TreeNode> {
+    let ap = a.prefix.load(ab)?;
+    let bp = b.prefix.load(bb)?;
+    let n = common_prefix(ap, bp);
+    let av = || a.value.detached(ab);
+    let bv = || b.value.detached(bb);
+    let prefix;
+    let children;
+    let value;
+    if n == ap.len() && n == bp.len() {        
+        // prefixes are identical
+        prefix = TreePrefix::from_slice(&ap[..n]);
+        value = if !a.value.is_none() {
+            // call the combine fn
+            f(av()?, bv()?)?
+        } else {
+            // any none - none
+            TreeValue::none()
+        };
+        children = VecMergeState::merge(
+            &a.children.load_prefixes(ab)?,
+            &b.children.load_prefixes(bb)?,
+            &LeftCombineOp { ab, bb, f },
+        )?;
+    } else if n == ap.len() {
+        // a is a prefix of b
+        // value is value of a
+        prefix = TreePrefix::from_slice(&ap[..n]);
+        value = TreeValue::none();
+        let b = b.clone_shortened(bb, n)?;
+        children = VecMergeState::merge(
+            &a.children.load_prefixes(ab)?,
+            &[b],
+            &LeftCombineOp { ab, bb, f },
+        )?;
+    } else if n == bp.len() {
+        // b is a prefix of a
+        // value is value of b
+        prefix = TreePrefix::from_slice(&ap[..n]);
+        value = TreeValue::none();
+        let a = a.clone_shortened(ab, n)?;
+        children = VecMergeState::merge(
+            &[a],
+            &b.children.load_prefixes(bb)?,
+            &LeftCombineOp { ab, bb, f },
+        )?;
+    } else {
+        // the two nodes are disjoint
+        // just take a as it is, but detach it
+        return a.detached(ab, true);
+    }
+    let mut res = TreeNode {
+        prefix,
+        value,
+        children: TreeChildren::from_vec(children),
+    };
+    res.unsplit()?;
+    Ok(res)
+}
+
 struct OuterCombineOp<'a, F> {
     f: F,
     ab: &'a DynBlobStore,
     bb: &'a DynBlobStore,
 }
-
-// impl<'a, F> MergeOperation<InPlaceVecMergeStateRef<'a, TreeNode>>
-//     for OuterCombineOp<F>
-// where
-//     F: Fn(TreeValue, TreeValue) -> TreeValue + Copy,
-// {
-//     fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-//         a.prefix()[0].cmp(&b.prefix()[0])
-//     }
-//     fn from_a(&self, m: &mut InPlaceVecMergeStateRef<'a, TreeNode>, n: usize) -> bool {
-//         m.advance_a(n, true)
-//     }
-//     fn from_b(&self, m: &mut InPlaceVecMergeStateRef<'a, TreeNode>, n: usize) -> bool {
-//         m.advance_b(n, true)
-//     }
-//     fn collision(&self, m: &mut InPlaceVecMergeStateRef<'a, TreeNode>) -> bool {
-//         let (a, b) = m.source_slices_mut();
-//         let av = &mut a[0];
-//         let bv = &b[0];
-//         av.outer_combine_with(bv, self.0);
-//         // we have modified av in place. We are only going to take it over if it
-//         // is non-empty, otherwise we skip it.
-//         let take = !av.is_empty();
-//         m.advance_a(1, take) && m.advance_b(1, false)
-//     }
-// }
 
 impl<'a, F> MergeOperation<VecMergeState<'a>> for OuterCombineOp<'a, F>
 where
@@ -868,9 +990,82 @@ where
         let b = m.b.next().unwrap();
         match outer_combine(a, self.ab, b, self.bb, self.f) {
             Ok(res) => {
-                if !res.is_empty() {
-                    m.r.push(res);
-                }
+                m.r.push(res);                
+                true
+            }
+            Err(cause) => {
+                m.err = Some(cause);
+                false
+            }
+        }
+    }
+}
+
+struct InnerCombineOp<'a, F> {
+    f: F,
+    ab: &'a DynBlobStore,
+    bb: &'a DynBlobStore,
+}
+
+impl<'a, F> MergeOperation<VecMergeState<'a>> for InnerCombineOp<'a, F>
+where
+    F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
+{
+    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+        a.prefix
+            .slice_first_opt()
+            .unwrap()
+            .cmp(&b.prefix.slice_first_opt().unwrap())
+    }
+    fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+        m.advance_a(n, false)
+    }
+    fn from_b(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+        m.advance_b(n, false)
+    }
+    fn collision(&self, m: &mut VecMergeState<'a>) -> bool {
+        let a = m.a.next().unwrap();
+        let b = m.b.next().unwrap();
+        match inner_combine(a, self.ab, b, self.bb, self.f) {
+            Ok(res) => {
+                m.r.push(res);
+                true
+            }
+            Err(cause) => {
+                m.err = Some(cause);
+                false
+            }
+        }
+    }
+}
+struct LeftCombineOp<'a, F> {
+    f: F,
+    ab: &'a DynBlobStore,
+    bb: &'a DynBlobStore,
+}
+
+impl<'a, F> MergeOperation<VecMergeState<'a>> for LeftCombineOp<'a, F>
+where
+    F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
+{
+    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+        a.prefix
+            .slice_first_opt()
+            .unwrap()
+            .cmp(&b.prefix.slice_first_opt().unwrap())
+    }
+    fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+        m.advance_a(n, true)
+    }
+    fn from_b(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+        m.advance_b(n, false)
+    }
+    fn collision(&self, m: &mut VecMergeState<'a>) -> bool {
+        let a = m.a.next().unwrap();
+        let b = m.b.next().unwrap();
+        match left_combine(a, self.ab, b, self.bb, self.f) {
+            Ok(res) => {
+                m.r.push(res);
                 true
             }
             Err(cause) => {
