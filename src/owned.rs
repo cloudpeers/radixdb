@@ -1384,11 +1384,21 @@ mod tests {
     }
 
     fn arb_owned_tree() -> impl Strategy<Value = TreeNode> {
-        arb_tree_contents().prop_map(mk_owned_tree)
+        arb_tree_contents().prop_map(|x| mk_owned_tree(&x))
     }
 
-    fn mk_owned_tree(v: BTreeMap<Vec<u8>, Vec<u8>>) -> TreeNode {
+    fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> TreeNode {
         v.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect()
+    }
+
+    fn to_btree_map(t: &TreeNode) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        t.try_iter(&NO_STORE)
+            .unwrap()
+            .map(|r| {
+                let (k, v) = r.unwrap();
+                (k.to_vec(), v.to_vec())
+            })
+            .collect()
     }
 
     impl Arbitrary for TreeNode {
@@ -1422,23 +1432,71 @@ mod tests {
 
         #[test]
         fn btreemap_tree_roundtrip(x in arb_tree_contents()) {
-            let reference = x.clone();
-            let tree = mk_owned_tree(x);
-            let actual = tree.try_iter(&NO_STORE).unwrap().map(|r| {
-                let (k, v) = r.unwrap();
-                (k.to_vec(), v.to_vec())
-            }).collect::<BTreeMap<_, _>>();
+            let reference = x;
+            let tree = mk_owned_tree(&reference);
+            let actual = to_btree_map(&tree);
+            prop_assert_eq!(reference, actual);
+        }
+
+        #[test]
+        fn attach_detach_roundtrip(x in arb_tree_contents()) {
+            let reference = x;
+            let mut tree = mk_owned_tree(&reference);
+            let mut store: DynBlobStore = Box::new(MemStore::default());
+            tree.attach(&mut store).unwrap();
+            tree.detach(&store, true).unwrap();
+            let actual = to_btree_map(&tree);
             prop_assert_eq!(reference, actual);
         }
 
         #[test]
         fn btreemap_tree_values_roundtrip(x in arb_tree_contents()) {
             let reference = x.values().cloned().collect::<Vec<_>>();
-            let tree = mk_owned_tree(x);
+            let tree = mk_owned_tree(&x);
             let actual = tree.try_values(&NO_STORE).map(|r| {
                 r.unwrap().to_vec()
             }).collect::<Vec<_>>();
             prop_assert_eq!(reference, actual);
+        }
+
+        #[test]
+        fn biased_union(a in arb_tree_contents(), b in arb_tree_contents()) {
+            let at = mk_owned_tree(&a);
+            let bt = mk_owned_tree(&b);
+            // check right biased union
+            let rbut = outer_combine(&at, &NO_STORE, &bt, &NO_STORE, |_, b| Ok(b)).unwrap();
+            let rbu = to_btree_map(&rbut);
+            let mut rbu_reference = a.clone();
+            for (k, v) in b.clone() {
+                rbu_reference.insert(k, v);
+            }
+            prop_assert_eq!(rbu, rbu_reference);
+            // check left biased union
+            let lbut = outer_combine(&at, &NO_STORE, &bt, &NO_STORE, |a, _| Ok(a)).unwrap();
+            let lbu = to_btree_map(&lbut);
+            let mut lbu_reference = b.clone();
+            for (k, v) in a.clone() {
+                lbu_reference.insert(k, v);
+            }
+            prop_assert_eq!(lbu, lbu_reference);
+        }
+
+        #[test]
+        fn biased_intersection(a in arb_tree_contents(), b in arb_tree_contents()) {
+            let at = mk_owned_tree(&a);
+            let bt = mk_owned_tree(&b);
+            // check right biased intersection
+            let rbut = inner_combine(&at, &NO_STORE, &bt, &NO_STORE, |_, b| Ok(b)).unwrap();
+            let rbu = to_btree_map(&rbut);
+            let mut rbu_reference = b.clone();
+            rbu_reference.retain(|k, _| a.contains_key(k));
+            prop_assert_eq!(rbu, rbu_reference);
+            // check left biased intersection
+            let lbut = inner_combine(&at, &NO_STORE, &bt, &NO_STORE, |a, _| Ok(a)).unwrap();
+            let lbu = to_btree_map(&lbut);
+            let mut lbu_reference = a.clone();
+            lbu_reference.retain(|k, _| b.contains_key(k));
+            prop_assert_eq!(lbu, lbu_reference);
         }
     }
 
