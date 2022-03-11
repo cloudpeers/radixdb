@@ -37,32 +37,44 @@ impl<T> FlexRef<T> {
     }
 
     /// try to create an id from an u64, if it fits
-    fn id_from_u64(value: u64) -> Option<Self> {
-        let mut bytes = value.to_be_bytes();
-        if bytes[0] == 0 || bytes[1] == 0 {
-            bytes.rotate_left(1);
-            bytes[0] = ID_MASK[0];
-            bytes[7] = ID_MASK[7];
+    const fn id_from_u64_and_extra(value: u64, extra: Option<u8>) -> Option<Self> {
+        let id_bytes = value.to_be_bytes();
+        if id_bytes[0] == 0 || id_bytes[1] == 0 {
+            let mut bytes = if let Some(extra) = extra {
+                mk_bytes(DISC_ID_EXTRA, extra)
+            } else {
+                mk_bytes(DISC_ID_NONE, 0)
+            };
+            bytes[1] = id_bytes[2];
+            bytes[2] = id_bytes[3];
+            bytes[3] = id_bytes[4];
+            bytes[4] = id_bytes[5];
+            bytes[5] = id_bytes[6];
+            bytes[6] = id_bytes[7];
             Some(Self(bytes, PhantomData))
         } else {
             None
         }
     }
 
+    /// try to create an id from an u64, if it fits
+    ///
+    /// will use None as extra data
+    const fn id_from_u64(value: u64) -> Option<Self> {
+        Self::id_from_u64_and_extra(value, None)
+    }
+
     /// the inline empty array
     const fn inline_empty_array() -> Self {
-        Self(EMPTY_INLINE_ARRAY, PhantomData)
+        Self(mk_bytes(DISC_INLINE, 0), PhantomData)
     }
 
     /// try to create an inline value from a slice, if it fits
     fn inline_from_slice(value: &[u8]) -> Option<Self> {
         let len = value.len();
         if len < 7 {
-            let mut res = [0u8; 8];
+            let mut res = mk_bytes(DISC_INLINE, len as u8);
             res[1..=len].copy_from_slice(value);
-            let marker = ((len as u8) << 1) | 1;
-            res[0] = marker;
-            res[7] = marker;
             Some(Self(res, PhantomData))
         } else {
             None
@@ -77,42 +89,62 @@ impl<T> FlexRef<T> {
 
     fn inline_as_ref(&self) -> Option<&[u8]> {
         if self.is_inline() {
-            let len = (self.0[0] >> 1) as usize;
+            let len = extra_byte(self.0) as usize;
             Some(&self.0[1..=len])
         } else {
             None
         }
     }
 
-    fn id_u64(&self) -> Option<u64> {
+    const fn id_u64(&self) -> Option<u64> {
         if self.is_id() {
             let mut res = [0u8; 8];
-            res[2..].copy_from_slice(&self.0[1..7]);
+            res[2] = self.0[1];
+            res[3] = self.0[2];
+            res[4] = self.0[3];
+            res[5] = self.0[4];
+            res[6] = self.0[5];
+            res[7] = self.0[6];
             Some(u64::from_be_bytes(res))
         } else {
             None
         }
     }
 
-    fn is_arc(&self) -> bool {
+    const fn id_extra_data(&self) -> Option<Option<u8>> {
+        if !is_extra(self.0) {
+            None
+        } else if type_discriminator(self.0) == DISC_ID_EXTRA {
+            Some(Some(extra_byte(self.0)))
+        } else if type_discriminator(self.0) == DISC_ID_NONE {
+            Some(None)
+        } else {
+            None
+        }
+    }
+
+    const fn is_arc(&self) -> bool {
         is_pointer(self.0)
     }
 
-    fn is_copy(&self) -> bool {
+    const fn is_copy(&self) -> bool {
         // for now, the only thing that is not copy is an arc
-        !self.is_arc()
+        is_extra(self.0)
     }
 
-    fn is_inline(&self) -> bool {
-        !self.is_arc() && !self.is_none() && !self.is_id()
+    const fn is_inline(&self) -> bool {
+        is_extra(self.0) && (type_discriminator(self.0) == DISC_INLINE)
     }
 
-    fn is_id(&self) -> bool {
-        self.0[0] == ID_MASK[0] && self.0[7] == ID_MASK[7]
+    const fn is_id(&self) -> bool {
+        is_extra(self.0) && {
+            let tpe = type_discriminator(self.0);
+            tpe == DISC_ID_NONE || tpe == DISC_ID_EXTRA
+        }
     }
 
-    fn is_none(&self) -> bool {
-        self.0 == NONE_ARRAY
+    const fn is_none(&self) -> bool {
+        is_none(self.0)
     }
 
     fn owned_take_arc(&mut self) -> Option<Arc<T>> {
@@ -125,7 +157,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    fn into_arc(self) -> Option<Arc<T>> {
+    fn owned_into_arc(self) -> Option<Arc<T>> {
         if is_pointer(self.0) {
             let res = arc(self.0);
             std::mem::forget(self);
@@ -275,8 +307,10 @@ impl TreeValue {
     /// if the value is already attached, it is assumed that it is to the store, so it is a noop
     fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
         if let Some(arc) = self.0.owned_arc_ref() {
-            let id = store.append(arc.as_ref())?;
-            self.0 = FlexRef::id_from_u64(id).context("id too large")?;
+            let data = arc.as_ref();
+            let first = data.get(0).cloned();
+            let id = store.append(data)?;
+            self.0 = FlexRef::id_from_u64_and_extra(id, first).context("id too large")?;
         }
         Ok(())
     }
@@ -350,10 +384,6 @@ impl TreePrefix {
         }
     }
 
-    fn slice_first_opt(&self) -> Option<u8> {
-        self.slice_opt().and_then(|x| x.get(0)).cloned()
-    }
-
     /// detaches the prefix from the store. on success it will either be inline or owned
     fn detach(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
@@ -374,14 +404,28 @@ impl TreePrefix {
     /// if the prefix is already attached, it is assumed that it is to the store, so it is a noop
     fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
         if let Some(arc) = self.0.owned_arc_ref() {
-            let id = store.append(arc.as_ref())?;
-            self.0 = FlexRef::id_from_u64(id).context("id too large")?;
+            let data = arc.as_ref();
+            let first = data.get(0).cloned();
+            let id = store.append(data)?;
+            self.0 = FlexRef::id_from_u64_and_extra(id, first).context("id too large")?;
         }
         Ok(())
     }
 
     fn empty() -> Self {
         Self(FlexRef::inline_empty_array())
+    }
+
+    fn first_opt(&self) -> Option<u8> {
+        if let Some(data) = self.0.inline_as_ref() {
+            data.get(0).cloned()
+        } else if let Some(arc) = self.0.owned_arc_ref() {
+            arc.get(0).cloned()
+        } else if let Some(first) = self.0.id_extra_data() {
+            first
+        } else {
+            None
+        }
     }
 }
 
@@ -457,14 +501,6 @@ impl TreeChildren {
         }
     }
 
-    fn load_prefixes(&self, store: &DynBlobStore) -> anyhow::Result<Vec<TreeNode>> {
-        let mut nodes = self.load(store)?.to_vec();
-        for node in &mut nodes {
-            node.prefix.detach(store)?;
-        }
-        Ok(nodes)
-    }
-
     fn validate_serialized(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.0.is_id() || self.0.is_none());
         Ok(())
@@ -499,7 +535,9 @@ impl TreeChildren {
                 child.attach(store)?;
             }
             let bytes = TreeNode::slice_to_bytes(&children)?;
-            self.0 = FlexRef::id_from_u64(store.append(&bytes)?).context("id too large")?;
+            let first = bytes.get(0).cloned();
+            self.0 = FlexRef::id_from_u64_and_extra(store.append(&bytes)?, first)
+                .context("id too large")?;
         }
         Ok(())
     }
@@ -835,8 +873,8 @@ fn outer_combine(
             }
         };
         children = VecMergeState::merge(
-            &a.children.load_prefixes(ab)?,
-            &b.children.load_prefixes(bb)?,
+            &a.children.load(ab)?,
+            &b.children.load(bb)?,
             &OuterCombineOp { ab, bb, f },
         )?;
     } else if n == ap.len() {
@@ -844,21 +882,15 @@ fn outer_combine(
         // value is value of a
         value = av()?;
         let b = b.clone_shortened(bb, n)?;
-        children = VecMergeState::merge(
-            &a.children.load_prefixes(ab)?,
-            &[b],
-            &OuterCombineOp { ab, bb, f },
-        )?;
+        children =
+            VecMergeState::merge(&a.children.load(ab)?, &[b], &OuterCombineOp { ab, bb, f })?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         value = bv()?;
         let a = a.clone_shortened(ab, n)?;
-        children = VecMergeState::merge(
-            &[a],
-            &b.children.load_prefixes(bb)?,
-            &OuterCombineOp { ab, bb, f },
-        )?;
+        children =
+            VecMergeState::merge(&[a], &b.children.load(bb)?, &OuterCombineOp { ab, bb, f })?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -907,8 +939,8 @@ fn inner_combine(
             TreeValue::none()
         };
         children = VecMergeState::merge(
-            &a.children.load_prefixes(ab)?,
-            &b.children.load_prefixes(bb)?,
+            &a.children.load(ab)?,
+            &b.children.load(bb)?,
             &InnerCombineOp { ab, bb, f },
         )?;
     } else if n == ap.len() {
@@ -917,22 +949,16 @@ fn inner_combine(
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
         let b = b.clone_shortened(bb, n)?;
-        children = VecMergeState::merge(
-            &a.children.load_prefixes(ab)?,
-            &[b],
-            &InnerCombineOp { ab, bb, f },
-        )?;
+        children =
+            VecMergeState::merge(&a.children.load(ab)?, &[b], &InnerCombineOp { ab, bb, f })?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
         let a = a.clone_shortened(ab, n)?;
-        children = VecMergeState::merge(
-            &[a],
-            &b.children.load_prefixes(bb)?,
-            &InnerCombineOp { ab, bb, f },
-        )?;
+        children =
+            VecMergeState::merge(&[a], &b.children.load(bb)?, &InnerCombineOp { ab, bb, f })?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -976,8 +1002,8 @@ fn left_combine(
             TreeValue::none()
         };
         children = VecMergeState::merge(
-            &a.children.load_prefixes(ab)?,
-            &b.children.load_prefixes(bb)?,
+            &a.children.load(ab)?,
+            &b.children.load(bb)?,
             &LeftCombineOp { ab, bb, f },
         )?;
     } else if n == ap.len() {
@@ -986,22 +1012,14 @@ fn left_combine(
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
         let b = b.clone_shortened(bb, n)?;
-        children = VecMergeState::merge(
-            &a.children.load_prefixes(ab)?,
-            &[b],
-            &LeftCombineOp { ab, bb, f },
-        )?;
+        children = VecMergeState::merge(&a.children.load(ab)?, &[b], &LeftCombineOp { ab, bb, f })?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
         let a = a.clone_shortened(ab, n)?;
-        children = VecMergeState::merge(
-            &[a],
-            &b.children.load_prefixes(bb)?,
-            &LeftCombineOp { ab, bb, f },
-        )?;
+        children = VecMergeState::merge(&[a], &b.children.load(bb)?, &LeftCombineOp { ab, bb, f })?;
     } else {
         // the two nodes are disjoint
         // just take a as it is, but detach it
@@ -1232,10 +1250,7 @@ where
     F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 {
     fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-        a.prefix
-            .slice_first_opt()
-            .unwrap()
-            .cmp(&b.prefix.slice_first_opt().unwrap())
+        a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
     fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
         m.advance_a(n, true)
@@ -1270,10 +1285,7 @@ where
     F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 {
     fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-        a.prefix
-            .slice_first_opt()
-            .unwrap()
-            .cmp(&b.prefix.slice_first_opt().unwrap())
+        a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
     fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
         m.advance_a(n, false)
@@ -1307,10 +1319,7 @@ where
     F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 {
     fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-        a.prefix
-            .slice_first_opt()
-            .unwrap()
-            .cmp(&b.prefix.slice_first_opt().unwrap())
+        a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
     fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
         m.advance_a(n, true)
@@ -1341,10 +1350,7 @@ struct IntersectOp<'a> {
 
 impl<'a> MergeOperation<VecMergeState<'a>> for IntersectOp<'a> {
     fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-        a.prefix
-            .slice_first_opt()
-            .unwrap()
-            .cmp(&b.prefix.slice_first_opt().unwrap())
+        a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
     fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
         m.advance_a(n, false)
