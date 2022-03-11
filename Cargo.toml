@@ -8,6 +8,10 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.56"
 binary-merge = "0.1.2"
-byte-slice-cast = "1.2.1"
 hex = "0.4.3"
 inplace-vec-builder = "0.1.1"
+lazy_static = "1.4.0"
+
+[dev-dependencies]
+obey = "0.1.0"
+proptest = "1.0.0"
