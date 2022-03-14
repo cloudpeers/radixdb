@@ -5,242 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use crate::merge_state::{BoolOpMergeState, MergeStateMut, VecMergeState};
-use lazy_static::lazy_static;
+use crate::{
+    flex_ref::FlexRef,
+    merge_state::{BoolOpMergeState, MergeStateMut, VecMergeState},
+};
 
 use super::*;
-
-#[repr(C)]
-pub struct FlexRef<T>([u8; 8], PhantomData<T>);
-
-impl<T> Debug for FlexRef<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(id) = self.id_u64() {
-            f.debug_tuple("FlexRef::Id").field(&id).finish()
-        } else if let Some(data) = self.inline_as_ref() {
-            f.debug_tuple("FlexRef::Inline").field(&Hex(data)).finish()
-        } else if let Some(arc) = self.owned_arc_ref() {
-            f.debug_struct("FlexRef::Owned")
-                .field("p", &Arc::as_ptr(arc))
-                .field("c", &Arc::strong_count(arc))
-                .finish()
-        } else {
-            f.debug_tuple("FlexRef::None").finish()
-        }
-    }
-}
-
-impl<T> FlexRef<T> {
-    /// the none marker value
-    const fn none() -> Self {
-        Self(NONE_ARRAY, PhantomData)
-    }
-
-    /// try to create an id from an u64, if it fits
-    const fn id_from_u64_and_extra(value: u64, extra: Option<u8>) -> Option<Self> {
-        let id_bytes = value.to_be_bytes();
-        if id_bytes[0] == 0 || id_bytes[1] == 0 {
-            let mut bytes = if let Some(extra) = extra {
-                mk_bytes(DISC_ID_EXTRA, extra)
-            } else {
-                mk_bytes(DISC_ID_NONE, 0)
-            };
-            bytes[1] = id_bytes[2];
-            bytes[2] = id_bytes[3];
-            bytes[3] = id_bytes[4];
-            bytes[4] = id_bytes[5];
-            bytes[5] = id_bytes[6];
-            bytes[6] = id_bytes[7];
-            Some(Self(bytes, PhantomData))
-        } else {
-            None
-        }
-    }
-
-    /// try to create an id from an u64, if it fits
-    ///
-    /// will use None as extra data
-    const fn id_from_u64(value: u64) -> Option<Self> {
-        Self::id_from_u64_and_extra(value, None)
-    }
-
-    /// the inline empty array
-    const fn inline_empty_array() -> Self {
-        Self(mk_bytes(DISC_INLINE, 0), PhantomData)
-    }
-
-    /// try to create an inline value from a slice, if it fits
-    fn inline_from_slice(value: &[u8]) -> Option<Self> {
-        let len = value.len();
-        if len < 7 {
-            let mut res = mk_bytes(DISC_INLINE, len as u8);
-            res[1..=len].copy_from_slice(value);
-            Some(Self(res, PhantomData))
-        } else {
-            None
-        }
-    }
-
-    /// create an owned from an arc to a sized thing
-    fn owned_from_arc(arc: Arc<T>) -> Self {
-        let addr: usize = unsafe { std::mem::transmute(arc) };
-        Self(from_ptr(addr), PhantomData)
-    }
-
-    fn inline_as_ref(&self) -> Option<&[u8]> {
-        if self.is_inline() {
-            let len = extra_byte(self.0) as usize;
-            Some(&self.0[1..=len])
-        } else {
-            None
-        }
-    }
-
-    const fn id_u64(&self) -> Option<u64> {
-        if self.is_id() {
-            let mut res = [0u8; 8];
-            res[2] = self.0[1];
-            res[3] = self.0[2];
-            res[4] = self.0[3];
-            res[5] = self.0[4];
-            res[6] = self.0[5];
-            res[7] = self.0[6];
-            Some(u64::from_be_bytes(res))
-        } else {
-            None
-        }
-    }
-
-    const fn id_extra_data(&self) -> Option<Option<u8>> {
-        if !is_extra(self.0) {
-            None
-        } else if type_discriminator(self.0) == DISC_ID_EXTRA {
-            Some(Some(extra_byte(self.0)))
-        } else if type_discriminator(self.0) == DISC_ID_NONE {
-            Some(None)
-        } else {
-            None
-        }
-    }
-
-    const fn is_arc(&self) -> bool {
-        is_pointer(self.0)
-    }
-
-    const fn is_copy(&self) -> bool {
-        // for now, the only thing that is not copy is an arc
-        is_extra(self.0)
-    }
-
-    const fn is_inline(&self) -> bool {
-        is_extra(self.0) && (type_discriminator(self.0) == DISC_INLINE)
-    }
-
-    const fn is_id(&self) -> bool {
-        is_extra(self.0) && {
-            let tpe = type_discriminator(self.0);
-            tpe == DISC_ID_NONE || tpe == DISC_ID_EXTRA
-        }
-    }
-
-    const fn is_none(&self) -> bool {
-        is_none(self.0)
-    }
-
-    fn owned_take_arc(&mut self) -> Option<Arc<T>> {
-        if is_pointer(self.0) {
-            let res = arc(self.0);
-            self.0 = NONE_ARRAY;
-            Some(res)
-        } else {
-            None
-        }
-    }
-
-    fn owned_into_arc(self) -> Option<Arc<T>> {
-        if is_pointer(self.0) {
-            let res = arc(self.0);
-            std::mem::forget(self);
-            Some(res)
-        } else {
-            None
-        }
-    }
-
-    fn owned_arc_ref(&self) -> Option<&Arc<T>> {
-        if is_pointer(self.0) {
-            Some(arc_ref(&self.0))
-        } else {
-            None
-        }
-    }
-
-    fn owned_arc_ref_mut(&mut self) -> Option<&mut Arc<T>> {
-        if is_pointer(self.0) {
-            Some(arc_ref_mut(&mut self.0))
-        } else {
-            None
-        }
-    }
-}
-
-fn slice_cast<T, U>(src: &[T]) -> anyhow::Result<&[U]> {
-    let (ptr, tsize): (usize, usize) = unsafe { std::mem::transmute(src) };
-    let bytes = tsize * std::mem::size_of::<T>();
-    anyhow::ensure!(
-        ptr % std::mem::align_of::<U>() == 0,
-        "pointer is not properly aligned for target type"
-    );
-    anyhow::ensure!(
-        bytes % std::mem::size_of::<U>() == 0,
-        "byte size is not a multiple of target size"
-    );
-    let usize = bytes / std::mem::size_of::<U>();
-    Ok(unsafe { std::mem::transmute((ptr, usize)) })
-}
-
-impl FlexRef<Vec<u8>> {
-    fn inline_or_owned_from_slice(value: &[u8]) -> Self {
-        if let Some(res) = FlexRef::inline_from_slice(value) {
-            res
-        } else {
-            FlexRef::owned_from_arc(Arc::new(value.to_vec()))
-        }
-    }
-    fn inline_or_owned_from_vec(value: Vec<u8>) -> Self {
-        if let Some(res) = FlexRef::inline_from_slice(&value) {
-            res
-        } else {
-            FlexRef::owned_from_arc(Arc::new(value))
-        }
-    }
-}
-
-impl<T> Clone for FlexRef<T> {
-    fn clone(&self) -> Self {
-        if let Some(arc) = self.owned_arc_ref() {
-            Self::owned_from_arc(arc.clone())
-        } else {
-            Self(self.0, PhantomData)
-        }
-    }
-}
-
-impl<T> Drop for FlexRef<T> {
-    fn drop(&mut self) {
-        if let Some(arc) = self.owned_take_arc() {
-            drop(arc)
-        }
-    }
-}
-
-pub trait BlobStore: Debug + Send + Sync {
-    fn bytes(&self, id: u64) -> anyhow::Result<&[u8]>;
-
-    fn append(&mut self, data: &[u8]) -> anyhow::Result<u64>;
-}
-
-pub type DynBlobStore = Box<dyn BlobStore>;
 
 #[repr(transparent)]
 #[derive(Clone)]
@@ -760,6 +530,16 @@ impl TreeNode {
         Ok(())
     }
 
+    fn try_group_by<'a, F: Fn(&[u8]) -> bool>(
+        &'a self,
+        store: &'a DynBlobStore,
+        descend: F,
+    ) -> anyhow::Result<GroupBy<'a, F>> {
+        let prefix = self.prefix.load(store)?;
+        let prefix = self.prefix.load(store)?;
+        Ok(GroupBy::new(self, store, IterKey::new(prefix), descend))
+    }
+
     /// iterate over all elements
     fn try_iter<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a>> {
         let prefix = self.prefix.load(store)?;
@@ -779,61 +559,6 @@ impl<'a> FromIterator<(&'a [u8], &'a [u8])> for TreeNode {
             let b = TreeNode::single(key, value);
             outer_combine(&a, &store, &b, &store, |_, b| Ok(b)).unwrap()
         })
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-struct NoStore;
-
-impl NoStore {
-    fn new() -> DynBlobStore {
-        Box::new(Self)
-    }
-}
-
-impl BlobStore for NoStore {
-    fn bytes(&self, _: u64) -> anyhow::Result<&[u8]> {
-        anyhow::bail!("no store");
-    }
-
-    fn append(&mut self, _: &[u8]) -> anyhow::Result<u64> {
-        anyhow::bail!("no store");
-    }
-}
-
-lazy_static! {
-    /// A noop store, for when we know that a tree is not attached
-    static ref NO_STORE: DynBlobStore = NoStore::new();
-}
-
-#[derive(Default, Clone)]
-struct MemStore {
-    data: BTreeMap<u64, Arc<Vec<u8>>>,
-}
-
-impl Debug for MemStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut builder = f.debug_map();
-        for (id, v) in &self.data {
-            builder.entry(&id, &Hex(v.as_ref()));
-        }
-        builder.finish()
-    }
-}
-impl BlobStore for MemStore {
-    fn bytes(&self, id: u64) -> anyhow::Result<&[u8]> {
-        self.data
-            .get(&id)
-            .map(|x| x.as_ref().as_ref())
-            .context("value not found")
-    }
-
-    fn append(&mut self, data: &[u8]) -> anyhow::Result<u64> {
-        let max = self.data.keys().next_back().cloned().unwrap_or(0);
-        let id = max + 1;
-        let data = Arc::new(data.to_vec());
-        self.data.insert(id, data);
-        Ok(id)
     }
 }
 
@@ -1134,7 +859,7 @@ impl<'a> Values<'a> {
         res
     }
 
-    fn next0(&mut self) -> anyhow::Result<Option<&'a [u8]>> {
+    fn next0(&mut self) -> anyhow::Result<Option<&'a TreeValue>> {
         while !self.stack.is_empty() {
             if let Some(pos) = self.inc() {
                 let children = self.tree().children.load(self.store)?;
@@ -1143,8 +868,8 @@ impl<'a> Values<'a> {
                 } else {
                     self.stack.pop();
                 }
-            } else if let Some(value) = self.tree().value.load(&self.store)? {
-                return Ok(Some(value));
+            } else if self.tree().value.is_some() {
+                return Ok(Some(&self.tree().value));
             }
         }
         Ok(None)
@@ -1152,7 +877,74 @@ impl<'a> Values<'a> {
 }
 
 impl<'a> Iterator for Values<'a> {
-    type Item = anyhow::Result<&'a [u8]>;
+    type Item = anyhow::Result<&'a TreeValue>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next0() {
+            Ok(Some(x)) => Some(Ok(x)),
+            Ok(None) => None,
+            Err(cause) => {
+                // ensure that the next call to next will terminate
+                self.stack.clear();
+                Some(Err(cause))
+            }
+        }
+    }
+}
+
+pub struct GroupBy<'a, F> {
+    path: IterKey,
+    stack: Vec<(&'a TreeNode, usize)>,
+    store: &'a DynBlobStore,
+    descend: F,
+}
+
+impl<'a, F: Fn(&[u8]) -> bool> GroupBy<'a, F> {
+    fn new(tree: &'a TreeNode, store: &'a DynBlobStore, prefix: IterKey, descend: F) -> Self {
+        Self {
+            stack: vec![(tree, 0)],
+            path: prefix,
+            store,
+            descend,
+        }
+    }
+
+    fn tree(&self) -> &'a TreeNode {
+        self.stack.last().unwrap().0
+    }
+
+    fn inc(&mut self) -> Option<usize> {
+        let pos = &mut self.stack.last_mut().unwrap().1;
+        let res = if *pos == 0 { None } else { Some(*pos - 1) };
+        *pos += 1;
+        res
+    }
+
+    fn next0(&mut self) -> anyhow::Result<Option<TreeNode>> {
+        while !self.stack.is_empty() {
+            if let Some(pos) = self.inc() {
+                let children = self.tree().children.load(&self.store)?;
+                if pos < children.len() {
+                    let child = &children[pos];
+                    let child_prefix = child.prefix.load(&self.store)?;
+                    self.path.append(child_prefix);
+                    self.stack.push((child, 0));
+                } else {
+                    let prefix = self.tree().prefix.load(&self.store)?;
+                    self.path.pop(prefix.len());
+                    self.stack.pop();
+                }
+            } else if let Some(value) = self.tree().value.load(&self.store)? {
+                todo!()
+                // return Ok(Some((self.path.clone(), value)));
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl<'a, F: Fn(&[u8]) -> bool> Iterator for GroupBy<'a, F> {
+    type Item = anyhow::Result<TreeNode>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -1201,7 +993,7 @@ impl<'a> Iter<'a> {
         res
     }
 
-    fn next0(&mut self) -> anyhow::Result<Option<(IterKey, &'a [u8])>> {
+    fn next0(&mut self) -> anyhow::Result<Option<(IterKey, &'a TreeValue)>> {
         while !self.stack.is_empty() {
             if let Some(pos) = self.inc() {
                 let children = self.tree().children.load(&self.store)?;
@@ -1215,8 +1007,8 @@ impl<'a> Iter<'a> {
                     self.path.pop(prefix.len());
                     self.stack.pop();
                 }
-            } else if let Some(value) = self.tree().value.load(&self.store)? {
-                return Ok(Some((self.path.clone(), value)));
+            } else if self.tree().value.is_some() {
+                return Ok(Some((self.path.clone(), &self.tree().value)));
             }
         }
         Ok(None)
@@ -1224,7 +1016,7 @@ impl<'a> Iter<'a> {
 }
 
 impl<'a> Iterator for Iter<'a> {
-    type Item = anyhow::Result<(IterKey, &'a [u8])>;
+    type Item = anyhow::Result<(IterKey, &'a TreeValue)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -1375,8 +1167,6 @@ mod tests {
     use proptest::prelude::*;
     use std::sync::Arc;
 
-    use crate::owned::{BlobStore, DynBlobStore, MemStore, TreeNode};
-
     fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
         proptest::collection::vec(b'0'..b'9', 0..9)
     }
@@ -1398,11 +1188,13 @@ mod tests {
     }
 
     fn to_btree_map(t: &TreeNode) -> BTreeMap<Vec<u8>, Vec<u8>> {
-        t.try_iter(&NO_STORE)
+        let store = &NO_STORE;
+        t.try_iter(store)
             .unwrap()
             .map(|r| {
                 let (k, v) = r.unwrap();
-                (k.to_vec(), v.to_vec())
+                let data = v.load(store).unwrap().unwrap();
+                (k.to_vec(), data.to_vec())
             })
             .collect()
     }
@@ -1431,7 +1223,8 @@ mod tests {
             println!();
             for r in iter {
                 let (k, v) = r.unwrap();
-                println!("{}: {}", Hex(&k), Hex(v));
+                let data = v.load(&NO_STORE).unwrap().unwrap();
+                println!("{}: {}", Hex(&k), Hex(data));
             }
             println!();
         }
@@ -1460,7 +1253,7 @@ mod tests {
             let reference = x.values().cloned().collect::<Vec<_>>();
             let tree = mk_owned_tree(&x);
             let actual = tree.try_values(&NO_STORE).map(|r| {
-                r.unwrap().to_vec()
+                r.unwrap().load(&NO_STORE).unwrap().unwrap()
             }).collect::<Vec<_>>();
             prop_assert_eq!(reference, actual);
         }

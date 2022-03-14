@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
+mod blob_store;
+mod flex_ref;
 mod iterators;
 mod merge_state;
-mod owned;
+mod tree;
+pub use blob_store::{DynBlobStore, MemStore, NoStore, NO_STORE};
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///
@@ -83,13 +86,13 @@ fn arc_ref_mut<T>(value: &mut [u8; 8]) -> &mut Arc<T> {
 }
 
 /// extract a pointer from 8 bytes
-fn from_ptr(value: usize) -> [u8; 8] {
-    let value: u64 = value.try_into().expect("usize < 64 bit");
+const fn from_ptr(value: usize) -> [u8; 8] {
+    let value: u64 = value as u64;
     assert!((value & 1) == 0 && (value & 0x0100_0000_0000_0000u64 == 0));
     unsafe { std::mem::transmute(value) }
 }
 
-fn from_arc<T>(arc: Arc<T>) -> [u8; 8] {
+const fn from_arc<T>(arc: Arc<T>) -> [u8; 8] {
     from_ptr(unsafe { std::mem::transmute(arc) })
 }
 
@@ -106,6 +109,21 @@ impl<'a> std::fmt::Display for Hex<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{}]", hex::encode(self.0))
     }
+}
+
+fn slice_cast<T, U>(src: &[T]) -> anyhow::Result<&[U]> {
+    let (ptr, tsize): (usize, usize) = unsafe { std::mem::transmute(src) };
+    let bytes = tsize * std::mem::size_of::<T>();
+    anyhow::ensure!(
+        ptr % std::mem::align_of::<U>() == 0,
+        "pointer is not properly aligned for target type"
+    );
+    anyhow::ensure!(
+        bytes % std::mem::size_of::<U>() == 0,
+        "byte size is not a multiple of target size"
+    );
+    let usize = bytes / std::mem::size_of::<U>();
+    Ok(unsafe { std::mem::transmute((ptr, usize)) })
 }
 
 // common prefix of two slices.
