@@ -3,6 +3,7 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 use super::*;
 
 #[repr(C)]
+#[derive(PartialEq, Eq)]
 pub(crate) struct FlexRef<T>(pub [u8; 8], PhantomData<T>);
 
 impl<T> Debug for FlexRef<T> {

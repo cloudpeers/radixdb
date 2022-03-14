@@ -132,6 +132,44 @@ impl TreePrefix {
         Self(FlexRef::inline_or_owned_from_vec(data))
     }
 
+    fn from_arc_vec(data: Arc<Vec<u8>>) -> Self {
+        Self(FlexRef::owned_from_arc(data))
+    }
+
+    fn truncate(&mut self, n: usize, store: &DynBlobStore) -> anyhow::Result<TreePrefix> {
+        let mut r;
+        if self.load(store)?.len() <= n {
+            r = TreePrefix::empty();
+        } else if n == 0 {
+            r = TreePrefix::empty();
+            std::mem::swap(&mut r, self);
+        } else {
+            let vec = self.make_mut(store)?;
+            r = TreePrefix::from_slice(&vec[n..]);
+            vec.truncate(n);
+        }
+        Ok(r)
+    }
+
+    fn append(&mut self, that: &TreePrefix, store: &DynBlobStore) -> anyhow::Result<()> {
+        if !that.is_empty() {
+            if self.is_empty() {
+                *self = that.clone();
+            } else {
+                let a: &[u8] = self.load(store)?;
+                let b: &[u8] = that.load(store)?;
+                if a.len() + b.len() <= 6 {
+                    let mut c = a.to_vec();
+                    c.extend_from_slice(b);
+                    self.0 = FlexRef::inline_from_slice(&c).unwrap();
+                } else {
+                    self.make_mut(store)?.extend_from_slice(b);
+                }
+            }
+        };
+        Ok(())
+    }
+
     fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<&[u8]> {
         if let Some(data) = self.0.inline_as_ref() {
             Ok(data)
@@ -182,6 +220,14 @@ impl TreePrefix {
         Ok(())
     }
 
+    fn is_empty(&self) -> bool {
+        if let Some(arc) = self.0.owned_arc_ref() {
+            arc.as_ref().is_empty()
+        } else {
+            self.0 == FlexRef::inline_empty_array()
+        }
+    }
+
     fn empty() -> Self {
         Self(FlexRef::inline_empty_array())
     }
@@ -196,6 +242,15 @@ impl TreePrefix {
         } else {
             None
         }
+    }
+
+    fn make_mut(&mut self, store: &DynBlobStore) -> anyhow::Result<&mut Vec<u8>> {
+        if !self.0.is_arc() {
+            let data = self.load(store)?;
+            self.0 = FlexRef::owned_from_arc(Arc::new(data.to_vec()));
+        }
+        let arc = self.0.owned_arc_ref_mut().expect("must be an arc");
+        Ok(Arc::make_mut(arc))
     }
 }
 
@@ -450,20 +505,18 @@ impl TreeNode {
     }
 
     pub fn split(&mut self, store: &DynBlobStore, n: usize) -> anyhow::Result<()> {
-        let prefix = self.prefix.load(store)?;
-        assert!(n < prefix.len());
-        let first = TreePrefix::from_slice(&prefix[..n]);
-        let rest = TreePrefix::from_slice(&prefix[n..]);
-        let mut split = Self {
-            prefix: first,
+        let rest = self.prefix.truncate(n, store)?;
+        let mut child = Self {
             value: TreeValue::none(),
             children: TreeChildren::empty(),
+            prefix: rest,
         };
-        std::mem::swap(self, &mut split);
-        let mut child = split;
+        // child.childen = self.children, self.children = empty
+        std::mem::swap(&mut self.children, &mut child.children);
+        // child.value = self.value, self.value = none
+        std::mem::swap(&mut self.value, &mut child.value);
         // now, self is a degenerate empty node with first being the prefix
         // child is the former self (value and children) with rest as prefix
-        child.prefix = rest;
         self.children = TreeChildren::from_vec(vec![child]);
         Ok(())
     }
@@ -481,12 +534,7 @@ impl TreeNode {
                 // a single child and no own value is degenerate
                 if children.len() == 1 && self.value.is_none() {
                     let child = children.pop().unwrap();
-                    let sp = self.prefix.slice_opt().context("")?;
-                    let cp = child.prefix.slice_opt().context("")?;
-                    let mut prefix = Vec::with_capacity(sp.len() + cp.len());
-                    prefix.extend_from_slice(sp);
-                    prefix.extend_from_slice(cp);
-                    self.prefix = TreePrefix::from_vec(prefix);
+                    self.prefix.append(&child.prefix, &NO_STORE)?;
                     self.children = child.children;
                     self.value = child.value;
                 } else if children.len() == 0 {
@@ -535,7 +583,6 @@ impl TreeNode {
         store: &'a DynBlobStore,
         descend: F,
     ) -> anyhow::Result<GroupBy<'a, F>> {
-        let prefix = self.prefix.load(store)?;
         let prefix = self.prefix.load(store)?;
         Ok(GroupBy::new(self, store, IterKey::new(prefix), descend))
     }
@@ -920,23 +967,57 @@ impl<'a, F: Fn(&[u8]) -> bool> GroupBy<'a, F> {
         res
     }
 
+    fn prefix(&self) -> TreePrefix {
+        TreePrefix::from_arc_vec(self.path.0.clone())
+    }
+
+    fn push(&mut self, child: &'a TreeNode) -> anyhow::Result<()> {
+        let child_prefix = child.prefix.load(&self.store)?;
+        self.path.append(child_prefix);
+        self.stack.push((child, 0));
+        Ok(())
+    }
+
+    fn pop(&mut self) -> anyhow::Result<()> {
+        let prefix = self.tree().prefix.load(&self.store)?;
+        self.path.pop(prefix.len());
+        self.stack.pop();
+        Ok(())
+    }
+
     fn next0(&mut self) -> anyhow::Result<Option<TreeNode>> {
         while !self.stack.is_empty() {
             if let Some(pos) = self.inc() {
                 let children = self.tree().children.load(&self.store)?;
                 if pos < children.len() {
-                    let child = &children[pos];
-                    let child_prefix = child.prefix.load(&self.store)?;
-                    self.path.append(child_prefix);
-                    self.stack.push((child, 0));
+                    self.push(&children[pos])?;
                 } else {
-                    let prefix = self.tree().prefix.load(&self.store)?;
-                    self.path.pop(prefix.len());
-                    self.stack.pop();
+                    self.pop()?;
                 }
-            } else if let Some(value) = self.tree().value.load(&self.store)? {
-                todo!()
-                // return Ok(Some((self.path.clone(), value)));
+            } else {
+                if (self.descend)(&self.path) {
+                    if self.tree().value.is_some() {
+                        let tree = TreeNode {
+                            prefix: self.prefix(),
+                            value: self.tree().value.clone(),
+                            children: TreeChildren::empty(),
+                        };
+                        return Ok(Some(tree));
+                    }
+                } else {
+                    assert!(!self.tree().is_empty());
+                    if !self.tree().is_empty() {
+                        let tree = TreeNode {
+                            prefix: self.prefix(),
+                            value: self.tree().value.clone(),
+                            children: self.tree().children.clone(),
+                        };
+                        self.pop()?;
+                        return Ok(Some(tree));
+                    } else {
+                        self.pop()?;
+                    }
+                }
             }
         }
         Ok(None)
@@ -1296,6 +1377,57 @@ mod tests {
             let mut lbu_reference = a.clone();
             lbu_reference.retain(|k, _| b.contains_key(k));
             prop_assert_eq!(lbu, lbu_reference);
+        }
+
+
+        #[test]
+        fn group_by_true(a in arb_tree_contents()) {
+            let at = mk_owned_tree(&a);
+            let trees: Vec<TreeNode> = at.try_group_by(&NO_STORE, |_| true).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
+            prop_assert_eq!(a.len(), trees.len());
+            for ((k0, v0), tree) in a.iter().zip(trees) {
+                let k0: &[u8] = &k0;
+                let v0: &[u8] = &v0;
+                let k1 = tree.prefix.load(&NO_STORE).unwrap();
+                let v1 = tree.value.load(&NO_STORE).unwrap();
+                prop_assert!(tree.children.is_empty());
+                prop_assert_eq!(k0, k1);
+                prop_assert_eq!(Some(v0), v1);
+            }
+        }
+
+        #[test]
+        fn group_by_fixed(a in arb_tree_contents(), n in 0usize..8) {
+            let at = mk_owned_tree(&a);
+            let trees: Vec<TreeNode> = at.try_group_by(&NO_STORE, |x| x.len() <= n).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
+            if trees.len() > a.len() {
+                println!("---------------------------------");
+                at.dump_tree(&NO_STORE).unwrap();
+                for tree in &trees {
+                    tree.dump_tree(&NO_STORE).unwrap();
+                }
+                println!("---------------------------------");
+                prop_assert!(false);
+            }
+            prop_assert!(trees.len() <= a.len());
+            let mut leafs = BTreeMap::new();
+            for tree in &trees {
+                let prefix = tree.prefix.load(&NO_STORE).unwrap();
+                if prefix.len() <= n {
+                    prop_assert!(tree.children.is_empty());
+                    prop_assert!(tree.value.is_some());
+                    let value = tree.value.load(&NO_STORE).unwrap().unwrap();
+                    let prev = leafs.insert(prefix.to_vec(), value.to_vec());
+                    prop_assert!(prev.is_none());
+                } else {
+                    for x in tree.try_iter(&NO_STORE).unwrap() {
+                        let (k, v) = x.unwrap();
+                        let prev = leafs.insert(k.to_vec(), v.load(&NO_STORE).unwrap().unwrap().to_vec());
+                        prop_assert!(prev.is_none());
+                    }
+                }
+            }
+            prop_assert_eq!(a, leafs);
         }
     }
 
