@@ -40,7 +40,7 @@ impl TreeValue {
 
     fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Option<&[u8]>> {
         if let Some(data) = self.0.inline_as_ref() {
-            Ok(Some(data))
+            Ok(Some(data.into()))
         } else if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Some(arc.as_ref()))
         } else if let Some(id) = self.0.id_u64() {
@@ -61,7 +61,7 @@ impl TreeValue {
     fn detach(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
             let slice = store.bytes(id)?;
-            self.0 = FlexRef::inline_or_owned_from_slice(slice);
+            self.0 = FlexRef::inline_or_owned_from_slice(slice.as_ref());
         }
         Ok(())
     }
@@ -138,7 +138,7 @@ impl TreePrefix {
 
     fn truncate(&mut self, n: usize, store: &DynBlobStore) -> anyhow::Result<TreePrefix> {
         let mut r;
-        if self.load(store)?.len() <= n {
+        if self.load(store)?.as_ref().len() <= n {
             r = TreePrefix::empty();
         } else if n == 0 {
             r = TreePrefix::empty();
@@ -172,11 +172,11 @@ impl TreePrefix {
 
     fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<&[u8]> {
         if let Some(data) = self.0.inline_as_ref() {
-            Ok(data)
+            Ok(data.into())
         } else if let Some(arc) = self.0.owned_arc_ref() {
             Ok(arc.as_ref())
         } else if let Some(id) = self.0.id_u64() {
-            store.bytes(id)
+            store.bytes(id).map(|x| x)
         } else {
             unreachable!("invalid state of a TreePrefix");
         }
@@ -195,7 +195,7 @@ impl TreePrefix {
     /// detaches the prefix from the store. on success it will either be inline or owned
     fn detach(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
-            let slice = store.bytes(id)?;
+            let slice = store.bytes(id)?.as_ref();
             self.0 = FlexRef::inline_or_owned_from_slice(slice);
         }
         Ok(())
@@ -247,7 +247,7 @@ impl TreePrefix {
     fn make_mut(&mut self, store: &DynBlobStore) -> anyhow::Result<&mut Vec<u8>> {
         if !self.0.is_arc() {
             let data = self.load(store)?;
-            self.0 = FlexRef::owned_from_arc(Arc::new(data.to_vec()));
+            self.0 = FlexRef::owned_from_arc(Arc::new(data.as_ref().to_vec()));
         }
         let arc = self.0.owned_arc_ref_mut().expect("must be an arc");
         Ok(Arc::make_mut(arc))
@@ -317,7 +317,7 @@ impl TreeChildren {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(arc.as_ref().as_ref())
         } else if let Some(id) = self.0.id_u64() {
-            let bytes = store.bytes(id)?;
+            let bytes = store.bytes(id)?.as_ref();
             Ok(TreeNode::nodes_from_bytes(bytes)?)
         } else if self.0.is_none() {
             Ok(&[])
@@ -341,7 +341,7 @@ impl TreeChildren {
 
     fn detach(&mut self, store: &DynBlobStore, recursive: bool) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
-            let mut children = TreeNode::nodes_from_bytes(store.bytes(id)?)?.to_vec();
+            let mut children = TreeNode::nodes_from_bytes(store.bytes(id)?.as_ref())?.to_vec();
             if recursive {
                 for child in &mut children {
                     child.detach(store, recursive)?;
@@ -495,7 +495,7 @@ impl TreeNode {
     }
 
     pub fn clone_shortened(&self, store: &DynBlobStore, n: usize) -> anyhow::Result<Self> {
-        let prefix = self.prefix.load(store)?;
+        let prefix = self.prefix.load(store)?.as_ref();
         assert!(n < prefix.len());
         Ok(Self {
             prefix: TreePrefix::from_slice(&prefix[n..]),
@@ -553,43 +553,54 @@ impl TreeNode {
     }
 
     pub fn dump_tree(&self, store: &DynBlobStore) -> anyhow::Result<()> {
-        self.dump_tree0("", store)
+        fn hex(x: &[u8]) -> anyhow::Result<String> {
+            Ok(hex::encode(x))
+        }
+        self.dump_tree0("", store, hex, hex)
     }
-    fn dump_tree0(&self, indent: &str, store: &DynBlobStore) -> anyhow::Result<()> {
-        let prefix = self.prefix.load(store)?;
+
+    pub fn dump_tree_utf8(&self, store: &DynBlobStore) -> anyhow::Result<()> {
+        fn utf8(x: &[u8]) -> anyhow::Result<String> {
+            Ok(std::str::from_utf8(x)?.to_owned())
+        }
+        self.dump_tree0("", store, utf8, utf8)
+    }
+
+    fn dump_tree0(
+        &self,
+        indent: &str,
+        store: &DynBlobStore,
+        p: impl Fn(&[u8]) -> anyhow::Result<String> + Copy,
+        v: impl Fn(&[u8]) -> anyhow::Result<String> + Copy,
+    ) -> anyhow::Result<()> {
+        let prefix = self.prefix.load(store)?.as_ref();
         let value = self.value.load(store)?;
         let children = self.children.load(store)?;
-        let hex_prefix = hex::encode(prefix);
+        let hex_prefix = p(prefix)?;
         if let Some(value) = value {
-            println!(
-                "{}{}:{} | {:?}",
-                indent,
-                hex_prefix,
-                hex::encode(value),
-                self
-            );
+            println!("{}{}:{}", indent, hex_prefix, v(value.as_ref())?,);
         } else {
-            println!("{}{} | {:?}", indent, hex_prefix, self)
+            println!("{}{}", indent, hex_prefix)
         }
         let indent = indent.to_owned() + &hex_prefix;
         for child in children {
-            child.dump_tree0(&indent, store)?;
+            child.dump_tree0(&indent, store, p, v)?;
         }
         Ok(())
     }
 
-    fn try_group_by<'a, F: Fn(&[u8]) -> bool>(
+    fn try_group_by<'a, F: Fn(&[u8], &TreeNode) -> bool>(
         &'a self,
         store: &'a DynBlobStore,
         descend: F,
     ) -> anyhow::Result<GroupBy<'a, F>> {
-        let prefix = self.prefix.load(store)?;
+        let prefix = self.prefix.load(store)?.as_ref();
         Ok(GroupBy::new(self, store, IterKey::new(prefix), descend))
     }
 
     /// iterate over all elements
     fn try_iter<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a>> {
-        let prefix = self.prefix.load(store)?;
+        let prefix = self.prefix.load(store)?.as_ref();
         Ok(Iter::new(self, store, IterKey::new(prefix)))
     }
 
@@ -617,8 +628,8 @@ fn outer_combine(
     bb: &DynBlobStore,
     f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 ) -> anyhow::Result<TreeNode> {
-    let ap = a.prefix.load(ab)?;
-    let bp = b.prefix.load(bb)?;
+    let ap = a.prefix.load(ab)?.as_ref();
+    let bp = b.prefix.load(bb)?.as_ref();
     let n = common_prefix(ap, bp);
     let av = || a.value.detached(ab);
     let bv = || b.value.detached(bb);
@@ -692,8 +703,8 @@ fn inner_combine(
     bb: &DynBlobStore,
     f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 ) -> anyhow::Result<TreeNode> {
-    let ap = a.prefix.load(ab)?;
-    let bp = b.prefix.load(bb)?;
+    let ap = a.prefix.load(ab)?.as_ref();
+    let bp = b.prefix.load(bb)?.as_ref();
     let n = common_prefix(ap, bp);
     let av = || a.value.detached(ab);
     let bv = || b.value.detached(bb);
@@ -755,8 +766,8 @@ fn left_combine(
     bb: &DynBlobStore,
     f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
 ) -> anyhow::Result<TreeNode> {
-    let ap = a.prefix.load(ab)?;
-    let bp = b.prefix.load(bb)?;
+    let ap = a.prefix.load(ab)?.as_ref();
+    let bp = b.prefix.load(bb)?.as_ref();
     let n = common_prefix(ap, bp);
     let av = || a.value.detached(ab);
     let bv = || b.value.detached(bb);
@@ -813,8 +824,8 @@ fn intersects(
     b: &TreeNode,
     bb: &DynBlobStore,
 ) -> anyhow::Result<bool> {
-    let ap = a.prefix.load(ab)?;
-    let bp = b.prefix.load(bb)?;
+    let ap = a.prefix.load(ab)?.as_ref();
+    let bp = b.prefix.load(bb)?.as_ref();
     let n = common_prefix(ap, bp);
     let av = || a.value.detached(ab);
     let bv = || b.value.detached(bb);
@@ -946,7 +957,7 @@ pub struct GroupBy<'a, F> {
     descend: F,
 }
 
-impl<'a, F: Fn(&[u8]) -> bool> GroupBy<'a, F> {
+impl<'a, F: Fn(&[u8], &TreeNode) -> bool> GroupBy<'a, F> {
     fn new(tree: &'a TreeNode, store: &'a DynBlobStore, prefix: IterKey, descend: F) -> Self {
         Self {
             stack: vec![(tree, 0)],
@@ -972,14 +983,14 @@ impl<'a, F: Fn(&[u8]) -> bool> GroupBy<'a, F> {
     }
 
     fn push(&mut self, child: &'a TreeNode) -> anyhow::Result<()> {
-        let child_prefix = child.prefix.load(&self.store)?;
+        let child_prefix = child.prefix.load(&self.store)?.as_ref();
         self.path.append(child_prefix);
         self.stack.push((child, 0));
         Ok(())
     }
 
     fn pop(&mut self) -> anyhow::Result<()> {
-        let prefix = self.tree().prefix.load(&self.store)?;
+        let prefix = self.tree().prefix.load(&self.store)?.as_ref();
         self.path.pop(prefix.len());
         self.stack.pop();
         Ok(())
@@ -995,25 +1006,25 @@ impl<'a, F: Fn(&[u8]) -> bool> GroupBy<'a, F> {
                     self.pop()?;
                 }
             } else {
-                if (self.descend)(&self.path) {
-                    if self.tree().value.is_some() {
-                        let tree = TreeNode {
+                let tree = self.tree();
+                if (self.descend)(&self.path, tree) {
+                    if tree.value.is_some() {
+                        let res = TreeNode {
                             prefix: self.prefix(),
-                            value: self.tree().value.clone(),
+                            value: tree.value.clone(),
                             children: TreeChildren::empty(),
                         };
-                        return Ok(Some(tree));
+                        return Ok(Some(res));
                     }
                 } else {
-                    assert!(!self.tree().is_empty());
-                    if !self.tree().is_empty() {
-                        let tree = TreeNode {
+                    if !tree.is_empty() {
+                        let res = TreeNode {
                             prefix: self.prefix(),
-                            value: self.tree().value.clone(),
-                            children: self.tree().children.clone(),
+                            value: tree.value.clone(),
+                            children: tree.children.clone(),
                         };
                         self.pop()?;
-                        return Ok(Some(tree));
+                        return Ok(Some(res));
                     } else {
                         self.pop()?;
                     }
@@ -1024,7 +1035,7 @@ impl<'a, F: Fn(&[u8]) -> bool> GroupBy<'a, F> {
     }
 }
 
-impl<'a, F: Fn(&[u8]) -> bool> Iterator for GroupBy<'a, F> {
+impl<'a, F: Fn(&[u8], &TreeNode) -> bool> Iterator for GroupBy<'a, F> {
     type Item = anyhow::Result<TreeNode>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1080,11 +1091,11 @@ impl<'a> Iter<'a> {
                 let children = self.tree().children.load(&self.store)?;
                 if pos < children.len() {
                     let child = &children[pos];
-                    let child_prefix = child.prefix.load(&self.store)?;
+                    let child_prefix = child.prefix.load(&self.store)?.as_ref();
                     self.path.append(child_prefix);
                     self.stack.push((child, 0));
                 } else {
-                    let prefix = self.tree().prefix.load(&self.store)?;
+                    let prefix = self.tree().prefix.load(&self.store)?.as_ref();
                     self.path.pop(prefix.len());
                     self.stack.pop();
                 }
@@ -1244,9 +1255,99 @@ impl<'a> MergeOperation<VecMergeState<'a>> for IntersectOp<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use obey::*;
     use proptest::prelude::*;
     use std::sync::Arc;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Jsonish {
+        String(String),
+        Map(BTreeMap<String, Jsonish>),
+    }
+
+    impl Jsonish {
+        /// flatten to a radix tree, using a separator char '.'
+        fn to_radix_tree_separated(&self) -> TreeNode {
+            match self {
+                Jsonish::String(v) => {
+                    assert!(!v.is_empty());
+                    TreeNode::leaf(v.as_bytes())
+                }
+                Jsonish::Map(map) => map
+                    .iter()
+                    .map(|(k, v)| {
+                        assert!(!k.is_empty());
+                        match v {
+                            Jsonish::String(v) => {
+                                assert!(!v.is_empty());
+                                TreeNode::single(k.as_bytes(), v.as_bytes())
+                            }
+                            Jsonish::Map(_) => {
+                                let mut res = TreeNode::new(
+                                    format!("{}.", k).as_bytes(),
+                                    None,
+                                    &[v.to_radix_tree_separated()],
+                                );
+                                res.unsplit().unwrap();
+                                res
+                            }
+                        }
+                    })
+                    .fold(TreeNode::empty(), |a, b| {
+                        outer_combine(&a, &NO_STORE, &b, &NO_STORE, |_, b| Ok(b)).unwrap()
+                    }),
+            }
+        }
+
+        /// unfltten from a radix tree, using a separator char '.'
+        fn from_radix_tree_separated(tree: &TreeNode) -> anyhow::Result<Self> {
+            let sep = ".".as_bytes()[0];
+            Ok(if tree.prefix.is_empty() && tree.value.is_some() {
+                Jsonish::String(
+                    std::str::from_utf8(tree.value.load(&NO_STORE).unwrap().unwrap())?.to_owned(),
+                )
+            } else {
+                let iter = tree.try_group_by(&NO_STORE, |p, _| !p.contains(&sep))?;
+                Jsonish::Map(
+                    iter.map(|child| {
+                        let mut child = child?;
+                        let prefix = child.prefix.load(&NO_STORE)?;
+                        Ok(if let Some(p) = prefix.iter().position(|x| *x == sep) {
+                            let key = std::str::from_utf8(&prefix[..p])?.to_owned();
+                            child.prefix = TreePrefix::from_slice(&prefix[p + 1..]);
+                            (key, Self::from_radix_tree_separated(&child)?)
+                        } else {
+                            let prefix = std::str::from_utf8(prefix)?.to_owned();
+                            (
+                                prefix,
+                                Jsonish::String(
+                                    std::str::from_utf8(
+                                        child.value.load(&NO_STORE).unwrap().unwrap(),
+                                    )?
+                                    .to_owned(),
+                                ),
+                            )
+                        })
+                    })
+                    .collect::<anyhow::Result<BTreeMap<_, _>>>()?,
+                )
+            })
+        }
+    }
+
+    fn arb_jsonish_tree_no_empty() -> impl Strategy<Value = Jsonish> {
+        let leaf = prop_oneof!["[a-z]+".prop_map(Jsonish::String),];
+
+        leaf.prop_recursive(
+            4,  // No more than 4 branch levels deep
+            64, // Target around 64 total elements
+            8,  // Each collection is up to 16 elements long
+            |element| {
+                prop_oneof![
+                    prop::collection::btree_map("[a-z]+", element, 1..16).prop_map(Jsonish::Map)
+                ]
+            },
+        )
+    }
 
     fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
         proptest::collection::vec(b'0'..b'9', 0..9)
@@ -1383,7 +1484,7 @@ mod tests {
         #[test]
         fn group_by_true(a in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
-            let trees: Vec<TreeNode> = at.try_group_by(&NO_STORE, |_| true).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
+            let trees: Vec<TreeNode> = at.try_group_by(&NO_STORE, |_, _| true).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
             prop_assert_eq!(a.len(), trees.len());
             for ((k0, v0), tree) in a.iter().zip(trees) {
                 let k0: &[u8] = &k0;
@@ -1397,18 +1498,16 @@ mod tests {
         }
 
         #[test]
+        fn group_by_tree_separated(a in arb_jsonish_tree_no_empty()) {
+            let tree = a.to_radix_tree_separated();
+            let b = Jsonish::from_radix_tree_separated(&tree).unwrap();
+            prop_assert_eq!(a, b);
+        }
+
+        #[test]
         fn group_by_fixed(a in arb_tree_contents(), n in 0usize..8) {
             let at = mk_owned_tree(&a);
-            let trees: Vec<TreeNode> = at.try_group_by(&NO_STORE, |x| x.len() <= n).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
-            if trees.len() > a.len() {
-                println!("---------------------------------");
-                at.dump_tree(&NO_STORE).unwrap();
-                for tree in &trees {
-                    tree.dump_tree(&NO_STORE).unwrap();
-                }
-                println!("---------------------------------");
-                prop_assert!(false);
-            }
+            let trees: Vec<TreeNode> = at.try_group_by(&NO_STORE, |x, _| x.len() <= n).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
             prop_assert!(trees.len() <= a.len());
             let mut leafs = BTreeMap::new();
             for tree in &trees {
