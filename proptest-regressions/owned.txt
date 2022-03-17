@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0ec718b3bdc710300f91ce77b82b64c0014ab1d25f7edeb3d306c74f3c925bc9 # shrinks to x = [([51], []), ([], [])]
+cc 260b94b8730ae9ce98106937aa753e73ffe8c2cfcedf54a06ea426eb84ee5042 # shrinks to a = {[]: []}, b = {[]: [0]}
+cc 895a903cdfa3c68507e05cd3c05d28787e0c0b09509f6e4b85c3342c150f71c3 # shrinks to x = {[48, 48, 48, 48, 48, 48, 48]: []}
+cc 9d01b07d8b6b0d672d4d8ec3dbd80c0cafe586970e4dc69a032cef1d7b3a4dd1 # shrinks to a = {[48, 55]: [42, 199, 126, 56], [49]: [114, 174, 202, 46], [49, 51, 53, 50]: [185, 96, 157, 201], [52, 50]: [104, 28, 67, 132], [52, 54, 50, 54, 54, 48, 48]: [138, 247, 165, 236, 178, 33]}, b = {[]: [135, 0, 98, 126, 252, 219, 157], [48]: [184, 108, 43, 70, 169, 35, 200, 84], [48, 51, 55]: [92, 60, 241, 156], [49]: [79], [50]: [], [50, 56, 50, 52, 53, 48, 56]: [166], [51]: [], [56, 56]: [107, 190, 244, 38, 180, 169, 163, 145]}
+cc 8d247ab7775dffaaac7b11fbdb56bab1a164c280721d1e5148b081cdc4076f38 # shrinks to x = {[]: [161, 226, 228, 87, 242], [49, 52, 54, 51]: [235, 124, 38, 124], [49, 53, 54, 54, 49, 52, 48, 50]: [55, 102, 185]}
+cc 25a3a633891970d56a876ba8ec7113f50ca7b6f2f4b1b30264582969c0b914db # shrinks to x = {[50, 53, 56, 56, 56, 55]: [100, 69, 102, 195], [51, 55]: [60, 211, 234, 229, 227, 78, 72, 200], [51, 56, 54, 54, 56, 48]: [210, 208, 212, 64, 18, 75, 199], [52, 53, 50, 53, 54, 55, 56, 53]: [11, 147, 69], [53, 56, 49, 48, 54]: [194, 36, 244, 142, 79, 1, 74, 51], [56]: [28, 212, 182, 86, 69], [56, 48]: [104, 150, 228, 203, 91]}

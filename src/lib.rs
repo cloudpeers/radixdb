@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
+mod blob;
 mod blob_store;
 mod flex_ref;
 mod iterators;
 mod merge_state;
+mod paged_file_store;
+mod paged_file_store2;
 mod tree;
-pub use blob_store::{DynBlobStore, MemStore, NoStore, NO_STORE};
+pub(crate) use blob::Blob;
+pub use blob_store::{DynBlobStore, MemStore, NoStore, PagedMemStore, NO_STORE};
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///
@@ -80,6 +84,11 @@ const fn arc_ref<T>(value: &[u8; 8]) -> &Arc<T> {
     unsafe { std::mem::transmute(value) }
 }
 
+const fn aligned_empty_ref() -> &'static [u8] {
+    let t: &'static [u128] = &[];
+    unsafe { std::mem::transmute::<&[u128], &[u8]>(t) }
+}
+
 fn arc_ref_mut<T>(value: &mut [u8; 8]) -> &mut Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
@@ -97,11 +106,25 @@ const fn from_arc<T>(arc: Arc<T>) -> [u8; 8] {
 }
 
 /// Utility to output something as hex
-struct Hex<'a>(&'a [u8]);
+struct Hex<'a>(&'a [u8], usize);
+
+impl<'a> Hex<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self(data, data.len())
+    }
+    fn partial(data: &'a [u8], len: usize) -> Self {
+        let display = if len < data.len() { &data[..len] } else { data };
+        Self(display, data.len())
+    }
+}
 
 impl<'a> std::fmt::Debug for Hex<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}]", hex::encode(self.0))
+        if self.0.len() < self.1 {
+            write!(f, "[{}..., {} bytes]", hex::encode(self.0), self.1)
+        } else {
+            write!(f, "[{}]", hex::encode(self.0))
+        }
     }
 }
 
@@ -111,24 +134,45 @@ impl<'a> std::fmt::Display for Hex<'a> {
     }
 }
 
-fn slice_cast<T, U>(src: &[T]) -> anyhow::Result<&[U]> {
-    let (ptr, tsize): (usize, usize) = unsafe { std::mem::transmute(src) };
+fn slice_cast<T, U>(value: &[T]) -> anyhow::Result<&[U]> {
+    let (ptr, size) = unsafe { std::mem::transmute(value) };
+    let (ptr, size) = slice_cast_raw::<T, U>(ptr, size)?;
+    Ok(unsafe { std::mem::transmute((ptr, size)) })
+}
+
+fn slice_cast_raw<T, U>(ptr: *const T, tsize: usize) -> anyhow::Result<(*const U, usize)> {
     let bytes = tsize * std::mem::size_of::<T>();
     anyhow::ensure!(
-        ptr % std::mem::align_of::<U>() == 0,
-        "pointer is not properly aligned for target type"
+        (ptr as usize) % std::mem::align_of::<U>() == 0,
+        "pointer is not properly aligned for target type. std.mem::align_of::<{}>() is {}",
+        std::any::type_name::<T>(),
+        std::mem::align_of::<U>(),
     );
     anyhow::ensure!(
         bytes % std::mem::size_of::<U>() == 0,
-        "byte size is not a multiple of target size"
+        "byte size is not a multiple of target size. std::mem::size_of::<{}>() is {}",
+        std::any::type_name::<T>(),
+        std::mem::size_of::<U>(),
     );
     let usize = bytes / std::mem::size_of::<U>();
-    Ok(unsafe { std::mem::transmute((ptr, usize)) })
+    let ptr = ptr as *const U;
+    Ok((ptr, usize))
 }
 
 // common prefix of two slices.
 fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
     a.iter().zip(b).take_while(|(a, b)| a == b).count()
+}
+
+fn read_length_prefixed(source: &[u8], offset: usize) -> &[u8] {
+    let len = u32::from_be_bytes(source[offset..offset + 4].try_into().unwrap()) as usize;
+    &source[offset + 4..offset + 4 + len]
+}
+
+fn write_length_prefixed(target: &mut [u8], offset: usize, slice: &[u8]) {
+    let len_u32: u32 = slice.len().try_into().unwrap();
+    target[offset..offset + 4].copy_from_slice(&len_u32.to_be_bytes());
+    target[offset + 4..offset + 4 + slice.len()].copy_from_slice(slice);
 }
 
 #[test]

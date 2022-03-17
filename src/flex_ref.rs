@@ -2,7 +2,7 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use super::*;
 
-#[repr(C)]
+#[repr(C, align(8))]
 #[derive(PartialEq, Eq)]
 pub(crate) struct FlexRef<T>(pub [u8; 8], PhantomData<T>);
 
@@ -11,7 +11,9 @@ impl<T> Debug for FlexRef<T> {
         if let Some(id) = self.id_u64() {
             f.debug_tuple("FlexRef::Id").field(&id).finish()
         } else if let Some(data) = self.inline_as_ref() {
-            f.debug_tuple("FlexRef::Inline").field(&Hex(data)).finish()
+            f.debug_tuple("FlexRef::Inline")
+                .field(&Hex::new(data))
+                .finish()
         } else if let Some(arc) = self.owned_arc_ref() {
             f.debug_struct("FlexRef::Owned")
                 .field("p", &Arc::as_ptr(arc))
@@ -84,7 +86,12 @@ impl<T> FlexRef<T> {
     pub fn inline_as_ref(&self) -> Option<&[u8]> {
         if self.is_inline() {
             let len = extra_byte(self.0) as usize;
-            Some(&self.0[1..=len])
+            if len == 0 {
+                // special case so the empty ref is aligned
+                Some(aligned_empty_ref())
+            } else {
+                Some(&self.0[1..=len])
+            }
         } else {
             None
         }
