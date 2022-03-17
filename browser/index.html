@@ -1,0 +1,18 @@
+<html>
+  <head>
+    <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
+  </head>
+  <body>
+    <script type="module">
+      import init, { start } from './sample.js';
+
+      async function run() {
+        await init();
+
+        const res = await start();
+        console.log("result", res);
+      }
+      run();
+    </script>
+  </body>
+<html>

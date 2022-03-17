@@ -5,7 +5,9 @@ mod blob_store;
 mod flex_ref;
 mod iterators;
 mod merge_state;
+#[cfg(not(target_arch = "wasm32"))]
 mod paged_file_store;
+#[cfg(not(target_arch = "wasm32"))]
 mod paged_file_store2;
 mod tree;
 pub(crate) use blob::Blob;
