@@ -22,7 +22,7 @@ pub enum Blob<T> {
     },
 }
 
-impl<T: 'static> Clone for Blob<T> {
+impl<T> Clone for Blob<T> {
     fn clone(&self) -> Self {
         match self {
             Self::Inline { len, data, p } => Self::Inline {
@@ -78,7 +78,7 @@ impl Blob<u8> {
 }
 
 impl<T> Blob<T> {
-    pub fn cast<U: 'static>(&self) -> anyhow::Result<Blob<U>> {
+    pub fn cast<U>(&self) -> anyhow::Result<Blob<U>> {
         match self {
             Self::Inline { .. } => Err(anyhow::anyhow!("casting not supported for inline")),
             Self::ArcVecT { .. } => Err(anyhow::anyhow!("casting not supported for arc")),

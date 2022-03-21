@@ -484,7 +484,7 @@ impl TreeNode {
         Ok(())
     }
 
-    pub fn clone_shortened(&self, store: &DynBlobStore, n: usize) -> anyhow::Result<Self> {
+    pub(crate) fn clone_shortened(&self, store: &DynBlobStore, n: usize) -> anyhow::Result<Self> {
         let prefix = self.prefix.load(store)?;
         assert!(n < prefix.len());
         Ok(Self {
@@ -494,7 +494,7 @@ impl TreeNode {
         })
     }
 
-    pub fn split(&mut self, store: &DynBlobStore, n: usize) -> anyhow::Result<()> {
+    pub(crate) fn split(&mut self, store: &DynBlobStore, n: usize) -> anyhow::Result<()> {
         let rest = self.prefix.truncate(n, store)?;
         let mut child = Self {
             value: TreeValue::none(),
@@ -511,7 +511,7 @@ impl TreeNode {
         Ok(())
     }
 
-    pub fn unsplit(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn unsplit(&mut self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.children.0.is_id(),
             "called unsplit on an attached node"
@@ -542,14 +542,14 @@ impl TreeNode {
         Ok(())
     }
 
-    pub fn dump_tree(&self, store: &DynBlobStore) -> anyhow::Result<()> {
+    pub(crate) fn dump_tree(&self, store: &DynBlobStore) -> anyhow::Result<()> {
         fn hex(x: &[u8]) -> anyhow::Result<String> {
             Ok(hex::encode(x))
         }
         self.dump_tree0("", store, hex, hex)
     }
 
-    pub fn dump_tree_utf8(&self, store: &DynBlobStore) -> anyhow::Result<()> {
+    pub(crate) fn dump_tree_utf8(&self, store: &DynBlobStore) -> anyhow::Result<()> {
         fn utf8(x: &[u8]) -> anyhow::Result<String> {
             Ok(std::str::from_utf8(x)?.to_owned())
         }
@@ -579,7 +579,7 @@ impl TreeNode {
         Ok(())
     }
 
-    fn try_group_by<'a, F: Fn(&[u8], &TreeNode) -> bool>(
+    pub fn try_group_by<'a, F: Fn(&[u8], &TreeNode) -> bool>(
         &'a self,
         store: &'a DynBlobStore,
         descend: F,
@@ -594,13 +594,13 @@ impl TreeNode {
     }
 
     /// iterate over all elements
-    fn try_iter<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a>> {
+    pub fn try_iter<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a>> {
         let prefix = self.prefix.load(store)?;
         Ok(Iter::new(self, store, IterKey::new(prefix.as_ref())))
     }
 
     /// iterate over all values - this is cheaper than iterating over elements, since it does not have to build the keys from fragments
-    fn try_values<'a>(&'a self, store: &'a DynBlobStore) -> Values<'a> {
+    pub fn try_values<'a>(&'a self, store: &'a DynBlobStore) -> Values<'a> {
         Values::new(self, store)
     }
 }

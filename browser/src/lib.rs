@@ -1,3 +1,4 @@
+use std::any;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::ops::Range;
@@ -6,10 +7,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use futures::channel::mpsc::UnboundedSender;
+use futures::channel::oneshot;
+use futures::future;
 use futures::{channel::mpsc, executor::block_on};
 use futures::{Future, FutureExt, StreamExt};
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use log::*;
+use radixdb::DynBlobStore;
+use radixdb::TreeNode;
 use radixdb::{Blob, BlobStore};
 use url::Url;
 use wasm_bindgen::{prelude::*, JsCast};
@@ -204,25 +210,62 @@ impl WebCacheFile {
             offset: prev.range().end,
             len: data.len().try_into()?,
         };
-        console_log!("prev {:?} chunk {:?}", self.prev(), chunk);
         let request = chunk.to_request_str(&self.file_name);
         let response = Response::new_with_opt_u8_array(Some(data)).map_err(js_to_anyhow)?;
         JsFuture::from(self.cache.put_with_str(&request, &response))
             .await
             .expect("insertion not possible");
         self.chunks.push(chunk);
-        Ok(chunk.range().end)
+        Ok(chunk.range().start)
+    }
+
+    async fn append_length_prefixed(&mut self, mut data: Vec<u8>) -> anyhow::Result<u64> {
+        data.splice(0..0, u32::try_from(data.len()).unwrap().to_be_bytes());
+        self.append(&mut data).await
+    }
+
+    fn intersecting_chunks(&self, range: Range<u64>) -> impl Iterator<Item = &ChunkMeta> {
+        self.chunks
+            .iter()
+            .filter(move |chunk| overlaps(chunk.range(), range.clone()))
+    }
+
+    async fn load_chunks(
+        &self,
+        range: Range<u64>,
+        chunks: impl IntoIterator<Item = &ChunkMeta>,
+    ) -> anyhow::Result<Vec<u8>> {
+        let len = range.end.saturating_sub(range.start).try_into()?;
+        let mut res = vec![0u8; len];
+        for chunk in chunks.into_iter() {
+            let data = self.load(chunk).await?;
+            let (sr, tr) = ranges(chunk.range(), range.clone())?;
+            res[tr].copy_from_slice(&data[sr]);
+        }
+        Ok(res)
+    }
+
+    async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Vec<u8>> {
+        console_log!("at {}", start);
+        let chunks = self
+            .intersecting_chunks(start..start + 4)
+            .collect::<Vec<_>>();
+
+        console_log!("intersecting chunks {:#?}", chunks);
+        let end = chunks.iter().map(|x| x.range().end).max().unwrap_or(start);
+        let mut res = self.load_chunks(start..end, chunks).await?;
+        let len = usize::try_from(u32::from_be_bytes(res[0..4].try_into().unwrap()))?;
+        anyhow::ensure!(res.len() >= len + 4);
+        res.truncate(len + 4);
+        res.splice(0..4, []);
+        Ok(res)
     }
 
     async fn read(&self, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
         let len_u64 = range.end.saturating_sub(range.start);
         let len: usize = len_u64.try_into()?;
         let mut res = vec![0u8; len];
-        for chunk in self
-            .chunks
-            .iter()
-            .filter(|chunk| overlaps(chunk.range(), range.clone()))
-        {
+        for chunk in self.intersecting_chunks(range.clone()) {
             let data = self.load(chunk).await?;
             let (sr, tr) = ranges(chunk.range(), range.clone())?;
             res[tr].copy_from_slice(&data[sr]);
@@ -250,6 +293,92 @@ impl WebCacheFile {
             .context("response no array buffer")?,
         );
         Ok(Uint8Array::new(&ab).to_vec())
+    }
+}
+
+#[derive(Debug)]
+enum Command {
+    Append {
+        data: Vec<u8>,
+        cb: oneshot::Sender<anyhow::Result<u64>>,
+    },
+    Read {
+        offset: u64,
+        cb: oneshot::Sender<anyhow::Result<Vec<u8>>>,
+    },
+}
+
+struct IoManager {
+    file: WebCacheFile,
+    queue: mpsc::UnboundedReceiver<Command>,
+}
+
+impl IoManager {
+    fn new(file: WebCacheFile, queue: mpsc::UnboundedReceiver<Command>) -> Self {
+        Self { file, queue }
+    }
+
+    async fn read(&mut self, offset: u64, cb: oneshot::Sender<anyhow::Result<Vec<u8>>>) {
+        let _ = cb.send(self.file.load_length_prefixed(offset).await);
+    }
+
+    async fn append(&mut self, data: Vec<u8>, cb: oneshot::Sender<anyhow::Result<u64>>) {
+        let _ = cb.send(self.file.append_length_prefixed(data).await);
+    }
+
+    async fn run(mut self) {
+        console_log!("IoManager run");
+        while let Some(cmd) = self.queue.next().await {
+            match cmd {
+                Command::Read { offset, cb } => {
+                    self.read(offset, cb).await;
+                }
+                Command::Append { data, cb } => {
+                    self.append(data, cb).await;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SyncFile {
+    tx: UnboundedSender<Command>,
+}
+
+impl SyncFile {
+    fn new(dir: String, file: String, pool: ThreadPool) -> Self {
+        let (tx, rx) = mpsc::unbounded();
+        pool.spawn_lazy(|| {
+            async move {
+                let dir = WebCacheDir::new(&dir).await.unwrap();
+                let file = dir.open(&file).await.unwrap();
+                let manager = IoManager::new(file, rx);
+                manager.run().await;
+            }
+            .boxed_local()
+        });
+        Self { tx }
+    }
+}
+
+impl radixdb::BlobStore for SyncFile {
+    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .unbounded_send(Command::Read { offset: id, cb: tx })?;
+        let data = block_on(rx)??;
+        Ok(Blob::from_slice(&data))
+    }
+
+    fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::Append {
+            data: data.to_vec(),
+            cb: tx,
+        })?;
+        let offset = block_on(rx)??;
+        Ok(offset)
     }
 }
 
@@ -323,6 +452,8 @@ async fn pool_test() -> anyhow::Result<()> {
     // the outer spawn is necessary so we don't block on the main thread, which is not allowed
     pool.spawn_lazy(move || {
         async move {
+            console_log!("starting cache_test_sync");
+            cache_test_sync(pool2.clone()).unwrap();
             let (tx, rx) = futures::channel::oneshot::channel();
             pool2.spawn_lazy(|| {
                 async {
@@ -350,6 +481,25 @@ async fn cache_test() -> anyhow::Result<()> {
     console_log!("{:?}", dir);
     console_log!("{:?}", file);
     console_log!("{}", hex::encode(data));
+    Ok(())
+}
+
+fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
+    console_log!("{}", worker_scope().location().origin());
+    let file = SyncFile::new("sync".into(), "test".into(), pool);
+    let elems = (0..100u8)
+        .map(|i| (vec![i], i.to_string().as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    let mut store: DynBlobStore = Box::new(file);
+    let mut tree: TreeNode = elems
+        .iter()
+        .map(|(k, v)| (k.as_ref(), v.as_ref()))
+        .collect();
+    console_log!("{:?}", tree);
+    tree.attach(&mut store)?;
+    console_log!("{:?}", tree);
+    tree.detach(&store, true)?;
+    console_log!("{:?}", tree);
     Ok(())
 }
 

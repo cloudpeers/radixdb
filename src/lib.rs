@@ -12,6 +12,9 @@ mod paged_file_store2;
 mod tree;
 pub use blob::Blob;
 pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStore, PagedMemStore, NO_STORE};
+#[cfg(not(target_arch = "wasm32"))]
+pub use paged_file_store::PagedFileStore;
+pub use tree::TreeNode;
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///
