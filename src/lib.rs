@@ -10,8 +10,8 @@ mod paged_file_store;
 #[cfg(not(target_arch = "wasm32"))]
 mod paged_file_store2;
 mod tree;
-pub(crate) use blob::Blob;
-pub use blob_store::{DynBlobStore, MemStore, NoStore, PagedMemStore, NO_STORE};
+pub use blob::Blob;
+pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStore, PagedMemStore, NO_STORE};
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///
