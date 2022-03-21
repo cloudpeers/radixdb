@@ -25,4 +25,4 @@ hex = "0.4.3"
 
 [dependencies.web-sys]
 version = "0.3.53"
-features = ['DedicatedWorkerGlobalScope', 'console', 'Blob', 'IdbIndex', 'IdbObjectStore', 'CacheStorage', 'Cache', 'Request', 'Response', 'StorageManager', 'Navigator', 'CacheQueryOptions']
+features = ['DedicatedWorkerGlobalScope', 'WorkerGlobalScope', 'WorkerLocation', 'console', 'Blob', 'IdbIndex', 'IdbObjectStore', 'CacheStorage', 'Cache', 'Request', 'Response', 'StorageManager', 'Navigator', 'CacheQueryOptions']

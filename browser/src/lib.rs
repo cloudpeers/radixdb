@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::ops::Range;
 use std::str::FromStr;
@@ -7,15 +8,44 @@ use std::time::Duration;
 use anyhow::Context;
 use futures::{channel::mpsc, executor::block_on};
 use futures::{Future, FutureExt, StreamExt};
-use js_sys::Array;
+use js_sys::{Array, ArrayBuffer, Uint8Array};
 use log::*;
 use radixdb::{Blob, BlobStore};
 use url::Url;
 use wasm_bindgen::{prelude::*, JsCast};
 use wasm_bindgen_futures::JsFuture;
 use wasm_futures_executor::ThreadPool;
+use web_sys::WorkerGlobalScope;
+// use wasm_futures_executor::ThreadPool;
 use web_sys::{Cache, DedicatedWorkerGlobalScope};
 use web_sys::{CacheQueryOptions, Request, Response};
+
+macro_rules! console_log {
+    // Note that this is using the `log` function imported above during
+    // `bare_bones`
+    ($($t:tt)*) => (web_sys::console::log_1(&format_args!($($t)*).to_string().into()))
+}
+
+#[derive(Debug, Clone)]
+struct WebCacheDir {
+    /// the cache which we abuse as a directory
+    cache: web_sys::Cache,
+}
+
+impl WebCacheDir {
+    pub async fn new(name: &str) -> anyhow::Result<Self> {
+        let caches = worker_scope().caches().map_err(js_to_anyhow)?;
+        let cache = JsFuture::from(caches.open(name))
+            .await
+            .map_err(js_to_anyhow)?;
+        let cache = web_sys::Cache::from(cache);
+        Ok(Self { cache })
+    }
+
+    pub async fn open(&self, file_name: &str) -> anyhow::Result<WebCacheFile> {
+        WebCacheFile::new(self.cache.clone(), file_name).await
+    }
+}
 
 #[derive(Debug)]
 struct WebCacheFile {
@@ -42,17 +72,23 @@ struct ChunkMeta {
 
 impl ChunkMeta {
     fn range(&self) -> Range<u64> {
-        self.offset..self.len
+        self.offset..(self.offset + self.len)
     }
 
-    fn parse_and_filter(request: &Request, file_name: &str) -> anyhow::Result<Option<ChunkMeta>> {
-        let url = request.url();
-        let parts = url.split('?').take(2).collect::<Vec<_>>();
-        if let Some(query) = parts.get(1) {
-            let name = parts[0].strip_prefix("/").unwrap();
-            anyhow::ensure!(name == file_name);
-            let meta = ChunkMeta::from_str(query)?;
-            Ok(Some(meta))
+    fn parse_and_filter(request: &str, file_name: &str) -> anyhow::Result<Option<ChunkMeta>> {
+        console_log!("parse_and_filter {}", request);
+        let url = Url::parse(request)?;
+        if let Some(query) = url.query() {
+            let name = url.path().strip_prefix('/').unwrap();
+            // console_log!("parse_and_filter name {} file_name {}  query {}", name, file_name, query);
+            if name != file_name {
+                // not ours
+                Ok(None)
+            } else {
+                let meta = ChunkMeta::from_str(query)?;
+                // console_log!("chunk {:?}", meta);
+                Ok(Some(meta))
+            }
         } else {
             Ok(None)
         }
@@ -60,7 +96,7 @@ impl ChunkMeta {
 
     fn to_request_str(&self, file_name: &str) -> String {
         format!(
-            "{}/{:016x}-{:016x}-{:016x}",
+            "/{}?{:016x}-{:016x}-{:016x}",
             file_name, self.level, self.offset, self.len
         )
     }
@@ -76,27 +112,25 @@ impl FromStr for ChunkMeta {
     type Err = anyhow::Error;
 
     fn from_str(args: &str) -> Result<Self, Self::Err> {
-        let parts = args.split('_').collect::<Vec<&str>>();
+        let parts = args.split('-').collect::<Vec<&str>>();
         anyhow::ensure!(parts.len() == 3);
-        let lvl = u64::from_str_radix(parts[0], 16)?;
-        let ofs = u64::from_str_radix(parts[1], 16)?;
+        let level = u64::from_str_radix(parts[0], 16)?;
+        let offset = u64::from_str_radix(parts[1], 16)?;
         let len = u64::from_str_radix(parts[2], 16)?;
-        Ok(Self {
-            offset: ofs,
-            len,
-            level: lvl,
-        })
+        Ok(Self { level, offset, len })
     }
 }
 
 impl WebCacheFile {
-    async fn new(cache: web_sys::Cache, file_name: String) -> anyhow::Result<Self> {
-        let mut chunks = Self::chunks(&cache, &file_name).await?;
+    async fn new(cache: web_sys::Cache, file_name: &str) -> anyhow::Result<Self> {
+        let mut chunks = Self::chunks(&cache, file_name).await?;
+        console_log!("chunks {:#?}", chunks);
         let to_delete = Self::retain_relevant(&mut chunks);
+        console_log!("to_delete {:#?}", to_delete);
         Self::delete(&cache, &file_name, &to_delete).await?;
         Ok(Self {
             cache,
-            file_name,
+            file_name: file_name.to_owned(),
             chunks,
         })
     }
@@ -153,7 +187,7 @@ impl WebCacheFile {
         let keys = JsFuture::from(cache.keys()).await.map_err(js_to_anyhow)?;
         let chunks = Array::from(&keys)
             .iter()
-            .filter_map(|req| ChunkMeta::parse_and_filter(&Request::from(req), name).ok())
+            .filter_map(|req| ChunkMeta::parse_and_filter(&Request::from(req).url(), name).ok())
             .filter_map(|x| x)
             .collect::<Vec<_>>();
         Ok(chunks)
@@ -163,39 +197,76 @@ impl WebCacheFile {
         self.chunks.last().cloned().unwrap_or_default()
     }
 
-    async fn append(&mut self, data: &mut Vec<u8>) -> anyhow::Result<()> {
+    async fn append(&mut self, data: &mut Vec<u8>) -> anyhow::Result<u64> {
         let prev = self.prev();
         let chunk = ChunkMeta {
             level: prev.level,
             offset: prev.range().end,
             len: data.len().try_into()?,
         };
+        console_log!("prev {:?} chunk {:?}", self.prev(), chunk);
         let request = chunk.to_request_str(&self.file_name);
         let response = Response::new_with_opt_u8_array(Some(data)).map_err(js_to_anyhow)?;
         JsFuture::from(self.cache.put_with_str(&request, &response))
             .await
             .expect("insertion not possible");
         self.chunks.push(chunk);
-        Ok(())
+        Ok(chunk.range().end)
     }
 
-    async fn read(offset: u64, length: u64) -> anyhow::Result<Vec<u8>> {
-        todo!()
+    async fn read(&self, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
+        let len_u64 = range.end.saturating_sub(range.start);
+        let len: usize = len_u64.try_into()?;
+        let mut res = vec![0u8; len];
+        for chunk in self
+            .chunks
+            .iter()
+            .filter(|chunk| overlaps(chunk.range(), range.clone()))
+        {
+            let data = self.load(chunk).await?;
+            let (sr, tr) = ranges(chunk.range(), range.clone())?;
+            res[tr].copy_from_slice(&data[sr]);
+        }
+        Ok(res)
+    }
+
+    async fn load(&self, chunk: &ChunkMeta) -> anyhow::Result<Vec<u8>> {
+        let request: String = chunk.to_request_str(&self.file_name);
+        let response = Response::from(
+            JsFuture::from(self.cache.match_with_str(&request))
+                .await
+                .map_err(js_to_anyhow)
+                .context("no response")?,
+        );
+        let ab = ArrayBuffer::from(
+            JsFuture::from(
+                response
+                    .array_buffer()
+                    .map_err(js_to_anyhow)
+                    .context("response no array buffer")?,
+            )
+            .await
+            .map_err(js_to_anyhow)
+            .context("response no array buffer")?,
+        );
+        Ok(Uint8Array::new(&ab).to_vec())
     }
 }
 
-async fn keys(cache: &web_sys::Cache) -> std::result::Result<Vec<String>, JsValue> {
-    let keys = JsFuture::from(cache.keys()).await?;
-    let names = Array::from(&keys)
-        .iter()
-        .map(|req| Request::from(req).url())
-        .filter_map(|url| {
-            Url::parse(&url)
-                .ok()
-                .and_then(|x| x.path().strip_prefix("/").map(|x| x.to_owned()))
-        })
-        .collect::<Vec<_>>();
-    Ok(names)
+fn ranges(src: Range<u64>, tgt: Range<u64>) -> anyhow::Result<(Range<usize>, Range<usize>)> {
+    let src_len = src.end.saturating_sub(src.start);
+    let sr = i64::try_from(tgt.start.saturating_sub(src.start).min(src_len))?
+        ..i64::try_from(tgt.end.saturating_sub(src.start).min(src_len))?;
+    let t = i64::try_from(src.start)? - i64::try_from(tgt.start)?;
+    let tr = sr.start + t..sr.end + t;
+    Ok((
+        sr.start.try_into()?..sr.end.try_into()?,
+        tr.start.max(0).try_into()?..tr.end.max(0).try_into()?,
+    ))
+}
+
+fn overlaps(a: Range<u64>, b: Range<u64>) -> bool {
+    !((a.end <= b.start) || (b.end <= a.start))
 }
 
 // #[wasm_bindgen(start)]
@@ -216,23 +287,106 @@ fn js_to_anyhow(js: JsValue) -> anyhow::Error {
     anyhow::anyhow!("Damn {:?}", js)
 }
 
-fn err_to_jsvalue(value: impl std::error::Error) -> JsValue {
+fn err_to_jsvalue(value: impl ToString) -> JsValue {
     value.to_string().into()
 }
 
+// #[wasm_bindgen]
+// pub async fn start() -> Result<JsValue, JsValue> {
+//     let pool = ThreadPool::new(2).await?;
+//     let pool2 = pool.clone();
+//     pool.spawn_lazy(|| {
+//         async {
+//             let cache: web_sys::Cache =
+//                 JsFuture::from(worker_scope().caches().unwrap().open("cache"))
+//                     .await
+//                     .unwrap()
+//                     .into();
+//         }
+//         .boxed_local()
+//     });
+//     Ok(0.into())
+// }
+
 #[wasm_bindgen]
 pub async fn start() -> Result<JsValue, JsValue> {
-    let pool = ThreadPool::new(2).await?;
+    let _ = console_log::init_with_level(log::Level::Info);
+    ::console_error_panic_hook::set_once();
+    // cache_test().await.map_err(err_to_jsvalue)?;
+    pool_test().await.map_err(err_to_jsvalue)?;
+    Ok(5.into())
+}
+
+async fn pool_test() -> anyhow::Result<()> {
+    let pool = ThreadPool::new(2).await.map_err(js_to_anyhow)?;
     let pool2 = pool.clone();
-    pool.spawn_lazy(|| {
-        async {
-            let cache: web_sys::Cache =
-                JsFuture::from(worker_scope().caches().unwrap().open("cache"))
-                    .await
-                    .unwrap()
-                    .into();
+    // the outer spawn is necessary so we don't block on the main thread, which is not allowed
+    pool.spawn_lazy(move || {
+        async move {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            pool2.spawn_lazy(|| {
+                async {
+                    cache_test().await.unwrap();
+                    tx.send(()).unwrap();
+                }
+                .boxed_local()
+            });
+            block_on(rx).unwrap();
         }
         .boxed_local()
     });
-    Ok(0.into())
+    Ok(())
+}
+
+async fn cache_test() -> anyhow::Result<()> {
+    console_log!("{}", worker_scope().location().origin());
+    let dir = WebCacheDir::new("test").await?;
+    let mut file = dir.open("file1").await?;
+    for i in 0..5u8 {
+        let mut data = vec![i; 100];
+        file.append(&mut data).await?;
+    }
+    let data = file.read(10..240).await?;
+    console_log!("{:?}", dir);
+    console_log!("{:?}", file);
+    console_log!("{}", hex::encode(data));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlap_test() {
+        assert!(overlaps(0..1, 0..1));
+        assert!(!overlaps(0..1, 1..2));
+        assert!(!overlaps(1..2, 0..1));
+    }
+
+    #[test]
+    fn range_test() -> anyhow::Result<()> {
+        // chunk fits
+        let (s, t) = ranges(0..1, 0..1)?;
+        assert!(s == (0..1) && t == (0..1));
+        // chunk fits with room to spare
+        let (s, t) = ranges(10..20, 10..110)?;
+        assert!(s == (0..10) && t == (0..10));
+        // chunk too large
+        let (s, t) = ranges(10..110, 10..20)?;
+        assert!(s == (0..10) && t == (0..10));
+        // chunk end truncated
+        let (s, t) = ranges(10..20, 10..15)?;
+        assert!(s == (0..5) && t == (0..5));
+        // chunk start truncated
+        let (s, t) = ranges(10..20, 15..20)?;
+        assert!(s == (5..10) && t == (0..5));
+        // no overlap 1
+        let (s, t) = ranges(10..20, 100..150)?;
+        assert!(s == (10..10) && t == (0..0));
+        // no overlap 2
+        let (s, t) = ranges(100..150, 10..15)?;
+        assert!(s == (0..0) && t == (90..90));
+        Ok(())
+    }
 }
