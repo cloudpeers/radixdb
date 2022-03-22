@@ -5,6 +5,7 @@ use std::ops::Range;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use anyhow::Context;
 use futures::channel::mpsc::UnboundedSender;
@@ -82,17 +83,17 @@ impl ChunkMeta {
     }
 
     fn parse_and_filter(request: &str, file_name: &str) -> anyhow::Result<Option<ChunkMeta>> {
-        console_log!("parse_and_filter {}", request);
+        info!("parse_and_filter {}", request);
         let url = Url::parse(request)?;
         if let Some(query) = url.query() {
             let name = url.path().strip_prefix('/').unwrap();
-            // console_log!("parse_and_filter name {} file_name {}  query {}", name, file_name, query);
+            // info!("parse_and_filter name {} file_name {}  query {}", name, file_name, query);
             if name != file_name {
                 // not ours
                 Ok(None)
             } else {
                 let meta = ChunkMeta::from_str(query)?;
-                // console_log!("chunk {:?}", meta);
+                // info!("chunk {:?}", meta);
                 Ok(Some(meta))
             }
         } else {
@@ -130,9 +131,9 @@ impl FromStr for ChunkMeta {
 impl WebCacheFile {
     async fn new(cache: web_sys::Cache, file_name: &str) -> anyhow::Result<Self> {
         let mut chunks = Self::chunks(&cache, file_name).await?;
-        console_log!("chunks {:#?}", chunks);
+        info!("chunks {:#?}", chunks);
         let to_delete = Self::retain_relevant(&mut chunks);
-        console_log!("to_delete {:#?}", to_delete);
+        info!("to_delete {:#?}", to_delete);
         Self::delete(&cache, &file_name, &to_delete).await?;
         Ok(Self {
             cache,
@@ -235,29 +236,33 @@ impl WebCacheFile {
         range: Range<u64>,
         chunks: impl IntoIterator<Item = &ChunkMeta>,
     ) -> anyhow::Result<Vec<u8>> {
+        let t0 = js_sys::Date::now();
         let len = range.end.saturating_sub(range.start).try_into()?;
         let mut res = vec![0u8; len];
         for chunk in chunks.into_iter() {
-            let data = self.load(chunk).await?;
             let (sr, tr) = ranges(chunk.range(), range.clone())?;
-            res[tr].copy_from_slice(&data[sr]);
+            let t0 = js_sys::Date::now();
+            let data = self.load_range(chunk, sr).await?;
+            info!("load_range {}", js_sys::Date::now() - t0);
+            data.copy_to(&mut res[tr]);
         }
+        info!("load_chunks {}", js_sys::Date::now() - t0);
         Ok(res)
     }
 
     async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Vec<u8>> {
-        console_log!("at {}", start);
+        info!("load_length_prefixed index={}", start);
+        let t0 = js_sys::Date::now();
         let chunks = self
             .intersecting_chunks(start..start + 4)
             .collect::<Vec<_>>();
-
-        console_log!("intersecting chunks {:#?}", chunks);
         let end = chunks.iter().map(|x| x.range().end).max().unwrap_or(start);
         let mut res = self.load_chunks(start..end, chunks).await?;
         let len = usize::try_from(u32::from_be_bytes(res[0..4].try_into().unwrap()))?;
         anyhow::ensure!(res.len() >= len + 4);
         res.truncate(len + 4);
         res.splice(0..4, []);
+        info!("load_length_prefixed {}", js_sys::Date::now() - t0);
         Ok(res)
     }
 
@@ -266,9 +271,9 @@ impl WebCacheFile {
         let len: usize = len_u64.try_into()?;
         let mut res = vec![0u8; len];
         for chunk in self.intersecting_chunks(range.clone()) {
-            let data = self.load(chunk).await?;
             let (sr, tr) = ranges(chunk.range(), range.clone())?;
-            res[tr].copy_from_slice(&data[sr]);
+            let data = self.load_range(chunk, sr).await?;
+            data.copy_to(&mut res[tr]);
         }
         Ok(res)
     }
@@ -293,6 +298,70 @@ impl WebCacheFile {
             .context("response no array buffer")?,
         );
         Ok(Uint8Array::new(&ab).to_vec())
+    }
+
+    async fn load_range(
+        &self,
+        chunk: &ChunkMeta,
+        range: Range<usize>,
+    ) -> anyhow::Result<Uint8Array> {
+        let request: String = chunk.to_request_str(&self.file_name);
+
+        let t0 = js_sys::Date::now();
+        let response = Response::from(
+            JsFuture::from(self.cache.match_with_str(&request))
+                .await
+                .map_err(js_to_anyhow)
+                .context("no response")?,
+        );
+        info!("get response {}", js_sys::Date::now() - t0);
+        const USE_BLOB: bool = true;
+        let ab = if USE_BLOB {
+            let t0 = js_sys::Date::now();
+            let blob = web_sys::Blob::from(
+                JsFuture::from(
+                    response
+                        .blob()
+                        .map_err(js_to_anyhow)
+                        .context("response no blob")?,
+                )
+                .await
+                .map_err(js_to_anyhow)
+                .context("response no blob")?,
+            );
+            info!("load blob {}", js_sys::Date::now() - t0);
+            let t0 = js_sys::Date::now();
+            let slice = blob
+                .slice_with_i32_and_i32(range.start.try_into()?, range.end.try_into()?)
+                .map_err(js_to_anyhow)?;
+            info!("slice blob {}", js_sys::Date::now() - t0);
+            let t0 = js_sys::Date::now();
+            let res = ArrayBuffer::from(
+                JsFuture::from(slice.array_buffer())
+                    .await
+                    .map_err(js_to_anyhow)
+                    .context("doh")?,
+            );
+            info!("blob -> arraybuffer {}", js_sys::Date::now() - t0);
+            res
+        } else {
+            let ab = ArrayBuffer::from(
+                JsFuture::from(
+                    response
+                        .array_buffer()
+                        .map_err(js_to_anyhow)
+                        .context("response no array buffer")?,
+                )
+                .await
+                .map_err(js_to_anyhow)
+                .context("response no array buffer")?,
+            );
+            ab.slice_with_end(range.start.try_into()?, range.end.try_into()?)
+        };
+        let t0 = js_sys::Date::now();
+        let ua = Uint8Array::new(&ab);
+        info!("convert to uint8array {}", js_sys::Date::now() - t0);
+        Ok(ua)
     }
 }
 
@@ -327,7 +396,7 @@ impl IoManager {
     }
 
     async fn run(mut self) {
-        console_log!("IoManager run");
+        info!("IoManager run");
         while let Some(cmd) = self.queue.next().await {
             match cmd {
                 Command::Read { offset, cb } => {
@@ -441,6 +510,7 @@ fn err_to_jsvalue(value: impl ToString) -> JsValue {
 pub async fn start() -> Result<JsValue, JsValue> {
     let _ = console_log::init_with_level(log::Level::Info);
     ::console_error_panic_hook::set_once();
+    info!("");
     // cache_test().await.map_err(err_to_jsvalue)?;
     pool_test().await.map_err(err_to_jsvalue)?;
     Ok(5.into())
@@ -452,7 +522,9 @@ async fn pool_test() -> anyhow::Result<()> {
     // the outer spawn is necessary so we don't block on the main thread, which is not allowed
     pool.spawn_lazy(move || {
         async move {
-            console_log!("starting cache_test_sync");
+            info!("starting cache_bench");
+            cache_bench().await.unwrap();
+            info!("starting cache_test_sync");
             cache_test_sync(pool2.clone()).unwrap();
             let (tx, rx) = futures::channel::oneshot::channel();
             pool2.spawn_lazy(|| {
@@ -470,7 +542,7 @@ async fn pool_test() -> anyhow::Result<()> {
 }
 
 async fn cache_test() -> anyhow::Result<()> {
-    console_log!("{}", worker_scope().location().origin());
+    info!("{}", worker_scope().location().origin());
     let dir = WebCacheDir::new("test").await?;
     let mut file = dir.open("file1").await?;
     for i in 0..5u8 {
@@ -478,28 +550,56 @@ async fn cache_test() -> anyhow::Result<()> {
         file.append(&mut data).await?;
     }
     let data = file.read(10..240).await?;
-    console_log!("{:?}", dir);
-    console_log!("{:?}", file);
-    console_log!("{}", hex::encode(data));
+    info!("{:?}", dir);
+    info!("{:?}", file);
+    info!("{}", hex::encode(data));
+    Ok(())
+}
+
+fn time<T>(text: &str, f: impl FnOnce() -> T) -> T {
+    let t0 = js_sys::Date::now();
+    let res = f();
+    let dt = js_sys::Date::now() - t0;
+    info!("{} {}", text, dt);
+    res
+}
+
+async fn cache_bench() -> anyhow::Result<()> {
+    let dir = WebCacheDir::new("bench").await?;
+    let mut file = dir.open("file1").await?;
+    let mut data = vec![0u8; 1024 * 1024 * 4];
+    data[0..4].copy_from_slice(&100u32.to_be_bytes());
+    let t0 = js_sys::Date::now();
+    file.append(&mut data).await?;
+    let dt = js_sys::Date::now() - t0;
+    info!("write {}", dt);
+    let t0 = js_sys::Date::now();
+    let blob = file.load_length_prefixed(0).await?;
+    let dt = js_sys::Date::now() - t0;
+    info!("read {} {}", dt, blob.len());
     Ok(())
 }
 
 fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
-    console_log!("{}", worker_scope().location().origin());
     let file = SyncFile::new("sync".into(), "test".into(), pool);
-    let elems = (0..100u8)
-        .map(|i| (vec![i], i.to_string().as_bytes().to_vec()))
+    let elems = (0..1000)
+        .map(|i| {
+            (
+                i.to_string().as_bytes().to_vec(),
+                i.to_string().as_bytes().to_vec(),
+            )
+        })
         .collect::<Vec<_>>();
     let mut store: DynBlobStore = Box::new(file);
     let mut tree: TreeNode = elems
         .iter()
         .map(|(k, v)| (k.as_ref(), v.as_ref()))
         .collect();
-    console_log!("{:?}", tree);
+    info!("{:?}", tree);
     tree.attach(&mut store)?;
-    console_log!("{:?}", tree);
+    info!("{:?}", tree);
     tree.detach(&store, true)?;
-    console_log!("{:?}", tree);
+    info!("{:?}", tree);
     Ok(())
 }
 
