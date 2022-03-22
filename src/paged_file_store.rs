@@ -187,6 +187,10 @@ impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
     fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
         self.0.lock().append(data)
     }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

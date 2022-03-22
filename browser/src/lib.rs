@@ -252,12 +252,12 @@ impl WebCacheFile {
         range: Range<u64>,
         chunks: impl IntoIterator<Item = &ChunkMeta>,
     ) -> anyhow::Result<Vec<u8>> {
-        let t0 = js_sys::Date::now();
+        // let t0 = js_sys::Date::now();
         let len = range.end.saturating_sub(range.start).try_into()?;
         let mut res = vec![0u8; len];
         for chunk in chunks.into_iter() {
             let (sr, tr) = ranges(chunk.range(), range.clone())?;
-            let t0 = js_sys::Date::now();
+            // let t0 = js_sys::Date::now();
             let data = self.load_range(chunk, sr).await?;
             // info!("load_range {}", js_sys::Date::now() - t0);
             data.copy_to(&mut res[tr]);
@@ -322,8 +322,7 @@ impl WebCacheFile {
         range: Range<usize>,
     ) -> anyhow::Result<Uint8Array> {
         let request: String = chunk.to_request_str(&self.file_name);
-
-        let t0 = js_sys::Date::now();
+        // let t0 = js_sys::Date::now();
         let response = Response::from(
             JsFuture::from(self.cache.match_with_str(&request))
                 .await
@@ -413,6 +412,7 @@ enum Command {
         offset: u64,
         cb: oneshot::Sender<anyhow::Result<Vec<u8>>>,
     },
+    Shutdown,
 }
 
 struct IoManager {
@@ -452,7 +452,7 @@ impl IoManager {
         file_name: SharedStr,
         data: Vec<u8>,
     ) -> anyhow::Result<u64> {
-        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        let (_, files) = self.dirs.get_mut(&dir).context("dir not open")?;
         let file = files.get_mut(&file_name).context("file not open")?;
         file.append_length_prefixed(data).await
     }
@@ -463,7 +463,7 @@ impl IoManager {
         file_name: SharedStr,
         offset: u64,
     ) -> anyhow::Result<Vec<u8>> {
-        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        let (_, files) = self.dirs.get_mut(&dir).context("dir not open")?;
         let file = files.get_mut(&file_name).context("file not open")?;
         file.load_length_prefixed(offset).await
     }
@@ -520,6 +520,7 @@ impl IoManager {
                 } => {
                     let _ = cb.send(self.delete_file(dir_name, file_name).await);
                 }
+                Command::Shutdown => break,
             }
         }
     }
@@ -531,18 +532,28 @@ pub struct SyncFs {
 }
 
 impl SyncFs {
-    fn new(pool: ThreadPool) -> anyhow::Result<Self> {
+    pub fn new(pool: ThreadPool) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::unbounded();
+        let (init_done_tx, init_done_rx) = oneshot::channel();
         pool.spawn_lazy(|| {
             async move {
-                let manager = IoManager::new(rx).unwrap();
-                manager.run().await;
+                match IoManager::new(rx) {
+                    Ok(manager) => {
+                        let _ = init_done_tx.send(Ok(()));
+                        manager.run().await;
+                    }
+                    Err(cause) => {
+                        let _ = init_done_tx.send(Err(cause));
+                    }
+                }
             }
             .boxed_local()
         });
+        // this will fail if we use this on the main thread, since it won't allow us to block
+        block_on(init_done_rx)??;
         Ok(Self { tx })
     }
-    fn open_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<SyncDir> {
+    pub fn open_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<SyncDir> {
         let dir_name = dir_name.into();
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::OpenDir {
@@ -555,7 +566,7 @@ impl SyncFs {
             tx: self.tx.clone(),
         })
     }
-    fn delete_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<SyncDir> {
+    pub fn delete_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<SyncDir> {
         let dir_name = dir_name.into();
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::DeleteDir {
@@ -577,7 +588,7 @@ pub struct SyncDir {
 }
 
 impl SyncDir {
-    fn open_file(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<SyncFile> {
+    pub fn open_file(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<SyncFile> {
         let file_name = file_name.into();
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::OpenFile {
@@ -592,6 +603,18 @@ impl SyncDir {
             tx: self.tx.clone(),
         })
     }
+
+    pub fn delete_file(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<bool> {
+        let file_name = file_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::DeleteFile {
+            dir_name: self.dir_name.clone(),
+            file_name: file_name.clone(),
+            cb: tx,
+        })?;
+        let res = block_on(rx)??;
+        Ok(res)
+    }
 }
 
 #[derive(Debug)]
@@ -601,15 +624,7 @@ pub struct SyncFile {
     tx: mpsc::UnboundedSender<Command>,
 }
 
-impl SyncFile {
-    fn new(dir_name: SharedStr, file_name: SharedStr, tx: mpsc::UnboundedSender<Command>) -> Self {
-        Self {
-            dir_name,
-            file_name,
-            tx,
-        }
-    }
-}
+impl SyncFile {}
 
 impl radixdb::BlobStore for SyncFile {
     fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
@@ -622,6 +637,10 @@ impl radixdb::BlobStore for SyncFile {
         })?;
         let data = block_on(rx)??;
         Ok(Blob::from_slice(&data))
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
@@ -681,6 +700,20 @@ impl From<JsValue> for JsError {
     }
 }
 
+impl TryFrom<JsError> for JsValue {
+    type Error = JsValue;
+
+    fn try_from(value: JsError) -> Result<Self, Self::Error> {
+        match value {
+            JsError::Stringified(txt) => match JSON::parse(&txt) {
+                Ok(value) => Ok(value),
+                Err(cause) => Err(cause),
+            },
+            JsError::Error(text) => Err(text.into()),
+        }
+    }
+}
+
 fn err_to_jsvalue(value: anyhow::Error) -> JsValue {
     match value.downcast::<JsError>() {
         Ok(inner) => match inner {
@@ -713,7 +746,7 @@ async fn pool_test() -> anyhow::Result<()> {
             info!("starting cache_test");
             cache_test().await.unwrap();
             info!("starting cache_test_sync");
-            cache_test_sync(pool2.clone()).unwrap();
+            cache_test_sync(pool2).unwrap();
         }
         .boxed_local()
     });

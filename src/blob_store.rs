@@ -11,6 +11,8 @@ pub trait BlobStore: Debug + Send + Sync {
     fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>>;
 
     fn append(&self, data: &[u8]) -> anyhow::Result<u64>;
+
+    fn flush(&self) -> anyhow::Result<()>;
 }
 
 pub type DynBlobStore = Box<dyn BlobStore>;
@@ -30,6 +32,10 @@ impl BlobStore for NoStore {
     }
 
     fn append(&self, _: &[u8]) -> anyhow::Result<u64> {
+        anyhow::bail!("no store");
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
         anyhow::bail!("no store");
     }
 }
@@ -68,6 +74,10 @@ impl BlobStore for MemStore {
         let blob = Blob::arc_from_byte_slice(sluce);
         data.insert(id, blob);
         Ok(id)
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -251,6 +261,10 @@ impl<const SIZE: usize> BlobStore for PagedMemStore<SIZE> {
 
     fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
         self.0.lock().append(data)
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
