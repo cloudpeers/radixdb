@@ -1,0 +1,167 @@
+use futures::channel::mpsc::UnboundedSender;
+use futures::{
+    channel::{mpsc, oneshot},
+    executor::block_on,
+};
+use radixdb::Blob;
+use std::fmt::Debug;
+
+use crate::SharedStr;
+
+/// protocol for syncfs
+#[derive(Debug)]
+pub(crate) enum Command {
+    OpenDir {
+        dir_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<()>>,
+    },
+    DeleteDir {
+        dir_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    OpenFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<()>>,
+    },
+    DeleteFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    AppendFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        data: Vec<u8>,
+        cb: oneshot::Sender<anyhow::Result<u64>>,
+    },
+    ReadFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        offset: u64,
+        cb: oneshot::Sender<anyhow::Result<Vec<u8>>>,
+    },
+    Shutdown,
+}
+
+/// A synchronous virtual file system that can be backed by different impls depending on the
+/// browser capabilities
+#[derive(Debug)]
+pub struct SyncFs {
+    tx: mpsc::UnboundedSender<Command>,
+}
+
+impl SyncFs {
+    pub(crate) fn new(tx: UnboundedSender<Command>) -> Self {
+        Self { tx }
+    }
+
+    /// open a directory
+    pub fn open_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<SyncDir> {
+        let dir_name = dir_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::OpenDir {
+            dir_name: dir_name.clone(),
+            cb: tx,
+        })?;
+        block_on(rx)??;
+        Ok(SyncDir {
+            dir_name,
+            tx: self.tx.clone(),
+        })
+    }
+
+    /// delete a directory
+    ///
+    /// will return true if there was a directory of that name, otherwise false
+    pub fn delete_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<bool> {
+        let dir_name = dir_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::DeleteDir {
+            dir_name: dir_name.clone(),
+            cb: tx,
+        })?;
+        let res = block_on(rx)??;
+        Ok(res)
+    }
+
+    /// manual shutdown of all files and directories of this fs
+    pub fn unmount(&self) {
+        let _ = self.tx.unbounded_send(Command::Shutdown);
+    }
+}
+
+#[derive(Debug)]
+pub struct SyncDir {
+    dir_name: SharedStr,
+    tx: mpsc::UnboundedSender<Command>,
+}
+
+impl SyncDir {
+    pub fn open_file(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<SyncFile> {
+        let file_name = file_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::OpenFile {
+            dir_name: self.dir_name.clone(),
+            file_name: file_name.clone(),
+            cb: tx,
+        })?;
+        block_on(rx)??;
+        Ok(SyncFile {
+            dir_name: self.dir_name.clone(),
+            file_name: file_name.clone(),
+            tx: self.tx.clone(),
+        })
+    }
+
+    pub fn delete_file(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<bool> {
+        let file_name = file_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::DeleteFile {
+            dir_name: self.dir_name.clone(),
+            file_name: file_name.clone(),
+            cb: tx,
+        })?;
+        let res = block_on(rx)??;
+        Ok(res)
+    }
+}
+
+#[derive(Debug)]
+pub struct SyncFile {
+    dir_name: SharedStr,
+    file_name: SharedStr,
+    tx: mpsc::UnboundedSender<Command>,
+}
+
+impl SyncFile {}
+
+impl radixdb::BlobStore for SyncFile {
+    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::ReadFile {
+            offset: id,
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            cb: tx,
+        })?;
+        let data = block_on(rx)??;
+        Ok(Blob::from_slice(&data))
+    }
+
+    fn flush(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::AppendFile {
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            data: data.to_vec(),
+            cb: tx,
+        })?;
+        let offset = block_on(rx)??;
+        Ok(offset)
+    }
+}
