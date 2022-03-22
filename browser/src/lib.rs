@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
+use std::fmt::Debug;
+use std::fmt::Display;
 use std::ops::Range;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -10,6 +12,7 @@ use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use futures::{channel::mpsc, executor::block_on};
 use futures::{FutureExt, StreamExt};
+use js_sys::JSON;
 use js_sys::Promise;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use log::*;
@@ -29,6 +32,7 @@ use web_sys::{CacheQueryOptions, Request, Response};
 //     ($($t:tt)*) => (web_sys::console::log_1(&format_args!($($t)*).to_string().into()))
 // }
 
+/// A string that can be cheaply shared over threads
 type SharedStr = Arc<str>;
 
 #[derive(Debug, Clone)]
@@ -671,8 +675,31 @@ fn worker_name() -> String {
     worker_scope().name().as_str().to_string()
 }
 
-fn js_to_anyhow(js: JsValue) -> anyhow::Error {
-    anyhow::anyhow!("Damn {:?}", js)
+#[derive(Debug)]
+enum JsError {
+    Stringified(String),
+    Error(String),
+}
+
+impl Display for JsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl std::error::Error for JsError {}
+
+impl From<JsValue> for JsError {
+    fn from(value: JsValue) -> Self {
+        match JSON::stringify(&value) {
+            Ok(text) => JsError::Stringified(text.into()),
+            Err(cause) => JsError::Error(format!("{:?}", cause)),
+        }
+    }
+}
+
+fn js_to_anyhow(err: JsValue) -> anyhow::Error {    
+    anyhow::Error::new(JsError::from(err))
 }
 
 fn err_to_jsvalue(value: impl ToString) -> JsValue {
