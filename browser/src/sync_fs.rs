@@ -44,7 +44,7 @@ pub(crate) enum Command {
         dir_name: SharedStr,
         file_name: SharedStr,
         offset: u64,
-        cb: oneshot::Sender<anyhow::Result<Vec<u8>>>,
+        cb: oneshot::Sender<anyhow::Result<Blob<u8>>>,
     },
     Shutdown,
 }
@@ -151,7 +151,7 @@ impl radixdb::BlobStore for SyncFile {
             cb: tx,
         })?;
         let data = block_on(rx)??;
-        Ok(Blob::from_slice(&data))
+        Ok(data)
     }
 
     fn flush(&self) -> anyhow::Result<()> {

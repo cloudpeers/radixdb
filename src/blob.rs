@@ -65,6 +65,7 @@ pub trait BlobOwner: Send + Sync + std::fmt::Debug + 'static {
     fn inc(&self, _extra: usize) {}
     fn dec(&self, _extra: usize) {}
     fn get_slice(&self, extra: usize) -> &[u8];
+    fn is_valid(&self, extra: usize) -> bool;
 }
 
 impl Blob<u8> {
@@ -80,8 +81,13 @@ impl Blob<u8> {
 impl<T> Blob<T> {
     pub fn cast<U>(&self) -> anyhow::Result<Blob<U>> {
         match self {
-            Self::Inline { .. } => Err(anyhow::anyhow!("casting not supported for inline")),
-            Self::ArcVecT { .. } => Err(anyhow::anyhow!("casting not supported for arc")),
+            Self::ArcVecU8 { arc, .. } => {
+                let _ = slice_cast::<u8, U>(arc.as_ref().as_ref())?;
+                Ok(Blob::ArcVecU8 {
+                    arc: arc.clone(),
+                    p: PhantomData,
+                })
+            }
             Self::Custom { owner, extra, .. } => {
                 let _ = slice_cast::<u8, U>(owner.get_slice(*extra))?;
                 owner.inc(*extra);
@@ -91,13 +97,11 @@ impl<T> Blob<T> {
                     p: PhantomData,
                 })
             }
-            Self::ArcVecU8 { arc, .. } => {
-                let _ = slice_cast::<u8, U>(arc.as_ref().as_ref())?;
-                Ok(Blob::ArcVecU8 {
-                    arc: arc.clone(),
-                    p: PhantomData,
-                })
-            }
+            Self::Inline { .. } => Err(anyhow::anyhow!("casting not supported for inline")),
+            Self::ArcVecT { .. } => Err(anyhow::anyhow!(
+                "casting not supported for ArcVecT<{}>",
+                std::any::type_name::<T>()
+            )),
         }
     }
 
@@ -112,13 +116,14 @@ impl<T> Blob<T> {
         }
     }
 
-    pub fn custom(cbs: Arc<dyn BlobOwner>, extra: usize) -> Self {
+    pub fn custom(cbs: Arc<dyn BlobOwner>, extra: usize) -> anyhow::Result<Self> {
+        anyhow::ensure!(cbs.is_valid(extra));
         cbs.inc(extra);
-        Self::Custom {
+        Ok(Self::Custom {
             owner: cbs,
             extra,
             p: PhantomData,
-        }
+        })
     }
 
     pub fn from_slice(slice: &[T]) -> Self

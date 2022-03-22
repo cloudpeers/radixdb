@@ -842,7 +842,7 @@ fn intersects(
     Ok(res)
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct IterKey(Arc<Vec<u8>>);
 
 impl IterKey {

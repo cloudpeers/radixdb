@@ -21,6 +21,7 @@ wasm-futures-executor = { git = "https://github.com/rklaehn/wasm-futures-executo
 radixdb = { path = "../" }
 url = "2.2.2"
 hex = "0.4.3"
+num-traits = "0.2.14"
 
 [dependencies.web-sys]
 version = "0.3.53"

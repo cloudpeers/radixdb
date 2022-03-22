@@ -1,6 +1,7 @@
 use anyhow::Context;
 use futures::{channel::mpsc, FutureExt, StreamExt};
 use js_sys::{Array, ArrayBuffer, Uint8Array};
+use radixdb::Blob;
 use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
@@ -13,7 +14,7 @@ use wasm_futures_executor::ThreadPool;
 use web_sys::{CacheQueryOptions, Request, Response};
 
 use crate::{
-    js_async, overlaps, ranges, sync_fs::SyncFs, worker_scope, Command, JsError, SharedStr,
+    js_async, overlap, ranges, sync_fs::SyncFs, worker_scope, Command, JsError, SharedStr,
 };
 
 /// A virtual file system that uses the browser cache as storage
@@ -46,11 +47,11 @@ impl WebCacheFs {
         Ok(())
     }
 
-    async fn open_file(&mut self, dir: SharedStr, file: SharedStr) -> anyhow::Result<()> {
-        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
-        if !files.contains_key(&file) {
-            let wcf = WebCacheFile::new(dir.cache.clone(), file.clone()).await?;
-            files.insert(file, wcf);
+    async fn open_file(&mut self, dir_name: SharedStr, file_name: SharedStr) -> anyhow::Result<()> {
+        let (dir, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
+        if !files.contains_key(&file_name) {
+            let wcf = dir.open_file(file_name.clone()).await?;
+            files.insert(file_name, wcf);
         }
         Ok(())
     }
@@ -77,7 +78,7 @@ impl WebCacheFs {
         dir: SharedStr,
         file_name: SharedStr,
         offset: u64,
-    ) -> anyhow::Result<Vec<u8>> {
+    ) -> anyhow::Result<Blob<u8>> {
         let (_, files) = self.dirs.get_mut(&dir).context("dir not open")?;
         let file = files.get_mut(&file_name).context("file not open")?;
         file.load_length_prefixed(offset).await
@@ -173,12 +174,12 @@ impl WebCacheDir {
         Ok(Self { cache })
     }
 
-    pub(crate) async fn open(&self, file_name: SharedStr) -> anyhow::Result<WebCacheFile> {
+    pub(crate) async fn open_file(&self, file_name: SharedStr) -> anyhow::Result<WebCacheFile> {
         WebCacheFile::new(self.cache.clone(), file_name).await
     }
 
     pub(crate) async fn delete(&self, file_name: &str) -> anyhow::Result<bool> {
-        let res = js_async::<JsValue>(
+        let res: JsValue = js_async(
             self.cache.delete_with_str_and_options(
                 &format!("/{}", file_name),
                 CacheQueryOptions::new()
@@ -203,7 +204,7 @@ pub struct WebCacheFile {
 
 impl WebCacheFile {
     pub(crate) async fn new(cache: web_sys::Cache, file_name: SharedStr) -> anyhow::Result<Self> {
-        let mut chunks = Self::chunks(&cache, &file_name).await?;
+        let mut chunks = chunks(&cache, &file_name).await?;
         let to_delete = Self::retain_relevant(&mut chunks);
         Self::delete(&cache, &file_name, &to_delete).await?;
         Ok(Self {
@@ -254,19 +255,9 @@ impl WebCacheFile {
     ) -> anyhow::Result<()> {
         for chunk in to_delete {
             let request = chunk.to_request_str(file_name);
-            js_async::<JsValue>(cache.delete_with_str(&request)).await?;
+            let _: JsValue = js_async(cache.delete_with_str(&request)).await?;
         }
         Ok(())
-    }
-
-    async fn chunks(cache: &web_sys::Cache, name: &str) -> anyhow::Result<Vec<ChunkMeta>> {
-        let keys = js_async::<JsValue>(cache.keys()).await?;
-        let chunks = Array::from(&keys)
-            .iter()
-            .filter_map(|req| ChunkMeta::parse_and_filter(&Request::from(req).url(), name).ok())
-            .filter_map(|x| x)
-            .collect::<Vec<_>>();
-        Ok(chunks)
     }
 
     fn prev(&self) -> ChunkMeta {
@@ -287,7 +278,7 @@ impl WebCacheFile {
         };
         let request = chunk.to_request_str(&self.file_name);
         let response = Response::new_with_opt_u8_array(Some(data)).map_err(JsError::from)?;
-        js_async::<JsValue>(self.cache.put_with_str(&request, &response)).await?;
+        let _: JsValue = js_async(self.cache.put_with_str(&request, &response)).await?;
         self.chunks.push(chunk);
         Ok(chunk.range().start)
     }
@@ -303,7 +294,7 @@ impl WebCacheFile {
     fn intersecting_chunks(&self, range: Range<u64>) -> impl Iterator<Item = &ChunkMeta> {
         self.chunks
             .iter()
-            .filter(move |chunk| overlaps(chunk.range(), range.clone()))
+            .filter(move |chunk| overlap(chunk.range(), range.clone()))
     }
 
     async fn load_chunks(
@@ -325,18 +316,17 @@ impl WebCacheFile {
         Ok(res)
     }
 
-    pub(crate) async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Vec<u8>> {
+    pub(crate) async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Blob<u8>> {
         // info!("load_length_prefixed index={}", start);
         // let t0 = js_sys::Date::now();
         let chunks = self
             .intersecting_chunks(start..start + 4)
             .collect::<Vec<_>>();
         let end = chunks.iter().map(|x| x.range().end).max().unwrap_or(start);
-        let mut res = self.load_chunks(start..end, chunks).await?;
+        let res = self.load_chunks(start..end, chunks).await?;
         let len = usize::try_from(u32::from_be_bytes(res[0..4].try_into().unwrap()))?;
         anyhow::ensure!(res.len() >= len + 4);
-        res.truncate(len + 4);
-        res.splice(0..4, []);
+        let res = Blob::arc_from_byte_slice(&res[4..len + 4]);
         // info!("load_length_prefixed {}", js_sys::Date::now() - t0);
         Ok(res)
     }
@@ -355,8 +345,8 @@ impl WebCacheFile {
 
     async fn load(&self, chunk: &ChunkMeta) -> anyhow::Result<Vec<u8>> {
         let request: String = chunk.to_request_str(&self.file_name);
-        let response = js_async::<Response>(self.cache.match_with_str(&request)).await?;
-        let ab = js_async::<ArrayBuffer>(response.array_buffer().map_err(JsError::from)?).await?;
+        let response: Response = js_async(self.cache.match_with_str(&request)).await?;
+        let ab: ArrayBuffer = js_async(response.array_buffer().map_err(JsError::from)?).await?;
         Ok(Uint8Array::new(&ab).to_vec())
     }
 
@@ -392,6 +382,16 @@ impl WebCacheFile {
         // info!("convert to uint8array {}", js_sys::Date::now() - t0);
         Ok(ua)
     }
+}
+
+async fn chunks(cache: &web_sys::Cache, name: &str) -> anyhow::Result<Vec<ChunkMeta>> {
+    let keys: JsValue = js_async(cache.keys()).await?;
+    let chunks = Array::from(&keys)
+        .iter()
+        .filter_map(|req| ChunkMeta::parse_and_filter(&Request::from(req).url(), name).ok())
+        .filter_map(|x| x)
+        .collect::<Vec<_>>();
+    Ok(chunks)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]

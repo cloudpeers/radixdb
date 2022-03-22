@@ -119,6 +119,15 @@ impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
         let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         &data[base..base + length]
     }
+    fn is_valid(&self, offset: usize) -> bool {
+        let data = &self.as_ref().data;
+        if offset + 4 <= data.len() {
+            let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+            offset + 4 + length <= data.len()
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -157,8 +166,7 @@ impl<const SIZE: usize> PageBuilder<SIZE> {
 impl<const SIZE: usize> Page<SIZE> {
     /// try to get the bytes at the given offset
     fn bytes(&self, offset: usize) -> anyhow::Result<Blob<u8>> {
-        anyhow::ensure!(offset + 4 < SIZE);
-        Ok(Blob::<u8>::custom(self.0.clone(), offset))
+        Blob::<u8>::custom(self.0.clone(), offset)
     }
 }
 

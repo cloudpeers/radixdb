@@ -10,7 +10,7 @@ mod paged_file_store;
 #[cfg(not(target_arch = "wasm32"))]
 mod paged_file_store2;
 mod tree;
-pub use blob::Blob;
+pub use blob::{Blob, BlobOwner};
 pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStore, PagedMemStore, NO_STORE};
 #[cfg(not(target_arch = "wasm32"))]
 pub use paged_file_store::PagedFileStore;
@@ -147,17 +147,20 @@ fn slice_cast<T, U>(value: &[T]) -> anyhow::Result<&[U]> {
 
 fn slice_cast_raw<T, U>(ptr: *const T, tsize: usize) -> anyhow::Result<(*const U, usize)> {
     let bytes = tsize * std::mem::size_of::<T>();
+    let align = (ptr as usize) % std::mem::align_of::<U>();
     anyhow::ensure!(
-        (ptr as usize) % std::mem::align_of::<U>() == 0,
-        "pointer is not properly aligned for target type. std.mem::align_of::<{}>() is {}",
+        align == 0,
+        "pointer is not properly aligned for target type. std.mem::align_of::<{}>() is {}, align is {}",
         std::any::type_name::<T>(),
         std::mem::align_of::<U>(),
+        align,
     );
     anyhow::ensure!(
         bytes % std::mem::size_of::<U>() == 0,
-        "byte size is not a multiple of target size. std::mem::size_of::<{}>() is {}",
+        "byte size is not a multiple of target size. std::mem::size_of::<{}>() is {}, byte length is {}",
         std::any::type_name::<T>(),
         std::mem::size_of::<U>(),
+        bytes,
     );
     let usize = bytes / std::mem::size_of::<U>();
     let ptr = ptr as *const U;
@@ -170,7 +173,10 @@ fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
 }
 
 fn read_length_prefixed(source: &[u8], offset: usize) -> &[u8] {
-    let len = u32::from_be_bytes(source[offset..offset + 4].try_into().unwrap()) as usize;
+    let len = usize::try_from(u32::from_be_bytes(
+        source[offset..offset + 4].try_into().unwrap(),
+    ))
+    .unwrap();
     &source[offset + 4..offset + 4 + len]
 }
 

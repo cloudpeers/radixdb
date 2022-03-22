@@ -1,5 +1,5 @@
 use futures::FutureExt;
-use js_sys::{Promise, JSON};
+use js_sys::{Date, Promise, JSON};
 use log::info;
 use radixdb::{DynBlobStore, TreeNode};
 use std::{
@@ -18,6 +18,8 @@ use sync_fs::Command;
 pub use sync_fs::{SyncDir, SyncFile, SyncFs};
 mod simple_web_cache_fs;
 pub use simple_web_cache_fs::WebCacheFs as SimpleWebCacheFs;
+mod paging_web_cache_fs;
+pub use paging_web_cache_fs::WebCacheFs as PagingWebCacheFs;
 
 use crate::simple_web_cache_fs::WebCacheDir;
 
@@ -37,6 +39,12 @@ pub(crate) async fn js_async<T: From<JsValue>>(promise: Promise) -> anyhow::Resu
 }
 
 /// given two ranges, returns the source and target range for associated slices
+///
+/// this function answers the question: given a slice `src_slice`, a range `src`,
+/// a slice `tgt_slice` and a range `tgt`, what range of the source slice will be copied
+/// into what range of the target slice.
+///
+/// it properly handles all u64 -> usize conversion overflows
 fn ranges(src: Range<u64>, tgt: Range<u64>) -> anyhow::Result<(Range<usize>, Range<usize>)> {
     let src_len = src.end.saturating_sub(src.start);
     let sr = i64::try_from(tgt.start.saturating_sub(src.start).min(src_len))?
@@ -50,7 +58,7 @@ fn ranges(src: Range<u64>, tgt: Range<u64>) -> anyhow::Result<(Range<usize>, Ran
 }
 
 /// true if two ranges overlap
-fn overlaps(a: Range<u64>, b: Range<u64>) -> bool {
+fn overlap(a: Range<u64>, b: Range<u64>) -> bool {
     !((a.end <= b.start) || (b.end <= a.start))
 }
 
@@ -111,9 +119,9 @@ mod tests {
 
     #[test]
     fn overlap_test() {
-        assert!(overlaps(0..1, 0..1));
-        assert!(!overlaps(0..1, 1..2));
-        assert!(!overlaps(1..2, 0..1));
+        assert!(overlap(0..1, 0..1));
+        assert!(!overlap(0..1, 1..2));
+        assert!(!overlap(1..2, 0..1));
     }
 
     #[test]
@@ -145,7 +153,7 @@ mod tests {
 
 #[wasm_bindgen]
 pub async fn start() -> Result<JsValue, JsValue> {
-    let _ = console_log::init_with_level(log::Level::Info);
+    let _ = console_log::init_with_level(log::Level::Debug);
     ::console_error_panic_hook::set_once();
     pool_test().await.map_err(err_to_jsvalue)?;
     Ok(5.into())
@@ -174,7 +182,7 @@ async fn cache_test() -> anyhow::Result<()> {
     let dir = WebCacheDir::new("test").await?;
     let deleted = dir.delete("file1").await?;
     info!("deleted {}", deleted);
-    let mut file = dir.open("file1".into()).await?;
+    let mut file = dir.open_file("file1".into()).await?;
     for i in 0..5u8 {
         let mut data = vec![i; 100];
         file.append(&mut data).await?;
@@ -188,7 +196,7 @@ async fn cache_test() -> anyhow::Result<()> {
 
 async fn cache_bench() -> anyhow::Result<()> {
     let dir = WebCacheDir::new("bench").await?;
-    let mut file = dir.open("file1".into()).await?;
+    let mut file = dir.open_file("file1".into()).await?;
     let mut data = vec![0u8; 1024 * 1024 * 4];
     data[0..4].copy_from_slice(&100u32.to_be_bytes());
     let t0 = js_sys::Date::now();
@@ -203,7 +211,7 @@ async fn cache_bench() -> anyhow::Result<()> {
 }
 
 fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
-    let fs = SimpleWebCacheFs::new(pool);
+    let fs = PagingWebCacheFs::new(pool);
     fs.delete_dir("sync")?;
     let dir = fs.open_dir("sync")?;
     dir.delete_file("test")?;
@@ -217,16 +225,52 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
         })
         .collect::<Vec<_>>();
     let mut store: DynBlobStore = Box::new(file);
+    let t0 = Date::now();
+    info!("building tree");
     let mut tree: TreeNode = elems
         .iter()
         .map(|(k, v)| (k.as_ref(), v.as_ref()))
         .collect();
-    info!("unattached tree {:?}", tree);
+    info!("unattached tree {:?} {} ms", tree, Date::now() - t0);
+    info!("traversing unattached tree...");
+    let t0 = Date::now();
+    let mut n = 0;
+    for _ in tree.try_iter(&store)? {
+        n += 1;
+    }
+    info!("done {} items, {} ms", n, Date::now() - t0);
     info!("attaching tree...");
+    let t0 = Date::now();
     tree.attach(&mut store)?;
-    info!("attached tree {:?}", tree);
+    store.flush()?;
+    info!("attached tree {:?} {} ms", tree, Date::now() - t0);
+    info!("traversing attached tree values...");
+    let t0 = Date::now();
+    let mut n = 0;
+    for item in tree.try_values(&store) {
+        if item.is_err() {
+            info!("{:?}", item);
+        }
+        n += 1;
+    }
+    info!("done {} items, {} ms", n, Date::now() - t0);
+    info!("traversing attached tree...");
+    let t0 = Date::now();
+    let mut n = 0;
+    for _ in tree.try_iter(&store)? {
+        n += 1;
+    }
+    info!("done {} items, {} ms", n, Date::now() - t0);
     info!("detaching tree...");
+    let t0 = Date::now();
     tree.detach(&store, true)?;
-    info!("detached tree {:?}", tree);
+    info!("detached tree {:?} {} ms", tree, Date::now() - t0);
+    info!("traversing unattached tree...");
+    let t0 = Date::now();
+    let mut n = 0;
+    for _ in tree.try_iter(&store)? {
+        n += 1;
+    }
+    info!("done {} items, {} ms", n, Date::now() - t0);
     Ok(())
 }
