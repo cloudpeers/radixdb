@@ -54,6 +54,7 @@ impl Debug for MemStore {
         builder.finish()
     }
 }
+
 impl BlobStore for MemStore {
     fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         let data = self.data.lock();

@@ -1,18 +1,16 @@
-use std::any;
+use std::collections::BTreeMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::ops::Range;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::SystemTime;
 
 use anyhow::Context;
 use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
-use futures::future;
 use futures::{channel::mpsc, executor::block_on};
-use futures::{Future, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt};
+use js_sys::Promise;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use log::*;
 use radixdb::DynBlobStore;
@@ -22,16 +20,16 @@ use url::Url;
 use wasm_bindgen::{prelude::*, JsCast};
 use wasm_bindgen_futures::JsFuture;
 use wasm_futures_executor::ThreadPool;
-use web_sys::WorkerGlobalScope;
-// use wasm_futures_executor::ThreadPool;
-use web_sys::{Cache, DedicatedWorkerGlobalScope};
+use web_sys::DedicatedWorkerGlobalScope;
 use web_sys::{CacheQueryOptions, Request, Response};
 
-macro_rules! console_log {
-    // Note that this is using the `log` function imported above during
-    // `bare_bones`
-    ($($t:tt)*) => (web_sys::console::log_1(&format_args!($($t)*).to_string().into()))
-}
+// macro_rules! console_log {
+//     // Note that this is using the `log` function imported above during
+//     // `bare_bones`
+//     ($($t:tt)*) => (web_sys::console::log_1(&format_args!($($t)*).to_string().into()))
+// }
+
+type SharedStr = Arc<str>;
 
 #[derive(Debug, Clone)]
 struct WebCacheDir {
@@ -39,18 +37,40 @@ struct WebCacheDir {
     cache: web_sys::Cache,
 }
 
+async fn js_async<T: From<JsValue>>(promise: Promise) -> anyhow::Result<T> {
+    JsFuture::from(promise)
+        .await
+        .map_err(js_to_anyhow)
+        .map(|x| T::from(x))
+}
+
 impl WebCacheDir {
-    pub async fn new(name: &str) -> anyhow::Result<Self> {
+    pub async fn new(dir_name: &str) -> anyhow::Result<Self> {
         let caches = worker_scope().caches().map_err(js_to_anyhow)?;
-        let cache = JsFuture::from(caches.open(name))
-            .await
-            .map_err(js_to_anyhow)?;
-        let cache = web_sys::Cache::from(cache);
+        let cache = js_async(caches.open(dir_name)).await?;
         Ok(Self { cache })
     }
 
-    pub async fn open(&self, file_name: &str) -> anyhow::Result<WebCacheFile> {
+    pub async fn open(&self, file_name: SharedStr) -> anyhow::Result<WebCacheFile> {
         WebCacheFile::new(self.cache.clone(), file_name).await
+    }
+
+    pub async fn create(&self, file_name: SharedStr) -> anyhow::Result<WebCacheFile> {
+        self.delete(&file_name).await?;
+        self.open(file_name).await
+    }
+
+    pub async fn delete(&self, file_name: &str) -> anyhow::Result<bool> {
+        let res = js_async::<JsValue>(
+            self.cache.delete_with_str_and_options(
+                &format!("/{}", file_name),
+                CacheQueryOptions::new()
+                    .ignore_method(true)
+                    .ignore_search(true),
+            ),
+        )
+        .await?;
+        Ok(res.as_bool().context("not a bool")?)
     }
 }
 
@@ -59,7 +79,7 @@ struct WebCacheFile {
     /// the cache (basically the directory where the file lives in)
     cache: web_sys::Cache,
     /// the file name
-    file_name: String,
+    file_name: SharedStr,
     /// all the chunks that we have, sorted
     chunks: Vec<ChunkMeta>,
 }
@@ -129,15 +149,15 @@ impl FromStr for ChunkMeta {
 }
 
 impl WebCacheFile {
-    async fn new(cache: web_sys::Cache, file_name: &str) -> anyhow::Result<Self> {
-        let mut chunks = Self::chunks(&cache, file_name).await?;
+    async fn new(cache: web_sys::Cache, file_name: SharedStr) -> anyhow::Result<Self> {
+        let mut chunks = Self::chunks(&cache, &file_name).await?;
         info!("chunks {:#?}", chunks);
         let to_delete = Self::retain_relevant(&mut chunks);
         info!("to_delete {:#?}", to_delete);
         Self::delete(&cache, &file_name, &to_delete).await?;
         Ok(Self {
             cache,
-            file_name: file_name.to_owned(),
+            file_name,
             chunks,
         })
     }
@@ -367,43 +387,142 @@ impl WebCacheFile {
 
 #[derive(Debug)]
 enum Command {
-    Append {
+    OpenDir {
+        dir_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<()>>,
+    },
+    DeleteDir {
+        dir_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    OpenFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<()>>,
+    },
+    DeleteFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<bool>>,
+    },
+    AppendFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
         data: Vec<u8>,
         cb: oneshot::Sender<anyhow::Result<u64>>,
     },
-    Read {
+    ReadFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
         offset: u64,
         cb: oneshot::Sender<anyhow::Result<Vec<u8>>>,
     },
 }
 
 struct IoManager {
-    file: WebCacheFile,
+    dirs: BTreeMap<SharedStr, (WebCacheDir, BTreeMap<SharedStr, WebCacheFile>)>,
     queue: mpsc::UnboundedReceiver<Command>,
 }
 
 impl IoManager {
-    fn new(file: WebCacheFile, queue: mpsc::UnboundedReceiver<Command>) -> Self {
-        Self { file, queue }
+    fn new(queue: mpsc::UnboundedReceiver<Command>) -> anyhow::Result<Self> {
+        Ok(Self {
+            queue,
+            dirs: Default::default(),
+        })
     }
 
-    async fn read(&mut self, offset: u64, cb: oneshot::Sender<anyhow::Result<Vec<u8>>>) {
-        let _ = cb.send(self.file.load_length_prefixed(offset).await);
+    async fn open_dir(&mut self, dir_name: impl Into<SharedStr>) -> anyhow::Result<()> {
+        let dir_name = dir_name.into();
+        if !self.dirs.contains_key(&dir_name) {
+            let dir = WebCacheDir::new(&dir_name).await?;
+            self.dirs.insert(dir_name, (dir, Default::default()));
+        }
+        Ok(())
     }
 
-    async fn append(&mut self, data: Vec<u8>, cb: oneshot::Sender<anyhow::Result<u64>>) {
-        let _ = cb.send(self.file.append_length_prefixed(data).await);
+    async fn open_file(&mut self, dir: SharedStr, file: SharedStr) -> anyhow::Result<()> {
+        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        if !files.contains_key(&file) {
+            let wcf = WebCacheFile::new(dir.cache.clone(), file.clone()).await?;
+            files.insert(file, wcf);
+        }
+        Ok(())
+    }
+
+    async fn append_file(
+        &mut self,
+        dir: SharedStr,
+        file_name: SharedStr,
+        data: Vec<u8>,
+    ) -> anyhow::Result<u64> {
+        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        let file = files.get_mut(&file_name).context("file not open")?;
+        file.append_length_prefixed(data).await
+    }
+
+    async fn read_file(
+        &mut self,
+        dir: SharedStr,
+        file_name: SharedStr,
+        offset: u64,
+    ) -> anyhow::Result<Vec<u8>> {
+        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        let file = files.get_mut(&file_name).context("file not open")?;
+        file.load_length_prefixed(offset).await
+    }
+
+    async fn delete_file(&mut self, dir: SharedStr, file_name: SharedStr) -> anyhow::Result<bool> {
+        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        let res = dir.delete(&file_name).await?;
+        files.remove(&file_name);
+        Ok(res)
+    }
+
+    async fn delete_dir(&mut self, dir_name: SharedStr) -> anyhow::Result<bool> {
+        let caches = worker_scope().caches().map_err(js_to_anyhow)?;
+        let res: JsValue = js_async(caches.delete(&dir_name)).await?;
+        Ok(res.as_bool().context("no bool")?)
     }
 
     async fn run(mut self) {
-        info!("IoManager run");
         while let Some(cmd) = self.queue.next().await {
             match cmd {
-                Command::Read { offset, cb } => {
-                    self.read(offset, cb).await;
+                Command::OpenDir { dir_name, cb } => {
+                    let _ = cb.send(self.open_dir(dir_name).await);
                 }
-                Command::Append { data, cb } => {
-                    self.append(data, cb).await;
+                Command::DeleteDir { dir_name, cb } => {
+                    let _ = cb.send(self.delete_dir(dir_name).await);
+                }
+                Command::ReadFile {
+                    dir_name,
+                    file_name,
+                    offset,
+                    cb,
+                } => {
+                    let _ = cb.send(self.read_file(dir_name, file_name, offset).await);
+                }
+                Command::AppendFile {
+                    dir_name,
+                    file_name,
+                    data,
+                    cb,
+                } => {
+                    let _ = cb.send(self.append_file(dir_name, file_name, data).await);
+                }
+                Command::OpenFile {
+                    dir_name,
+                    file_name,
+                    cb,
+                } => {
+                    let _ = cb.send(self.open_file(dir_name, file_name).await);
+                }
+                Command::DeleteFile {
+                    dir_name,
+                    file_name,
+                    cb,
+                } => {
+                    let _ = cb.send(self.delete_file(dir_name, file_name).await);
                 }
             }
         }
@@ -411,38 +530,109 @@ impl IoManager {
 }
 
 #[derive(Debug)]
-pub struct SyncFile {
+pub struct SyncFs {
     tx: UnboundedSender<Command>,
 }
 
-impl SyncFile {
-    fn new(dir: String, file: String, pool: ThreadPool) -> Self {
+impl SyncFs {
+    fn new(pool: ThreadPool) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::unbounded();
         pool.spawn_lazy(|| {
             async move {
-                let dir = WebCacheDir::new(&dir).await.unwrap();
-                let file = dir.open(&file).await.unwrap();
-                let manager = IoManager::new(file, rx);
+                let manager = IoManager::new(rx).unwrap();
                 manager.run().await;
             }
             .boxed_local()
         });
-        Self { tx }
+        Ok(Self { tx })
+    }
+    fn open_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<SyncDir> {
+        let dir_name = dir_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::OpenDir {
+            dir_name: dir_name.clone(),
+            cb: tx,
+        })?;
+        block_on(rx)??;
+        Ok(SyncDir {
+            dir_name,
+            tx: self.tx.clone(),
+        })
+    }
+    fn delete_dir(&self, dir_name: impl Into<SharedStr>) -> anyhow::Result<SyncDir> {
+        let dir_name = dir_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::DeleteDir {
+            dir_name: dir_name.clone(),
+            cb: tx,
+        })?;
+        block_on(rx)??;
+        Ok(SyncDir {
+            dir_name,
+            tx: self.tx.clone(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct SyncDir {
+    tx: UnboundedSender<Command>,
+    dir_name: SharedStr,
+}
+
+impl SyncDir {
+    fn open_file(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<SyncFile> {
+        let file_name = file_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::OpenFile {
+            dir_name: self.dir_name.clone(),
+            file_name: file_name.clone(),
+            cb: tx,
+        })?;
+        block_on(rx)??;
+        Ok(SyncFile {
+            dir_name: self.dir_name.clone(),
+            file_name: file_name.clone(),
+            tx: self.tx.clone(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct SyncFile {
+    dir_name: SharedStr,
+    file_name: SharedStr,
+    tx: UnboundedSender<Command>,
+}
+
+impl SyncFile {
+    fn new(dir_name: SharedStr, file_name: SharedStr, tx: UnboundedSender<Command>) -> Self {
+        Self {
+            dir_name,
+            file_name,
+            tx,
+        }
     }
 }
 
 impl radixdb::BlobStore for SyncFile {
     fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .unbounded_send(Command::Read { offset: id, cb: tx })?;
+        self.tx.unbounded_send(Command::ReadFile {
+            offset: id,
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            cb: tx,
+        })?;
         let data = block_on(rx)??;
         Ok(Blob::from_slice(&data))
     }
 
     fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
         let (tx, rx) = oneshot::channel();
-        self.tx.unbounded_send(Command::Append {
+        self.tx.unbounded_send(Command::AppendFile {
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
             data: data.to_vec(),
             cb: tx,
         })?;
@@ -522,19 +712,12 @@ async fn pool_test() -> anyhow::Result<()> {
     // the outer spawn is necessary so we don't block on the main thread, which is not allowed
     pool.spawn_lazy(move || {
         async move {
-            info!("starting cache_bench");
-            cache_bench().await.unwrap();
+            // info!("starting cache_bench");
+            // cache_bench().await.unwrap();
+            info!("starting cache_test");
+            cache_test().await.unwrap();
             info!("starting cache_test_sync");
             cache_test_sync(pool2.clone()).unwrap();
-            let (tx, rx) = futures::channel::oneshot::channel();
-            pool2.spawn_lazy(|| {
-                async {
-                    cache_test().await.unwrap();
-                    tx.send(()).unwrap();
-                }
-                .boxed_local()
-            });
-            block_on(rx).unwrap();
         }
         .boxed_local()
     });
@@ -544,7 +727,9 @@ async fn pool_test() -> anyhow::Result<()> {
 async fn cache_test() -> anyhow::Result<()> {
     info!("{}", worker_scope().location().origin());
     let dir = WebCacheDir::new("test").await?;
-    let mut file = dir.open("file1").await?;
+    let deleted = dir.delete("file1").await?;
+    info!("deleted {}", deleted);
+    let mut file = dir.open("file1".into()).await?;
     for i in 0..5u8 {
         let mut data = vec![i; 100];
         file.append(&mut data).await?;
@@ -566,7 +751,7 @@ fn time<T>(text: &str, f: impl FnOnce() -> T) -> T {
 
 async fn cache_bench() -> anyhow::Result<()> {
     let dir = WebCacheDir::new("bench").await?;
-    let mut file = dir.open("file1").await?;
+    let mut file = dir.open("file1".into()).await?;
     let mut data = vec![0u8; 1024 * 1024 * 4];
     data[0..4].copy_from_slice(&100u32.to_be_bytes());
     let t0 = js_sys::Date::now();
@@ -581,7 +766,9 @@ async fn cache_bench() -> anyhow::Result<()> {
 }
 
 fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
-    let file = SyncFile::new("sync".into(), "test".into(), pool);
+    let fs = SyncFs::new(pool)?;
+    let dir = fs.open_dir("sync")?;
+    let file = dir.open_file("test")?;
     let elems = (0..1000)
         .map(|i| {
             (
