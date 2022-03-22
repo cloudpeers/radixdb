@@ -8,17 +8,18 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use futures::channel::mpsc::UnboundedSender;
-use futures::channel::oneshot;
-use futures::{channel::mpsc, executor::block_on};
+use futures::{
+    channel::{mpsc, oneshot},
+    executor::block_on,
+};
 use futures::{FutureExt, StreamExt};
-use js_sys::JSON;
 use js_sys::Promise;
+use js_sys::JSON;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use log::*;
+use radixdb::Blob;
 use radixdb::DynBlobStore;
 use radixdb::TreeNode;
-use radixdb::{Blob, BlobStore};
 use url::Url;
 use wasm_bindgen::{prelude::*, JsCast};
 use wasm_bindgen_futures::JsFuture;
@@ -42,26 +43,19 @@ struct WebCacheDir {
 }
 
 async fn js_async<T: From<JsValue>>(promise: Promise) -> anyhow::Result<T> {
-    JsFuture::from(promise)
-        .await
-        .map_err(js_to_anyhow)
-        .map(|x| T::from(x))
+    let res = JsFuture::from(promise).await.map_err(JsError::from)?;
+    Ok(T::from(res))
 }
 
 impl WebCacheDir {
     pub async fn new(dir_name: &str) -> anyhow::Result<Self> {
-        let caches = worker_scope().caches().map_err(js_to_anyhow)?;
+        let caches = worker_scope().caches().map_err(JsError::from)?;
         let cache = js_async(caches.open(dir_name)).await?;
         Ok(Self { cache })
     }
 
     pub async fn open(&self, file_name: SharedStr) -> anyhow::Result<WebCacheFile> {
         WebCacheFile::new(self.cache.clone(), file_name).await
-    }
-
-    pub async fn create(&self, file_name: SharedStr) -> anyhow::Result<WebCacheFile> {
-        self.delete(&file_name).await?;
-        self.open(file_name).await
     }
 
     pub async fn delete(&self, file_name: &str) -> anyhow::Result<bool> {
@@ -107,7 +101,7 @@ impl ChunkMeta {
     }
 
     fn parse_and_filter(request: &str, file_name: &str) -> anyhow::Result<Option<ChunkMeta>> {
-        info!("parse_and_filter {}", request);
+        // info!("parse_and_filter {}", request);
         let url = Url::parse(request)?;
         if let Some(query) = url.query() {
             let name = url.path().strip_prefix('/').unwrap();
@@ -155,9 +149,7 @@ impl FromStr for ChunkMeta {
 impl WebCacheFile {
     async fn new(cache: web_sys::Cache, file_name: SharedStr) -> anyhow::Result<Self> {
         let mut chunks = Self::chunks(&cache, &file_name).await?;
-        info!("chunks {:#?}", chunks);
         let to_delete = Self::retain_relevant(&mut chunks);
-        info!("to_delete {:#?}", to_delete);
         Self::delete(&cache, &file_name, &to_delete).await?;
         Ok(Self {
             cache,
@@ -209,13 +201,13 @@ impl WebCacheFile {
             let request = chunk.to_request_str(file_name);
             JsFuture::from(cache.delete_with_str(&request))
                 .await
-                .map_err(js_to_anyhow)?;
+                .map_err(JsError::from)?;
         }
         Ok(())
     }
 
     async fn chunks(cache: &web_sys::Cache, name: &str) -> anyhow::Result<Vec<ChunkMeta>> {
-        let keys = JsFuture::from(cache.keys()).await.map_err(js_to_anyhow)?;
+        let keys = JsFuture::from(cache.keys()).await.map_err(JsError::from)?;
         let chunks = Array::from(&keys)
             .iter()
             .filter_map(|req| ChunkMeta::parse_and_filter(&Request::from(req).url(), name).ok())
@@ -236,7 +228,7 @@ impl WebCacheFile {
             len: data.len().try_into()?,
         };
         let request = chunk.to_request_str(&self.file_name);
-        let response = Response::new_with_opt_u8_array(Some(data)).map_err(js_to_anyhow)?;
+        let response = Response::new_with_opt_u8_array(Some(data)).map_err(JsError::from)?;
         JsFuture::from(self.cache.put_with_str(&request, &response))
             .await
             .expect("insertion not possible");
@@ -267,16 +259,16 @@ impl WebCacheFile {
             let (sr, tr) = ranges(chunk.range(), range.clone())?;
             let t0 = js_sys::Date::now();
             let data = self.load_range(chunk, sr).await?;
-            info!("load_range {}", js_sys::Date::now() - t0);
+            // info!("load_range {}", js_sys::Date::now() - t0);
             data.copy_to(&mut res[tr]);
         }
-        info!("load_chunks {}", js_sys::Date::now() - t0);
+        // info!("load_chunks {}", js_sys::Date::now() - t0);
         Ok(res)
     }
 
     async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Vec<u8>> {
-        info!("load_length_prefixed index={}", start);
-        let t0 = js_sys::Date::now();
+        // info!("load_length_prefixed index={}", start);
+        // let t0 = js_sys::Date::now();
         let chunks = self
             .intersecting_chunks(start..start + 4)
             .collect::<Vec<_>>();
@@ -286,7 +278,7 @@ impl WebCacheFile {
         anyhow::ensure!(res.len() >= len + 4);
         res.truncate(len + 4);
         res.splice(0..4, []);
-        info!("load_length_prefixed {}", js_sys::Date::now() - t0);
+        // info!("load_length_prefixed {}", js_sys::Date::now() - t0);
         Ok(res)
     }
 
@@ -307,18 +299,18 @@ impl WebCacheFile {
         let response = Response::from(
             JsFuture::from(self.cache.match_with_str(&request))
                 .await
-                .map_err(js_to_anyhow)
+                .map_err(JsError::from)
                 .context("no response")?,
         );
         let ab = ArrayBuffer::from(
             JsFuture::from(
                 response
                     .array_buffer()
-                    .map_err(js_to_anyhow)
+                    .map_err(JsError::from)
                     .context("response no array buffer")?,
             )
             .await
-            .map_err(js_to_anyhow)
+            .map_err(JsError::from)
             .context("response no array buffer")?,
         );
         Ok(Uint8Array::new(&ab).to_vec())
@@ -335,56 +327,56 @@ impl WebCacheFile {
         let response = Response::from(
             JsFuture::from(self.cache.match_with_str(&request))
                 .await
-                .map_err(js_to_anyhow)
+                .map_err(JsError::from)
                 .context("no response")?,
         );
-        info!("get response {}", js_sys::Date::now() - t0);
+        // info!("get response {}", js_sys::Date::now() - t0);
         const USE_BLOB: bool = true;
         let ab = if USE_BLOB {
-            let t0 = js_sys::Date::now();
+            // let t0 = js_sys::Date::now();
             let blob = web_sys::Blob::from(
                 JsFuture::from(
                     response
                         .blob()
-                        .map_err(js_to_anyhow)
+                        .map_err(JsError::from)
                         .context("response no blob")?,
                 )
                 .await
-                .map_err(js_to_anyhow)
+                .map_err(JsError::from)
                 .context("response no blob")?,
             );
-            info!("load blob {}", js_sys::Date::now() - t0);
-            let t0 = js_sys::Date::now();
+            // info!("load blob {}", js_sys::Date::now() - t0);
+            // let t0 = js_sys::Date::now();
             let slice = blob
                 .slice_with_i32_and_i32(range.start.try_into()?, range.end.try_into()?)
-                .map_err(js_to_anyhow)?;
-            info!("slice blob {}", js_sys::Date::now() - t0);
-            let t0 = js_sys::Date::now();
+                .map_err(JsError::from)?;
+            // info!("slice blob {}", js_sys::Date::now() - t0);
+            // let t0 = js_sys::Date::now();
             let res = ArrayBuffer::from(
                 JsFuture::from(slice.array_buffer())
                     .await
-                    .map_err(js_to_anyhow)
+                    .map_err(JsError::from)
                     .context("doh")?,
             );
-            info!("blob -> arraybuffer {}", js_sys::Date::now() - t0);
+            // info!("blob -> arraybuffer {}", js_sys::Date::now() - t0);
             res
         } else {
             let ab = ArrayBuffer::from(
                 JsFuture::from(
                     response
                         .array_buffer()
-                        .map_err(js_to_anyhow)
+                        .map_err(JsError::from)
                         .context("response no array buffer")?,
                 )
                 .await
-                .map_err(js_to_anyhow)
+                .map_err(JsError::from)
                 .context("response no array buffer")?,
             );
             ab.slice_with_end(range.start.try_into()?, range.end.try_into()?)
         };
-        let t0 = js_sys::Date::now();
+        // let t0 = js_sys::Date::now();
         let ua = Uint8Array::new(&ab);
-        info!("convert to uint8array {}", js_sys::Date::now() - t0);
+        // info!("convert to uint8array {}", js_sys::Date::now() - t0);
         Ok(ua)
     }
 }
@@ -484,7 +476,7 @@ impl IoManager {
     }
 
     async fn delete_dir(&mut self, dir_name: SharedStr) -> anyhow::Result<bool> {
-        let caches = worker_scope().caches().map_err(js_to_anyhow)?;
+        let caches = worker_scope().caches().map_err(JsError::from)?;
         let res: JsValue = js_async(caches.delete(&dir_name)).await?;
         Ok(res.as_bool().context("no bool")?)
     }
@@ -535,7 +527,7 @@ impl IoManager {
 
 #[derive(Debug)]
 pub struct SyncFs {
-    tx: UnboundedSender<Command>,
+    tx: mpsc::UnboundedSender<Command>,
 }
 
 impl SyncFs {
@@ -580,8 +572,8 @@ impl SyncFs {
 
 #[derive(Debug)]
 pub struct SyncDir {
-    tx: UnboundedSender<Command>,
     dir_name: SharedStr,
+    tx: mpsc::UnboundedSender<Command>,
 }
 
 impl SyncDir {
@@ -606,11 +598,11 @@ impl SyncDir {
 pub struct SyncFile {
     dir_name: SharedStr,
     file_name: SharedStr,
-    tx: UnboundedSender<Command>,
+    tx: mpsc::UnboundedSender<Command>,
 }
 
 impl SyncFile {
-    fn new(dir_name: SharedStr, file_name: SharedStr, tx: UnboundedSender<Command>) -> Self {
+    fn new(dir_name: SharedStr, file_name: SharedStr, tx: mpsc::UnboundedSender<Command>) -> Self {
         Self {
             dir_name,
             file_name,
@@ -661,20 +653,11 @@ fn overlaps(a: Range<u64>, b: Range<u64>) -> bool {
     !((a.end <= b.start) || (b.end <= a.start))
 }
 
-// #[wasm_bindgen(start)]
-// pub fn main() {
-//     let _ = console_log::init_with_level(log::Level::Debug);
-//     ::console_error_panic_hook::set_once();
-// }
-
 fn worker_scope() -> DedicatedWorkerGlobalScope {
     js_sys::global().unchecked_into::<DedicatedWorkerGlobalScope>()
 }
 
-fn worker_name() -> String {
-    worker_scope().name().as_str().to_string()
-}
-
+/// A serialized JsValue error that can be sent over thread boundaries.
 #[derive(Debug)]
 enum JsError {
     Stringified(String),
@@ -698,43 +681,29 @@ impl From<JsValue> for JsError {
     }
 }
 
-fn js_to_anyhow(err: JsValue) -> anyhow::Error {    
-    anyhow::Error::new(JsError::from(err))
+fn err_to_jsvalue(value: anyhow::Error) -> JsValue {
+    match value.downcast::<JsError>() {
+        Ok(inner) => match inner {
+            JsError::Stringified(txt) => match JSON::parse(&txt) {
+                Ok(value) => value,
+                Err(cause) => cause,
+            },
+            JsError::Error(text) => text.into(),
+        },
+        Err(value) => value.to_string().into(),
+    }
 }
-
-fn err_to_jsvalue(value: impl ToString) -> JsValue {
-    value.to_string().into()
-}
-
-// #[wasm_bindgen]
-// pub async fn start() -> Result<JsValue, JsValue> {
-//     let pool = ThreadPool::new(2).await?;
-//     let pool2 = pool.clone();
-//     pool.spawn_lazy(|| {
-//         async {
-//             let cache: web_sys::Cache =
-//                 JsFuture::from(worker_scope().caches().unwrap().open("cache"))
-//                     .await
-//                     .unwrap()
-//                     .into();
-//         }
-//         .boxed_local()
-//     });
-//     Ok(0.into())
-// }
 
 #[wasm_bindgen]
 pub async fn start() -> Result<JsValue, JsValue> {
     let _ = console_log::init_with_level(log::Level::Info);
     ::console_error_panic_hook::set_once();
-    info!("");
-    // cache_test().await.map_err(err_to_jsvalue)?;
     pool_test().await.map_err(err_to_jsvalue)?;
     Ok(5.into())
 }
 
 async fn pool_test() -> anyhow::Result<()> {
-    let pool = ThreadPool::new(2).await.map_err(js_to_anyhow)?;
+    let pool = ThreadPool::new(2).await.map_err(JsError::from)?;
     let pool2 = pool.clone();
     // the outer spawn is necessary so we don't block on the main thread, which is not allowed
     pool.spawn_lazy(move || {
@@ -794,9 +763,10 @@ async fn cache_bench() -> anyhow::Result<()> {
 
 fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
     let fs = SyncFs::new(pool)?;
+    fs.delete_dir("sync")?;
     let dir = fs.open_dir("sync")?;
     let file = dir.open_file("test")?;
-    let elems = (0..1000)
+    let elems = (0..100000)
         .map(|i| {
             (
                 i.to_string().as_bytes().to_vec(),
@@ -809,11 +779,13 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
         .iter()
         .map(|(k, v)| (k.as_ref(), v.as_ref()))
         .collect();
-    info!("{:?}", tree);
+    info!("unattached tree {:?}", tree);
+    info!("attaching tree...");
     tree.attach(&mut store)?;
-    info!("{:?}", tree);
+    info!("attached tree {:?}", tree);
+    info!("detaching tree...");
     tree.detach(&store, true)?;
-    info!("{:?}", tree);
+    info!("detached tree {:?}", tree);
     Ok(())
 }
 
