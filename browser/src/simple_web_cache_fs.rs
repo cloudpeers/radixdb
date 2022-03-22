@@ -9,7 +9,6 @@ use std::{
 };
 use url::Url;
 use wasm_bindgen::JsValue;
-use wasm_bindgen_futures::JsFuture;
 use wasm_futures_executor::ThreadPool;
 use web_sys::{CacheQueryOptions, Request, Response};
 
@@ -28,13 +27,11 @@ impl WebCacheFs {
     pub fn new(pool: ThreadPool) -> SyncFs {
         let (tx, rx) = mpsc::unbounded();
         pool.spawn_lazy(|| {
-            async move {
-                let manager = Self {
-                    queue: rx,
-                    dirs: Default::default(),
-                };
-                manager.run().await;
+            Self {
+                queue: rx,
+                dirs: Default::default(),
             }
+            .run()
             .boxed_local()
         });
         SyncFs::new(tx)
@@ -58,7 +55,7 @@ impl WebCacheFs {
         Ok(())
     }
 
-    async fn append_file(
+    async fn append_file_length_prefixed(
         &mut self,
         dir: SharedStr,
         file_name: SharedStr,
@@ -69,7 +66,13 @@ impl WebCacheFs {
         file.append_length_prefixed(data).await
     }
 
-    async fn read_file(
+    async fn flush_file(&mut self, dir: SharedStr, file_name: SharedStr) -> anyhow::Result<()> {
+        let (_, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        let file = files.get_mut(&file_name).context("file not open")?;
+        file.flush().await
+    }
+
+    async fn read_file_length_prefixed(
         &mut self,
         dir: SharedStr,
         file_name: SharedStr,
@@ -102,21 +105,34 @@ impl WebCacheFs {
                 Command::DeleteDir { dir_name, cb } => {
                     let _ = cb.send(self.delete_dir(dir_name).await);
                 }
-                Command::ReadFile {
+                Command::ReadFileLengthPrefixed {
                     dir_name,
                     file_name,
                     offset,
                     cb,
                 } => {
-                    let _ = cb.send(self.read_file(dir_name, file_name, offset).await);
+                    let _ = cb.send(
+                        self.read_file_length_prefixed(dir_name, file_name, offset)
+                            .await,
+                    );
                 }
-                Command::AppendFile {
+                Command::AppendFileLengthPrefixed {
                     dir_name,
                     file_name,
                     data,
                     cb,
                 } => {
-                    let _ = cb.send(self.append_file(dir_name, file_name, data).await);
+                    let _ = cb.send(
+                        self.append_file_length_prefixed(dir_name, file_name, data)
+                            .await,
+                    );
+                }
+                Command::FlushFile {
+                    dir_name,
+                    file_name,
+                    cb,
+                } => {
+                    let _ = cb.send(self.flush_file(dir_name, file_name).await);
                 }
                 Command::OpenFile {
                     dir_name,
@@ -132,7 +148,13 @@ impl WebCacheFs {
                 } => {
                     let _ = cb.send(self.delete_file(dir_name, file_name).await);
                 }
-                Command::Shutdown => break,
+                Command::Shutdown => {
+                    // shut down the loop,
+                    // which will shut down the thread,
+                    // which will drop the mpsc receiver,
+                    // which will cause all file ops to fail.
+                    break;
+                }
             }
         }
     }
@@ -232,15 +254,13 @@ impl WebCacheFile {
     ) -> anyhow::Result<()> {
         for chunk in to_delete {
             let request = chunk.to_request_str(file_name);
-            JsFuture::from(cache.delete_with_str(&request))
-                .await
-                .map_err(JsError::from)?;
+            js_async::<JsValue>(cache.delete_with_str(&request)).await?;
         }
         Ok(())
     }
 
     async fn chunks(cache: &web_sys::Cache, name: &str) -> anyhow::Result<Vec<ChunkMeta>> {
-        let keys = JsFuture::from(cache.keys()).await.map_err(JsError::from)?;
+        let keys = js_async::<JsValue>(cache.keys()).await?;
         let chunks = Array::from(&keys)
             .iter()
             .filter_map(|req| ChunkMeta::parse_and_filter(&Request::from(req).url(), name).ok())
@@ -253,6 +273,11 @@ impl WebCacheFile {
         self.chunks.last().cloned().unwrap_or_default()
     }
 
+    pub(crate) async fn flush(&mut self) -> anyhow::Result<()> {
+        // simple fs flushes after each op
+        Ok(())
+    }
+
     pub(crate) async fn append(&mut self, data: &mut Vec<u8>) -> anyhow::Result<u64> {
         let prev = self.prev();
         let chunk = ChunkMeta {
@@ -262,9 +287,7 @@ impl WebCacheFile {
         };
         let request = chunk.to_request_str(&self.file_name);
         let response = Response::new_with_opt_u8_array(Some(data)).map_err(JsError::from)?;
-        JsFuture::from(self.cache.put_with_str(&request, &response))
-            .await
-            .expect("insertion not possible");
+        js_async::<JsValue>(self.cache.put_with_str(&request, &response)).await?;
         self.chunks.push(chunk);
         Ok(chunk.range().start)
     }
@@ -332,23 +355,8 @@ impl WebCacheFile {
 
     async fn load(&self, chunk: &ChunkMeta) -> anyhow::Result<Vec<u8>> {
         let request: String = chunk.to_request_str(&self.file_name);
-        let response = Response::from(
-            JsFuture::from(self.cache.match_with_str(&request))
-                .await
-                .map_err(JsError::from)
-                .context("no response")?,
-        );
-        let ab = ArrayBuffer::from(
-            JsFuture::from(
-                response
-                    .array_buffer()
-                    .map_err(JsError::from)
-                    .context("response no array buffer")?,
-            )
-            .await
-            .map_err(JsError::from)
-            .context("response no array buffer")?,
-        );
+        let response = js_async::<Response>(self.cache.match_with_str(&request)).await?;
+        let ab = js_async::<ArrayBuffer>(response.array_buffer().map_err(JsError::from)?).await?;
         Ok(Uint8Array::new(&ab).to_vec())
     }
 
@@ -359,27 +367,12 @@ impl WebCacheFile {
     ) -> anyhow::Result<Uint8Array> {
         let request: String = chunk.to_request_str(&self.file_name);
         // let t0 = js_sys::Date::now();
-        let response = Response::from(
-            JsFuture::from(self.cache.match_with_str(&request))
-                .await
-                .map_err(JsError::from)
-                .context("no response")?,
-        );
+        let response: Response = js_async(self.cache.match_with_str(&request)).await?;
         // info!("get response {}", js_sys::Date::now() - t0);
         const USE_BLOB: bool = true;
         let ab = if USE_BLOB {
             // let t0 = js_sys::Date::now();
-            let blob = web_sys::Blob::from(
-                JsFuture::from(
-                    response
-                        .blob()
-                        .map_err(JsError::from)
-                        .context("response no blob")?,
-                )
-                .await
-                .map_err(JsError::from)
-                .context("response no blob")?,
-            );
+            let blob: web_sys::Blob = js_async(response.blob().map_err(JsError::from)?).await?;
             // info!("load blob {}", js_sys::Date::now() - t0);
             // let t0 = js_sys::Date::now();
             let slice = blob
@@ -387,26 +380,11 @@ impl WebCacheFile {
                 .map_err(JsError::from)?;
             // info!("slice blob {}", js_sys::Date::now() - t0);
             // let t0 = js_sys::Date::now();
-            let res = ArrayBuffer::from(
-                JsFuture::from(slice.array_buffer())
-                    .await
-                    .map_err(JsError::from)
-                    .context("doh")?,
-            );
+            let res: ArrayBuffer = js_async(slice.array_buffer()).await?;
             // info!("blob -> arraybuffer {}", js_sys::Date::now() - t0);
             res
         } else {
-            let ab = ArrayBuffer::from(
-                JsFuture::from(
-                    response
-                        .array_buffer()
-                        .map_err(JsError::from)
-                        .context("response no array buffer")?,
-                )
-                .await
-                .map_err(JsError::from)
-                .context("response no array buffer")?,
-            );
+            let ab: ArrayBuffer = js_async(response.array_buffer().map_err(JsError::from)?).await?;
             ab.slice_with_end(range.start.try_into()?, range.end.try_into()?)
         };
         // let t0 = js_sys::Date::now();

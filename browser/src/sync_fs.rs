@@ -29,13 +29,18 @@ pub(crate) enum Command {
         file_name: SharedStr,
         cb: oneshot::Sender<anyhow::Result<bool>>,
     },
-    AppendFile {
+    FlushFile {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<()>>,
+    },
+    AppendFileLengthPrefixed {
         dir_name: SharedStr,
         file_name: SharedStr,
         data: Vec<u8>,
         cb: oneshot::Sender<anyhow::Result<u64>>,
     },
-    ReadFile {
+    ReadFileLengthPrefixed {
         dir_name: SharedStr,
         file_name: SharedStr,
         offset: u64,
@@ -139,7 +144,7 @@ impl SyncFile {}
 impl radixdb::BlobStore for SyncFile {
     fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         let (tx, rx) = oneshot::channel();
-        self.tx.unbounded_send(Command::ReadFile {
+        self.tx.unbounded_send(Command::ReadFileLengthPrefixed {
             offset: id,
             dir_name: self.dir_name.clone(),
             file_name: self.file_name.clone(),
@@ -150,12 +155,19 @@ impl radixdb::BlobStore for SyncFile {
     }
 
     fn flush(&self) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::FlushFile {
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            cb: tx,
+        })?;
+        block_on(rx)??;
         Ok(())
     }
 
     fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
         let (tx, rx) = oneshot::channel();
-        self.tx.unbounded_send(Command::AppendFile {
+        self.tx.unbounded_send(Command::AppendFileLengthPrefixed {
             dir_name: self.dir_name.clone(),
             file_name: self.file_name.clone(),
             data: data.to_vec(),

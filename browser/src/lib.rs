@@ -16,10 +16,10 @@ use web_sys::DedicatedWorkerGlobalScope;
 mod sync_fs;
 use sync_fs::Command;
 pub use sync_fs::{SyncDir, SyncFile, SyncFs};
-mod web_cache_fs;
-pub use web_cache_fs::WebCacheFs;
+mod simple_web_cache_fs;
+pub use simple_web_cache_fs::WebCacheFs as SimpleWebCacheFs;
 
-use crate::web_cache_fs::WebCacheDir;
+use crate::simple_web_cache_fs::WebCacheDir;
 
 // macro_rules! console_log {
 //     // Note that this is using the `log` function imported above during
@@ -30,7 +30,7 @@ use crate::web_cache_fs::WebCacheDir;
 /// A string that can be cheaply sent over thread boundaries
 pub(crate) type SharedStr = Arc<str>;
 
-/// execute a promise, handle errors, and convert to to a result
+/// execute a promise, handle errors, and convert the weird js result into an anyhow::Result
 pub(crate) async fn js_async<T: From<JsValue>>(promise: Promise) -> anyhow::Result<T> {
     let res = JsFuture::from(promise).await.map_err(JsError::from)?;
     Ok(T::from(res))
@@ -203,7 +203,7 @@ async fn cache_bench() -> anyhow::Result<()> {
 }
 
 fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
-    let fs = WebCacheFs::new(pool);
+    let fs = SimpleWebCacheFs::new(pool);
     fs.delete_dir("sync")?;
     let dir = fs.open_dir("sync")?;
     dir.delete_file("test")?;
