@@ -1,16 +1,30 @@
 /* tslint:disable */
 /* eslint-disable */
+export const memory: WebAssembly.Memory;
 export function start(): number;
+export function sqlite3_os_init(): number;
+export function wasm_vfs_currenttime(a: number, b: number): number;
+export function wasm_vfs_sleep(a: number, b: number): number;
+export function wasm_vfs_randomness(a: number, b: number, c: number): number;
+export function wasm_vfs_dlclose(a: number, b: number): void;
+export function wasm_vfs_dlsym(a: number, b: number, c: number): number;
+export function wasm_vfs_dlerror(a: number, b: number, c: number): void;
+export function wasm_vfs_dlopen(a: number, b: number): number;
+export function wasm_vfs_access(a: number, b: number, c: number, d: number): number;
+export function wasm_vfs_delete(a: number, b: number, c: number): number;
+export function wasm_vfs_open(a: number, b: number, c: number, d: number, e: number): number;
+export function malloc(a: number): number;
+export function free(a: number): void;
+export function realloc(a: number, b: number): number;
+export function wasm_vfs_fullpathname(a: number, b: number, c: number, d: number): number;
 export function __wbg_threadpool_free(a: number): void;
 export function loaderhelper_mainJS(a: number): number;
 export function worker_entry_point(a: number): void;
 export function __wbg_loaderhelper_free(a: number): void;
-export const memory: WebAssembly.Memory;
 export function __wbindgen_malloc(a: number): number;
 export function __wbindgen_realloc(a: number, b: number, c: number): number;
-export const __wbindgen_export_3: WebAssembly.Table;
-export function _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__ha8e5b3532ed3260a(a: number, b: number, c: number): void;
+export const __wbindgen_export_2: WebAssembly.Table;
+export function _dyn_core__ops__function__FnMut__A____Output___R_as_wasm_bindgen__closure__WasmClosure___describe__invoke__h9eec0fdc7cc5cbbd(a: number, b: number, c: number): void;
 export function __wbindgen_free(a: number, b: number): void;
 export function __wbindgen_exn_store(a: number): void;
 export function wasm_bindgen__convert__closures__invoke2_mut__h4aeff38d05115541(a: number, b: number, c: number, d: number): void;
-export function __wbindgen_start(): void;
