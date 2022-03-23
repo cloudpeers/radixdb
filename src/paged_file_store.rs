@@ -250,7 +250,7 @@ mod tests {
 
     fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
         let elems = (0..2000000).map(|i| {
-            if i % 10000 == 0 {
+            if i % 100000 == 0 {
                 info!("{}", i);
             }
             (
