@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    // #[ignore = "too large"]
+    #[ignore = "too large"]
     fn paged_file_store_test_large() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let path = dir.path().join("large.rdb");

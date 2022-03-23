@@ -221,7 +221,7 @@ mod tests {
 
     fn large_blocks() -> impl Strategy<Value = Vec<Vec<u8>>> {
         proptest::collection::vec(
-            proptest::collection::vec(any::<u8>(), 0..TEST_SIZE - 4),
+            proptest::collection::vec(any::<u8>(), 0..TEST_SIZE - 8),
             1..10,
         )
     }
@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    // #[ignore = "too large"]
+    #[ignore = "too large"]
     fn browser_compare() -> anyhow::Result<()> {
         init_logger();
         let dir = tempdir()?;
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    // #[ignore = "too large"]
+    #[ignore = "too large"]
     fn paged_file_store_test_large() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let path = dir.path().join("large.rdb");
