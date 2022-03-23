@@ -23,7 +23,10 @@ url = "2.2.2"
 hex = "0.4.3"
 num-traits = "0.2.14"
 parking_lot = "0.12.0"
+getrandom = { version = "0.2.5", features = ["js"] }
 rusqlite = { git = "https://github.com/trevyn/rusqlite", branch = "wasm32-unknown-unknown", features = ["bundled"] }
+libsqlite3-sys = { git = "https://github.com/trevyn/rusqlite", branch = "wasm32-unknown-unknown", features = ["bundled"] }
+sqlite-vfs = { path = "../../sqlite-vfs" }
 
 [dependencies.web-sys]
 version = "0.3.53"

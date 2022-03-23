@@ -5,6 +5,7 @@ use radixdb::{DynBlobStore, TreeNode};
 use std::{
     convert::{TryFrom, TryInto},
     fmt::{Debug, Display},
+    io::{Read, Seek, Write},
     ops::Range,
     sync::Arc,
 };
@@ -283,19 +284,73 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
     do_test(store)
 }
 
+use sqlite_vfs::{register, OpenAccess, OpenOptions, Vfs};
+
+struct TestVfs;
+
+struct TestFile;
+
+impl Read for TestFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        todo!()
+    }
+}
+
+impl Write for TestFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        todo!()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        todo!()
+    }
+}
+
+impl Seek for TestFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        todo!()
+    }
+}
+
+impl sqlite_vfs::File for TestFile {
+    fn file_size(&self) -> Result<u64, std::io::Error> {
+        todo!()
+    }
+
+    fn truncate(&mut self, size: u64) -> Result<(), std::io::Error> {
+        todo!()
+    }
+}
+
+impl Vfs for TestVfs {
+    type File = TestFile;
+
+    fn open(&self, path: &str, opts: OpenOptions) -> Result<Self::File, std::io::Error> {
+        todo!()
+    }
+
+    fn delete(&self, path: &str) -> Result<(), std::io::Error> {
+        todo!()
+    }
+
+    fn exists(&self, path: &str) -> Result<bool, std::io::Error> {
+        todo!()
+    }
+}
+
 fn sqlite_test() -> anyhow::Result<()> {
     use rusqlite::{Connection, OpenFlags};
 
-    // let conn = Connection::open_with_flags_and_vfs(
-    //     "db/main.db3",
-    //     OpenFlags::SQLITE_OPEN_READ_WRITE
-    //         | OpenFlags::SQLITE_OPEN_CREATE
-    //         | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    //     "test",
-    // )
-    // .unwrap();
-    let conn = Connection::open_in_memory()
+    sqlite_vfs::register("test", TestVfs).unwrap();
+    let conn = Connection::open_with_flags_and_vfs(
+        "db/main.db3",
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        "test",
+    )
     .unwrap();
+    let conn = Connection::open_in_memory().unwrap();
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS vals (id INT PRIMARY KEY, val VARCHAR NOT NULL)",
