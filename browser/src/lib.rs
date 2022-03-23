@@ -153,7 +153,7 @@ mod tests {
 
 #[wasm_bindgen]
 pub async fn start() -> Result<JsValue, JsValue> {
-    let _ = console_log::init_with_level(log::Level::Debug);
+    let _ = console_log::init_with_level(log::Level::Info);
     ::console_error_panic_hook::set_once();
     pool_test().await.map_err(err_to_jsvalue)?;
     Ok(5.into())
@@ -210,9 +210,13 @@ async fn cache_bench() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn now() -> f64 {
+    Date::now() / 1000.0
+}
+
 fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     let elems = (0..2000000).map(|i| {
-        if i % 1000 == 0 {
+        if i % 10000 == 0 {
             info!("{}", i);
         }
         (
@@ -220,24 +224,24 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
             i.to_string().as_bytes().to_vec(),
         )
     });
-    let t0 = Date::now();
+    let t0 = now();
     info!("building tree");
     let mut tree: TreeNode = elems.collect();
-    info!("unattached tree {:?} {} ms", tree, Date::now() - t0);
+    info!("unattached tree {:?} {} s", tree, now() - t0);
     info!("traversing unattached tree...");
-    let t0 = Date::now();
+    let t0 = now();
     let mut n = 0;
     for _ in tree.try_iter(&store)? {
         n += 1;
     }
-    info!("done {} items, {} ms", n, Date::now() - t0);
+    info!("done {} items, {} s", n, now() - t0);
     info!("attaching tree...");
-    let t0 = Date::now();
+    let t0 = now();
     tree.attach(&mut store)?;
     store.flush()?;
-    info!("attached tree {:?} {} ms", tree, Date::now() - t0);
+    info!("attached tree {:?} {} s", tree, now() - t0);
     info!("traversing attached tree values...");
-    let t0 = Date::now();
+    let t0 = now();
     let mut n = 0;
     for item in tree.try_values(&store) {
         if item.is_err() {
@@ -245,25 +249,25 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
         }
         n += 1;
     }
-    info!("done {} items, {} ms", n, Date::now() - t0);
+    info!("done {} items, {} s", n, now() - t0);
     info!("traversing attached tree...");
-    let t0 = Date::now();
+    let t0 = now();
     let mut n = 0;
     for _ in tree.try_iter(&store)? {
         n += 1;
     }
-    info!("done {} items, {} ms", n, Date::now() - t0);
+    info!("done {} items, {} s", n, now() - t0);
     info!("detaching tree...");
-    let t0 = Date::now();
+    let t0 = now();
     tree.detach(&store, true)?;
-    info!("detached tree {:?} {} ms", tree, Date::now() - t0);
+    info!("detached tree {:?} {} s", tree, now() - t0);
     info!("traversing unattached tree...");
-    let t0 = Date::now();
+    let t0 = now();
     let mut n = 0;
     for _ in tree.try_iter(&store)? {
         n += 1;
     }
-    info!("done {} items, {} ms", n, Date::now() - t0);
+    info!("done {} items, {} s", n, now() - t0);
     Ok(())
 }
 

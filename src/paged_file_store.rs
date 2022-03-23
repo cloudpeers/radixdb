@@ -149,7 +149,7 @@ impl<const SIZE: usize> Inner<SIZE> {
     }
 
     fn append(&mut self, data: &[u8]) -> anyhow::Result<u64> {
-        anyhow::ensure!(data.len() < SIZE - 4, "block too large for this store");
+        anyhow::ensure!(data.len() <= SIZE - 8, "block too large for this store");
         // len of the data when stored, including length prefix
         let len = data.len() as u64 + 4;
         let offset = self.file.stream_position()?;
@@ -162,13 +162,14 @@ impl<const SIZE: usize> Inner<SIZE> {
             self.close_page(current_page)?;
         }
         // println!("{}.{}", current_page, offset);
+        self.file.write_all(&[0u8; 4])?;
         let id = self.file.stream_position()?;
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         self.file.write_all(data)?;
         self.file.flush()?;
         let aligned_end = align(end);
         self.pad_to(aligned_end)?;
-        self.recent.insert(id, Blob::from_slice(data));
+        self.recent.insert(id, Blob::arc_from_byte_slice(data));
         Ok(id)
     }
 }
@@ -203,9 +204,15 @@ impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Instant};
+    use std::{
+        path::PathBuf,
+        time::{Instant, SystemTime},
+    };
+
+    use crate::{DynBlobStore, TreeNode};
 
     use super::*;
+    use log::info;
     use proptest::prelude::*;
     use tempfile::tempdir;
     use thousands::Separable;
@@ -239,6 +246,93 @@ mod tests {
         let mut data = [0u8; S];
         data[0..8].copy_from_slice(&i.to_be_bytes());
         data
+    }
+
+    fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
+        let elems = (0..2000000).map(|i| {
+            if i % 10000 == 0 {
+                info!("{}", i);
+            }
+            (
+                i.to_string().as_bytes().to_vec(),
+                i.to_string().as_bytes().to_vec(),
+            )
+        });
+        let t0 = Instant::now();
+        info!("building tree");
+        let mut tree: TreeNode = elems.collect();
+        info!(
+            "unattached tree {:?} {} s",
+            tree,
+            t0.elapsed().as_secs_f64()
+        );
+        info!("traversing unattached tree...");
+        let t0 = Instant::now();
+        let mut n = 0;
+        for _ in tree.try_iter(&store)? {
+            n += 1;
+        }
+        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+        info!("attaching tree...");
+        let t0 = Instant::now();
+        tree.attach(&mut store)?;
+        store.flush()?;
+        info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+        info!("traversing attached tree values...");
+        let t0 = Instant::now();
+        let mut n = 0;
+        for item in tree.try_values(&store) {
+            if item.is_err() {
+                info!("{:?}", item);
+            }
+            n += 1;
+        }
+        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+        info!("traversing attached tree...");
+        let t0 = Instant::now();
+        let mut n = 0;
+        for _ in tree.try_iter(&store)? {
+            n += 1;
+        }
+        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+        info!("detaching tree...");
+        let t0 = Instant::now();
+        tree.detach(&store, true)?;
+        info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+        info!("traversing unattached tree...");
+        let t0 = Instant::now();
+        let mut n = 0;
+        for _ in tree.try_iter(&store)? {
+            n += 1;
+        }
+        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+        Ok(())
+    }
+
+    fn init_logger() {
+        let _ = env_logger::builder()
+            // Include all events in tests
+            .filter_level(log::LevelFilter::max())
+            // Ensure events are captured by `cargo test`
+            .is_test(true)
+            // Ignore errors initializing the logger if tests race to configure it
+            .try_init();
+    }
+
+    #[test]
+    // #[ignore = "too large"]
+    fn browser_compare() -> anyhow::Result<()> {
+        init_logger();
+        let dir = tempdir()?;
+        let path = dir.path().join("large2.rdb");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let db = PagedFileStore::<1048576>::new(file).unwrap();
+        let store: DynBlobStore = Box::new(db);
+        do_test(store)
     }
 
     #[test]

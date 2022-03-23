@@ -1,4 +1,4 @@
-use log::{info, trace};
+use log::{debug, info, trace};
 use num_traits::Num;
 use parking_lot::Mutex;
 use radixdb::{Blob, BlobOwner, BlobStore};
@@ -51,7 +51,7 @@ impl PagingFileInner {
     fn close_page(&mut self) -> anyhow::Result<()> {
         let page0 = page_num(self.length, self.page_size);
         let page_range = page_range(self.length, self.page_size);
-        info!("closing page {} {:?}", page0, page_range);
+        debug!("closing page {} {:?}", page0, page_range);
         let last_page = Arc::make_mut(&mut self.last_page);
         self.inner.write(page_range.start, last_page.clone())?;
         let page = Page(last_page.as_slice().into());
@@ -73,7 +73,7 @@ impl PagingFileInner {
         let page_end = self.length;
         let page_range = page_start..page_end;
         let offset = offset_within_page(self.length, self.page_size);
-        info!("flushing page {} {:?}", page_num, page_range);
+        debug!("flushing page {} {:?}", page_num, page_range);
         self.inner
             .write(page_start, self.last_page[..offset].to_vec())?;
         Ok(())

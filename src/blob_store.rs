@@ -245,7 +245,7 @@ impl<const SIZE: usize> Inner<SIZE> {
             end = self.offset.checked_add(len).context("out of offsets")?;
         }
         let id = self.offset;
-        self.recent.insert(id, Blob::from_slice(data));
+        self.recent.insert(id, Blob::arc_from_byte_slice(data));
         // make sure the new offset is also aligned
         while (end % (ALIGN as u64)) != 0 {
             end += 1;
