@@ -56,6 +56,19 @@ impl WebCacheFs {
         Ok(())
     }
 
+    async fn file_exists(
+        &mut self,
+        dir_name: SharedStr,
+        file_name: SharedStr,
+    ) -> anyhow::Result<bool> {
+        let (dir, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
+        if !files.contains_key(&file_name) {
+            dir.file_exists(file_name.clone()).await
+        } else {
+            Ok(true)
+        }
+    }
+
     async fn append_file_length_prefixed(
         &mut self,
         dir: SharedStr,
@@ -130,6 +143,17 @@ impl WebCacheFs {
         file.length().await
     }
 
+    async fn truncate(
+        &mut self,
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        size: u64,
+    ) -> anyhow::Result<()> {
+        let (_, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
+        let file = files.get_mut(&file_name).context("file not open")?;
+        file.truncate(size).await
+    }
+
     async fn run(mut self) {
         while let Some(cmd) = self.queue.next().await {
             match cmd {
@@ -162,6 +186,14 @@ impl WebCacheFs {
                     cb,
                 } => {
                     let _ = cb.send(self.length(dir_name, file_name).await);
+                }
+                Command::Truncate {
+                    dir_name,
+                    file_name,
+                    size,
+                    cb,
+                } => {
+                    let _ = cb.send(self.truncate(dir_name, file_name, size).await);
                 }
                 Command::ReadFileLengthPrefixed {
                     dir_name,
@@ -199,6 +231,13 @@ impl WebCacheFs {
                 } => {
                     let _ = cb.send(self.open_file(dir_name, file_name).await);
                 }
+                Command::FileExists {
+                    dir_name,
+                    file_name,
+                    cb,
+                } => {
+                    let _ = cb.send(self.file_exists(dir_name, file_name).await);
+                }
                 Command::DeleteFile {
                     dir_name,
                     file_name,
@@ -233,6 +272,11 @@ impl WebCacheDir {
 
     pub(crate) async fn open_file(&self, file_name: SharedStr) -> anyhow::Result<WebCacheFile> {
         WebCacheFile::new(self.cache.clone(), file_name).await
+    }
+
+    pub(crate) async fn file_exists(&self, file_name: SharedStr) -> anyhow::Result<bool> {
+        let chunks = chunks(&self.cache, &file_name).await?;
+        Ok(!chunks.is_empty())
     }
 
     pub(crate) async fn delete(&self, file_name: &str) -> anyhow::Result<bool> {
@@ -369,6 +413,10 @@ impl WebCacheFile {
         Ok(self.prev().range().end)
     }
 
+    pub(crate) async fn truncate(&mut self, size: u64) -> anyhow::Result<()> {
+        todo!()
+    }
+
     async fn load(&self, chunk: &ChunkMeta) -> anyhow::Result<Vec<u8>> {
         let request: String = chunk.to_request_str(&self.file_name);
         let response: Response = js_async(self.cache.match_with_str(&request)).await?;
@@ -460,6 +508,7 @@ async fn write_chunk(
 }
 
 async fn chunks(cache: &web_sys::Cache, name: &str) -> anyhow::Result<Vec<ChunkMeta>> {
+    // todo: is there a way to do this without getting all keys?
     let keys: JsValue = js_async(cache.keys()).await?;
     let chunks = Array::from(&keys)
         .iter()

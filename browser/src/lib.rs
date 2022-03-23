@@ -1,11 +1,14 @@
 use futures::FutureExt;
 use js_sys::{Date, Promise, JSON};
 use log::info;
-use radixdb::{DynBlobStore, TreeNode};
+use parking_lot::Mutex;
+use radixdb::{BlobStore, DynBlobStore, TreeNode};
+use sqlite_vfs::OpenOptions;
 use std::{
+    collections::BTreeMap,
     convert::{TryFrom, TryInto},
     fmt::{Debug, Display},
-    io::{Read, Seek, Write},
+    io::{self, ErrorKind, Read, Seek, Write},
     ops::Range,
     sync::Arc,
 };
@@ -158,7 +161,7 @@ pub async fn start() -> Result<JsValue, JsValue> {
     ::console_error_panic_hook::set_once();
     sqlite_test().map_err(err_to_jsvalue)?;
     pool_test().await.map_err(err_to_jsvalue)?;
-    Ok(5.into())
+    Ok("done".into())
 }
 
 async fn pool_test() -> anyhow::Result<()> {
@@ -284,87 +287,280 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
     do_test(store)
 }
 
-use sqlite_vfs::{register, OpenAccess, OpenOptions, Vfs};
+#[derive(Debug)]
+pub struct SeekableFile {
+    inner: SyncFile,
+    position: u64,
+}
 
-struct TestVfs;
-
-struct TestFile;
-
-impl Read for TestFile {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        todo!()
+impl SeekableFile {
+    fn new(file: SyncFile) -> Self {
+        Self {
+            inner: file,
+            position: 0,
+        }
     }
 }
 
-impl Write for TestFile {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        todo!()
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        todo!()
-    }
-}
-
-impl Seek for TestFile {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        todo!()
+impl std::io::Read for SeekableFile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let range = self.position..self.position + buf.len() as u64;
+        let data = self.inner.read(range).map_err(anyhow_to_io)?;
+        buf.copy_from_slice(&data);
+        Ok(buf.len())
     }
 }
 
-impl sqlite_vfs::File for TestFile {
+impl std::io::Write for SeekableFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner
+            .write(self.position, buf.to_vec())
+            .map_err(anyhow_to_io)?;
+        self.position += buf.len() as u64;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush().map_err(anyhow_to_io)
+    }
+}
+
+impl std::io::Seek for SeekableFile {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        info!("seek {:?} {:?}", self, pos);
+        match pos {
+            io::SeekFrom::Start(x) => {
+                // seeking behind the end of a file is allowed
+                self.position = x;
+                Ok(self.position)
+            }
+            io::SeekFrom::Current(x) => {
+                let pos_i64 = i64::try_from(self.position).unwrap();
+                let p = pos_i64.saturating_add(x);
+                if p < 0 {
+                    Err(io::Error::new(io::ErrorKind::Other, ""))
+                } else {
+                    self.position = u64::try_from(p).unwrap();
+                    Ok(self.position)
+                }
+            }
+            io::SeekFrom::End(x) => {
+                let len = self.inner.length().map_err(anyhow_to_io)?;
+                let len_i64 = i64::try_from(len).unwrap();
+                let p = len_i64.saturating_add(x);
+                if p < 0 {
+                    Err(io::Error::new(io::ErrorKind::Other, ""))
+                } else {
+                    self.position = u64::try_from(p).unwrap();
+                    Ok(self.position)
+                }
+            }
+        }
+    }
+}
+
+impl sqlite_vfs::File for SeekableFile {
     fn file_size(&self) -> Result<u64, std::io::Error> {
-        todo!()
+        self.inner.length().map_err(anyhow_to_io)
     }
 
     fn truncate(&mut self, size: u64) -> Result<(), std::io::Error> {
-        todo!()
+        self.inner.truncate(size).map_err(anyhow_to_io)
     }
 }
 
-impl Vfs for TestVfs {
-    type File = TestFile;
+fn anyhow_to_io(error: anyhow::Error) -> std::io::Error {
+    std::io::Error::new(ErrorKind::Other, error)
+}
+
+impl sqlite_vfs::Vfs for SyncDir {
+    type File = SeekableFile;
 
     fn open(&self, path: &str, opts: OpenOptions) -> Result<Self::File, std::io::Error> {
-        todo!()
+        let inner = self.open_file(path).map_err(anyhow_to_io)?;
+        Ok(SeekableFile::new(inner))
     }
 
     fn delete(&self, path: &str) -> Result<(), std::io::Error> {
-        todo!()
+        self.delete_file(path).map_err(anyhow_to_io)?;
+        Ok(())
     }
 
     fn exists(&self, path: &str) -> Result<bool, std::io::Error> {
-        todo!()
+        let res = self.file_exists(path).map_err(anyhow_to_io)?;
+        Ok(res)
     }
 }
 
+#[derive(Debug)]
+struct MemVfs {
+    files: Arc<parking_lot::Mutex<BTreeMap<String, MemFile>>>,
+}
+
+impl MemVfs {
+    fn new() -> Self {
+        Self {
+            files: Arc::new(Mutex::new(Default::default())),
+        }
+    }
+}
+
+struct MemFile {
+    name: String,
+    data: Vec<u8>,
+    position: usize,
+}
+
+impl std::fmt::Debug for MemFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemFile")
+            .field("name", &self.name)
+            .field("data", &self.data.len())
+            .field("position", &self.position)
+            .finish()
+    }
+}
+
+impl Read for MemFile {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        info!("read {:?} {}", self, buf.len());
+        let remaining = self.data.len().saturating_sub(self.position);
+        let n = remaining.min(buf.len());
+        if n != 0 {
+            buf[..n].copy_from_slice(&self.data[self.position..self.position + n]);
+            self.position += n;
+        }
+        Ok(n)
+    }
+}
+
+impl Write for MemFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        info!("write {:?} {}", self, buf.len());
+        if self.position > self.data.len() {
+            return Err(io::Error::new(io::ErrorKind::Other, ""));
+        }
+        let current_len = self.data.len();
+        let len = buf.len();
+        let end = self.position + buf.len();
+        self.data.extend((current_len..end).map(|_| 0u8));
+        self.data[self.position..end].copy_from_slice(&buf);
+        self.position = end;
+        Ok(len)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        info!("flush {:?}", self);
+        Ok(())
+    }
+}
+
+impl Seek for MemFile {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        info!("seek {:?} {:?}", self, pos);
+        match pos {
+            io::SeekFrom::Start(x) => {
+                self.position = usize::try_from(x).unwrap();
+                Ok(self.position as u64)
+            }
+            io::SeekFrom::End(x) => {
+                let p = (self.data.len() as i64).saturating_add(x);
+                if p < 0 {
+                    Err(io::Error::new(io::ErrorKind::Other, ""))
+                } else {
+                    self.position = usize::try_from(p).unwrap();
+                    Ok(self.position as u64)
+                }
+            }
+            io::SeekFrom::Current(x) => {
+                let p = (self.position as i64).saturating_add(x);
+                if p < 0 {
+                    Err(io::Error::new(io::ErrorKind::Other, ""))
+                } else {
+                    self.position = usize::try_from(p).unwrap();
+                    Ok(self.position as u64)
+                }
+            }
+        }
+    }
+}
+
+impl sqlite_vfs::File for MemFile {
+    fn file_size(&self) -> Result<u64, std::io::Error> {
+        info!("file_size {:?}", self);
+        Ok(self.data.len() as u64)
+    }
+
+    fn truncate(&mut self, size: u64) -> Result<(), std::io::Error> {
+        info!("truncate {:?} {}", self, size);
+        let size = usize::try_from(size).unwrap();
+        self.data.truncate(size);
+        Ok(())
+    }
+}
+
+impl sqlite_vfs::Vfs for MemVfs {
+    type File = MemFile;
+
+    fn open(&self, path: &str, opts: OpenOptions) -> Result<Self::File, std::io::Error> {
+        info!("open {:?} {} {:?}", self, path, opts);
+        Ok(MemFile {
+            name: path.into(),
+            data: Default::default(),
+            position: 0,
+        })
+    }
+
+    fn delete(&self, path: &str) -> Result<(), std::io::Error> {
+        info!("delete {:?} {}", self, path);
+        Ok(())
+    }
+
+    fn exists(&self, path: &str) -> Result<bool, std::io::Error> {
+        info!("exists {:?} {}", self, path);
+        Ok(false)
+    }
+
+    /// Check access to `path`. The default implementation always returns `true`.
+    fn access(&self, path: &str, write: bool) -> Result<bool, std::io::Error> {
+        info!("access {} {}", path, write);
+        Ok(true)
+    }
+}
+
+const PRAGMAS: &str = r#"
+    --! PRAGMA journal_mode = WAL;
+    PRAGMA page_size = 40960;
+"#;
+
 fn sqlite_test() -> anyhow::Result<()> {
     use rusqlite::{Connection, OpenFlags};
+    let vfs = MemVfs::new();
 
-    sqlite_vfs::register("test", TestVfs).unwrap();
+    sqlite_vfs::register("test", vfs).unwrap();
     let conn = Connection::open_with_flags_and_vfs(
         "db/main.db3",
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_CREATE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         "test",
-    )
-    .unwrap();
-    let conn = Connection::open_in_memory().unwrap();
+    )?;
+
+    conn.execute_batch(PRAGMAS)?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS vals (id INT PRIMARY KEY, val VARCHAR NOT NULL)",
         [],
-    )
-    .unwrap();
+    )?;
 
-    conn.execute("INSERT INTO vals (val) VALUES ('test')", [])
-        .unwrap();
+    for i in 0..1000 {
+        conn.execute("INSERT INTO vals (val) VALUES ('test')", [])?;
+    }
 
-    let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM vals", [], |row| row.get(0))
-        .unwrap();
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM vals", [], |row| row.get(0))?;
 
     info!("Count: {}", n);
+    conn.cache_flush()?;
+    drop(conn);
     Ok(())
 }

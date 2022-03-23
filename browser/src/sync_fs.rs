@@ -25,6 +25,11 @@ pub(crate) enum Command {
         file_name: SharedStr,
         cb: oneshot::Sender<anyhow::Result<()>>,
     },
+    FileExists {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<bool>>,
+    },
     DeleteFile {
         dir_name: SharedStr,
         file_name: SharedStr,
@@ -52,6 +57,12 @@ pub(crate) enum Command {
         dir_name: SharedStr,
         file_name: SharedStr,
         cb: oneshot::Sender<anyhow::Result<u64>>,
+    },
+    Truncate {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        size: u64,
+        cb: oneshot::Sender<anyhow::Result<()>>,
     },
     AppendFileLengthPrefixed {
         dir_name: SharedStr,
@@ -138,6 +149,18 @@ impl SyncDir {
         })
     }
 
+    pub fn file_exists(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<bool> {
+        let file_name = file_name.into();
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::FileExists {
+            dir_name: self.dir_name.clone(),
+            file_name: file_name.clone(),
+            cb: tx,
+        })?;
+        let res = block_on(rx)??;
+        Ok(res)
+    }
+
     pub fn delete_file(&self, file_name: impl Into<SharedStr>) -> anyhow::Result<bool> {
         let file_name = file_name.into();
         let (tx, rx) = oneshot::channel();
@@ -187,6 +210,17 @@ impl SyncFile {
             file_name: self.file_name.clone(),
             offset,
             data,
+            cb: tx,
+        })?;
+        block_on(rx)?
+    }
+
+    pub fn truncate(&self, size: u64) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::Truncate {
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            size,
             cb: tx,
         })?;
         block_on(rx)?
