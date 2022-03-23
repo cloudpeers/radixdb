@@ -236,7 +236,6 @@ mod tests {
             prop_assert_eq!(Some(id), f.id_u64());
         }
 
-
         #[test]
         fn flexref_id_and_extra_roundtrip(id in 0u64..=0x0000_FFFF__FFFF_FFFFu64, extra in any::<Option<u8>>()) {
             let f = FlexRef::<u8>::id_from_u64_and_extra(id, extra).unwrap();
