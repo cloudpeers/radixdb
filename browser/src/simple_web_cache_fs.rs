@@ -11,7 +11,7 @@ use std::{
 use url::Url;
 use wasm_bindgen::JsValue;
 use wasm_futures_executor::ThreadPool;
-use web_sys::{CacheQueryOptions, Request, Response};
+use web_sys::{Cache, CacheQueryOptions, Request, Response};
 
 use crate::{
     js_async, overlap, ranges, sync_fs::SyncFs, worker_scope, Command, JsError, SharedStr,
@@ -75,17 +75,21 @@ impl WebCacheFs {
 
     async fn read_file_length_prefixed(
         &mut self,
-        dir: SharedStr,
+        dir_name: SharedStr,
         file_name: SharedStr,
         offset: u64,
     ) -> anyhow::Result<Blob<u8>> {
-        let (_, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+        let (_, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
         let file = files.get_mut(&file_name).context("file not open")?;
         file.load_length_prefixed(offset).await
     }
 
-    async fn delete_file(&mut self, dir: SharedStr, file_name: SharedStr) -> anyhow::Result<bool> {
-        let (dir, files) = self.dirs.get_mut(&dir).context("dir not open")?;
+    async fn delete_file(
+        &mut self,
+        dir_name: SharedStr,
+        file_name: SharedStr,
+    ) -> anyhow::Result<bool> {
+        let (dir, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
         let res = dir.delete(&file_name).await?;
         files.remove(&file_name);
         Ok(res)
@@ -97,6 +101,35 @@ impl WebCacheFs {
         Ok(res.as_bool().context("no bool")?)
     }
 
+    async fn read(
+        &mut self,
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        range: Range<u64>,
+    ) -> anyhow::Result<Vec<u8>> {
+        let (_, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
+        let file = files.get_mut(&file_name).context("file not open")?;
+        file.read(range).await
+    }
+
+    async fn write(
+        &mut self,
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let (_, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
+        let file = files.get_mut(&file_name).context("file not open")?;
+        file.write(offset, data).await
+    }
+
+    async fn length(&mut self, dir_name: SharedStr, file_name: SharedStr) -> anyhow::Result<u64> {
+        let (_, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
+        let file = files.get_mut(&file_name).context("file not open")?;
+        file.length().await
+    }
+
     async fn run(mut self) {
         while let Some(cmd) = self.queue.next().await {
             match cmd {
@@ -105,6 +138,30 @@ impl WebCacheFs {
                 }
                 Command::DeleteDir { dir_name, cb } => {
                     let _ = cb.send(self.delete_dir(dir_name).await);
+                }
+                Command::Read {
+                    dir_name,
+                    file_name,
+                    range,
+                    cb,
+                } => {
+                    let _ = cb.send(self.read(dir_name, file_name, range).await);
+                }
+                Command::Write {
+                    dir_name,
+                    file_name,
+                    offset,
+                    data,
+                    cb,
+                } => {
+                    let _ = cb.send(self.write(dir_name, file_name, offset, data).await);
+                }
+                Command::Length {
+                    dir_name,
+                    file_name,
+                    cb,
+                } => {
+                    let _ = cb.send(self.length(dir_name, file_name).await);
                 }
                 Command::ReadFileLengthPrefixed {
                     dir_name,
@@ -205,59 +262,13 @@ pub struct WebCacheFile {
 impl WebCacheFile {
     pub(crate) async fn new(cache: web_sys::Cache, file_name: SharedStr) -> anyhow::Result<Self> {
         let mut chunks = chunks(&cache, &file_name).await?;
-        let to_delete = Self::retain_relevant(&mut chunks);
-        Self::delete(&cache, &file_name, &to_delete).await?;
+        let to_delete = retain_relevant(&mut chunks);
+        delete(&cache, &file_name, &to_delete).await?;
         Ok(Self {
             cache,
             file_name,
             chunks,
         })
-    }
-
-    /// sort chunks, retain relevant, and return the ones to be deletes as a vec
-    fn retain_relevant(chunks: &mut Vec<ChunkMeta>) -> Vec<ChunkMeta> {
-        chunks.sort();
-        let mut prev = ChunkMeta::default();
-        let mut to_delete = Vec::new();
-        chunks.retain(|chunk| {
-            if prev.level == chunk.level {
-                // same level as previous
-                if prev.range().end == chunk.range().start {
-                    // consecutive, move ahead
-                    prev = *chunk;
-                    true
-                } else {
-                    // non-consecutive, discard
-                    to_delete.push(*chunk);
-                    false
-                }
-            } else if prev.level + 1 == chunk.level {
-                if chunk.offset == 0 {
-                    // new level starts at offset 0, take
-                    true
-                } else {
-                    // chunk is not consecutive, discard
-                    to_delete.push(*chunk);
-                    false
-                }
-            } else {
-                to_delete.push(*chunk);
-                false
-            }
-        });
-        to_delete
-    }
-
-    async fn delete(
-        cache: &web_sys::Cache,
-        file_name: &str,
-        to_delete: &[ChunkMeta],
-    ) -> anyhow::Result<()> {
-        for chunk in to_delete {
-            let request = chunk.to_request_str(file_name);
-            let _: JsValue = js_async(cache.delete_with_str(&request)).await?;
-        }
-        Ok(())
     }
 
     fn prev(&self) -> ChunkMeta {
@@ -291,12 +302,6 @@ impl WebCacheFile {
         self.append(&mut data).await
     }
 
-    fn intersecting_chunks(&self, range: Range<u64>) -> impl Iterator<Item = &ChunkMeta> {
-        self.chunks
-            .iter()
-            .filter(move |chunk| overlap(chunk.range(), range.clone()))
-    }
-
     async fn load_chunks(
         &self,
         range: Range<u64>,
@@ -319,9 +324,7 @@ impl WebCacheFile {
     pub(crate) async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Blob<u8>> {
         // info!("load_length_prefixed index={}", start);
         // let t0 = js_sys::Date::now();
-        let chunks = self
-            .intersecting_chunks(start..start + 4)
-            .collect::<Vec<_>>();
+        let chunks = intersecting_chunks(&self.chunks, start..start + 4).collect::<Vec<_>>();
         let end = chunks.iter().map(|x| x.range().end).max().unwrap_or(start);
         let res = self.load_chunks(start..end, chunks).await?;
         let len = usize::try_from(u32::from_be_bytes(res[0..4].try_into().unwrap()))?;
@@ -334,13 +337,36 @@ impl WebCacheFile {
     pub(crate) async fn read(&self, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
         let len_u64 = range.end.saturating_sub(range.start);
         let len: usize = len_u64.try_into()?;
+        anyhow::ensure!(
+            range.end <= self.prev().range().end,
+            "tried to read beyond the end of the file"
+        );
         let mut res = vec![0u8; len];
-        for chunk in self.intersecting_chunks(range.clone()) {
+        for chunk in intersecting_chunks(&self.chunks, range.clone()) {
             let (sr, tr) = ranges(chunk.range(), range.clone())?;
             let data = self.load_range(chunk, sr).await?;
             data.copy_to(&mut res[tr]);
         }
         Ok(res)
+    }
+
+    pub(crate) async fn write(&mut self, offset: u64, mut data: Vec<u8>) -> anyhow::Result<()> {
+        let start = offset;
+        let end = start + u64::try_from(data.len())?;
+        let range = start..end;
+        let current_end = self.prev().range().end;
+        anyhow::ensure!(start <= current_end, "non consecutive write");
+        anyhow::ensure!(end >= current_end, "write in the middle");
+        let chunk = self.mk_chunk(range);
+        write_chunk(&self.cache, &self.file_name, &chunk, &mut data).await?;
+        self.chunks.push(chunk);
+        let to_delete = retain_relevant(&mut self.chunks);
+        delete(&self.cache, &self.file_name, &to_delete).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn length(&mut self) -> anyhow::Result<u64> {
+        Ok(self.prev().range().end)
     }
 
     async fn load(&self, chunk: &ChunkMeta) -> anyhow::Result<Vec<u8>> {
@@ -382,6 +408,55 @@ impl WebCacheFile {
         // info!("convert to uint8array {}", js_sys::Date::now() - t0);
         Ok(ua)
     }
+
+    fn mk_chunk(&self, range: Range<u64>) -> ChunkMeta {
+        let overwrite = intersecting_chunks(&self.chunks, range.clone())
+            .next()
+            .is_some();
+        let level = if overwrite {
+            self.prev().level + 1
+        } else {
+            self.prev().level
+        };
+        ChunkMeta {
+            level,
+            offset: range.start,
+            len: range.end.saturating_sub(range.start),
+        }
+    }
+}
+
+fn intersecting_chunks<'a>(
+    chunks: impl IntoIterator<Item = &'a ChunkMeta>,
+    range: Range<u64>,
+) -> impl Iterator<Item = &'a ChunkMeta> {
+    chunks
+        .into_iter()
+        .filter(move |chunk| overlap(chunk.range(), range.clone()))
+}
+
+async fn delete(
+    cache: &web_sys::Cache,
+    file_name: &str,
+    to_delete: &[ChunkMeta],
+) -> anyhow::Result<()> {
+    for chunk in to_delete {
+        let request = chunk.to_request_str(file_name);
+        let _: JsValue = js_async(cache.delete_with_str(&request)).await?;
+    }
+    Ok(())
+}
+
+async fn write_chunk(
+    cache: &Cache,
+    file_name: &str,
+    chunk: &ChunkMeta,
+    data: &mut [u8],
+) -> anyhow::Result<()> {
+    let request = chunk.to_request_str(file_name);
+    let response = Response::new_with_opt_u8_array(Some(data)).map_err(JsError::from)?;
+    let _: JsValue = js_async(cache.put_with_str(&request, &response)).await?;
+    Ok(())
 }
 
 async fn chunks(cache: &web_sys::Cache, name: &str) -> anyhow::Result<Vec<ChunkMeta>> {
@@ -392,6 +467,41 @@ async fn chunks(cache: &web_sys::Cache, name: &str) -> anyhow::Result<Vec<ChunkM
         .filter_map(|x| x)
         .collect::<Vec<_>>();
     Ok(chunks)
+}
+
+/// sort chunks, retain relevant, and return the ones to be deletes as a vec
+fn retain_relevant(chunks: &mut Vec<ChunkMeta>) -> Vec<ChunkMeta> {
+    chunks.sort();
+    let mut prev = ChunkMeta::default();
+    let mut to_delete = Vec::new();
+    chunks.retain(|chunk| {
+        if prev.level == chunk.level {
+            // same level as previous
+            if prev.range().end == chunk.range().start {
+                // consecutive, move ahead
+                prev = *chunk;
+                true
+            } else {
+                // non-consecutive, discard
+                to_delete.push(*chunk);
+                false
+            }
+        } else if prev.level + 1 == chunk.level {
+            if chunk.range().start <= prev.range().end {
+                // consecutive with previous level, take
+                prev = *chunk;
+                true
+            } else {
+                // chunk is not consecutive, discard
+                to_delete.push(*chunk);
+                false
+            }
+        } else {
+            to_delete.push(*chunk);
+            false
+        }
+    });
+    to_delete
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]

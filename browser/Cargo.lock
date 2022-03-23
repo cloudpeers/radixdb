@@ -429,6 +429,7 @@ dependencies = [
  "js-sys",
  "log",
  "num-traits",
+ "parking_lot 0.12.0",
  "radixdb",
  "url",
  "wasm-bindgen",

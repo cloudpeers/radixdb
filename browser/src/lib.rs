@@ -18,8 +18,8 @@ use sync_fs::Command;
 pub use sync_fs::{SyncDir, SyncFile, SyncFs};
 mod simple_web_cache_fs;
 pub use simple_web_cache_fs::WebCacheFs as SimpleWebCacheFs;
-mod paging_web_cache_fs;
-pub use paging_web_cache_fs::WebCacheFs as PagingWebCacheFs;
+mod paging_file;
+pub use paging_file::PagingFile;
 
 use crate::simple_web_cache_fs::WebCacheDir;
 
@@ -210,27 +210,19 @@ async fn cache_bench() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
-    let fs = PagingWebCacheFs::new(pool);
-    fs.delete_dir("sync")?;
-    let dir = fs.open_dir("sync")?;
-    dir.delete_file("test")?;
-    let file = dir.open_file("test")?;
-    let elems = (0..100000)
-        .map(|i| {
-            (
-                i.to_string().as_bytes().to_vec(),
-                i.to_string().as_bytes().to_vec(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut store: DynBlobStore = Box::new(file);
+fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
+    let elems = (0..2000000).map(|i| {
+        if i % 1000 == 0 {
+            info!("{}", i);
+        }
+        (
+            i.to_string().as_bytes().to_vec(),
+            i.to_string().as_bytes().to_vec(),
+        )
+    });
     let t0 = Date::now();
     info!("building tree");
-    let mut tree: TreeNode = elems
-        .iter()
-        .map(|(k, v)| (k.as_ref(), v.as_ref()))
-        .collect();
+    let mut tree: TreeNode = elems.collect();
     info!("unattached tree {:?} {} ms", tree, Date::now() - t0);
     info!("traversing unattached tree...");
     let t0 = Date::now();
@@ -273,4 +265,15 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
     }
     info!("done {} items, {} ms", n, Date::now() - t0);
     Ok(())
+}
+
+fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
+    let fs = SimpleWebCacheFs::new(pool);
+    fs.delete_dir("sync")?;
+    let dir = fs.open_dir("sync")?;
+    dir.delete_file("test")?;
+    let file = dir.open_file("test")?;
+    let file = PagingFile::new(file, 1024 * 1024)?;
+    let store: DynBlobStore = Box::new(file);
+    do_test(store)
 }

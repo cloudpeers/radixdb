@@ -615,6 +615,16 @@ impl<'a> FromIterator<(&'a [u8], &'a [u8])> for TreeNode {
     }
 }
 
+impl FromIterator<(Vec<u8>, Vec<u8>)> for TreeNode {
+    fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
+        let store = &NoStore::new();
+        iter.into_iter().fold(TreeNode::empty(), |a, (key, value)| {
+            let b = TreeNode::single(&key, &value);
+            outer_combine(&a, &store, &b, &store, |_, b| Ok(b)).unwrap()
+        })
+    }
+}
+
 /// Outer combine two trees with a function f
 fn outer_combine(
     a: &TreeNode,

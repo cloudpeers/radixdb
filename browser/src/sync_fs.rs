@@ -5,6 +5,7 @@ use futures::{
 };
 use radixdb::Blob;
 use std::fmt::Debug;
+use std::ops::Range;
 
 use crate::SharedStr;
 
@@ -33,6 +34,24 @@ pub(crate) enum Command {
         dir_name: SharedStr,
         file_name: SharedStr,
         cb: oneshot::Sender<anyhow::Result<()>>,
+    },
+    Write {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        offset: u64,
+        data: Vec<u8>,
+        cb: oneshot::Sender<anyhow::Result<()>>,
+    },
+    Read {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        range: Range<u64>,
+        cb: oneshot::Sender<anyhow::Result<Vec<u8>>>,
+    },
+    Length {
+        dir_name: SharedStr,
+        file_name: SharedStr,
+        cb: oneshot::Sender<anyhow::Result<u64>>,
     },
     AppendFileLengthPrefixed {
         dir_name: SharedStr,
@@ -139,7 +158,40 @@ pub struct SyncFile {
     tx: mpsc::UnboundedSender<Command>,
 }
 
-impl SyncFile {}
+impl SyncFile {
+    pub fn length(&self) -> anyhow::Result<u64> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::Length {
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            cb: tx,
+        })?;
+        block_on(rx)?
+    }
+
+    pub fn read(&self, range: Range<u64>) -> anyhow::Result<Vec<u8>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::Read {
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            range,
+            cb: tx,
+        })?;
+        block_on(rx)?
+    }
+
+    pub fn write(&self, offset: u64, data: Vec<u8>) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.tx.unbounded_send(Command::Write {
+            dir_name: self.dir_name.clone(),
+            file_name: self.file_name.clone(),
+            offset,
+            data,
+            cb: tx,
+        })?;
+        block_on(rx)?
+    }
+}
 
 impl radixdb::BlobStore for SyncFile {
     fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
