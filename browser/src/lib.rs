@@ -155,6 +155,7 @@ mod tests {
 pub async fn start() -> Result<JsValue, JsValue> {
     let _ = console_log::init_with_level(log::Level::Info);
     ::console_error_panic_hook::set_once();
+    sqlite_test().map_err(err_to_jsvalue)?;
     pool_test().await.map_err(err_to_jsvalue)?;
     Ok(5.into())
 }
@@ -282,16 +283,18 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
     do_test(store)
 }
 
-fn sqlite_test(pool: ThreadPool) -> anyhow::Result<()> {
+fn sqlite_test() -> anyhow::Result<()> {
     use rusqlite::{Connection, OpenFlags};
 
-    let conn = Connection::open_with_flags_and_vfs(
-        "db/main.db3",
-        OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_CREATE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        "test",
-    )
+    // let conn = Connection::open_with_flags_and_vfs(
+    //     "db/main.db3",
+    //     OpenFlags::SQLITE_OPEN_READ_WRITE
+    //         | OpenFlags::SQLITE_OPEN_CREATE
+    //         | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    //     "test",
+    // )
+    // .unwrap();
+    let conn = Connection::open_in_memory()
     .unwrap();
 
     conn.execute(
@@ -307,6 +310,6 @@ fn sqlite_test(pool: ThreadPool) -> anyhow::Result<()> {
         .query_row("SELECT COUNT(*) FROM vals", [], |row| row.get(0))
         .unwrap();
 
-    println!("Count: {}", n);
+    info!("Count: {}", n);
     Ok(())
 }
