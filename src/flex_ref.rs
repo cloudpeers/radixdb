@@ -224,6 +224,7 @@ impl<T> Drop for FlexRef<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use log::info;
     use proptest::prelude::*;
 
     proptest! {
@@ -231,14 +232,23 @@ mod tests {
         #[test]
         fn flexref_id_roundtrip(id in 0u64..=0x0000_FFFF__FFFF_FFFFu64) {
             let f = FlexRef::<u8>::id_from_u64(id).unwrap();
-            println!("{} {:?}", id, f);
+            info!("{} {:?}", id, f);
             prop_assert_eq!(Some(id), f.id_u64());
+        }
+
+
+        #[test]
+        fn flexref_id_and_extra_roundtrip(id in 0u64..=0x0000_FFFF__FFFF_FFFFu64, extra in any::<Option<u8>>()) {
+            let f = FlexRef::<u8>::id_from_u64_and_extra(id, extra).unwrap();
+            info!("{} {:?}", id, f);
+            prop_assert_eq!(Some(id), f.id_u64());
+            prop_assert_eq!(Some(extra), f.id_extra_data());
         }
 
         #[test]
         fn flexref_inline_roundtrip(inline in proptest::collection::vec(any::<u8>(), 0..6)) {
             let f = FlexRef::<u8>::inline_from_slice(&inline).unwrap();
-            println!("{:x?} {:?}", inline, f);
+            info!("{:x?} {:?}", inline, f);
             prop_assert_eq!(Some(inline.as_slice()), f.inline_as_ref());
         }
     }
