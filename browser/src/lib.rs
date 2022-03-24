@@ -1,6 +1,6 @@
 use futures::FutureExt;
 use js_sys::{Date, Promise, JSON};
-use log::info;
+use log::{info, trace};
 use parking_lot::Mutex;
 use radixdb::{BlobStore, DynBlobStore, TreeNode};
 use sqlite_vfs::OpenOptions;
@@ -159,7 +159,6 @@ mod tests {
 pub async fn start() -> Result<JsValue, JsValue> {
     let _ = console_log::init_with_level(log::Level::Info);
     ::console_error_panic_hook::set_once();
-    sqlite_test().map_err(err_to_jsvalue)?;
     pool_test().await.map_err(err_to_jsvalue)?;
     Ok("done".into())
 }
@@ -167,15 +166,18 @@ pub async fn start() -> Result<JsValue, JsValue> {
 async fn pool_test() -> anyhow::Result<()> {
     let pool = ThreadPool::new(2).await.map_err(JsError::from)?;
     let pool2 = pool.clone();
+    let pool3 = pool.clone();
     // the outer spawn is necessary so we don't block on the main thread, which is not allowed
     pool.spawn_lazy(move || {
         async move {
             // info!("starting cache_bench");
             // cache_bench().await.unwrap();
+            info!("starting sqlite_test");
+            sqlite_test(pool2).unwrap();
             info!("starting cache_test");
             cache_test().await.unwrap();
             info!("starting cache_test_sync");
-            cache_test_sync(pool2).unwrap();
+            cache_test_sync(pool3).unwrap();
         }
         .boxed_local()
     });
@@ -304,18 +306,31 @@ impl SeekableFile {
 
 impl std::io::Read for SeekableFile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let range = self.position..self.position + buf.len() as u64;
-        let data = self.inner.read(range).map_err(anyhow_to_io)?;
-        buf.copy_from_slice(&data);
-        Ok(buf.len())
+        info!("read {:?}, {}", self, buf.len());
+        let current_len = self.inner.length().map_err(anyhow_to_io)?;
+        let start = self.position;
+        let end = current_len.min(self.position + buf.len() as u64);
+        let range = start..end;
+        let len = end.saturating_sub(start);
+        trace!("  range={:?}", range);
+        let data = self.inner.read(range).map_err(anyhow_to_io);
+        trace!("  res={:?}", data);
+        let data = data?;
+        let len_usize = len as usize;
+        buf[0..len_usize].copy_from_slice(&data[..len_usize]);
+        Ok(len_usize)
     }
 }
 
 impl std::io::Write for SeekableFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner
+        info!("write {:?}, {}", self, buf.len());
+        info!("  position={} len={}", self.position, buf.len());
+        let res = self.inner
             .write(self.position, buf.to_vec())
-            .map_err(anyhow_to_io)?;
+            .map_err(anyhow_to_io);
+        info!("  res={:?}", res);
+        let res = res?;
         self.position += buf.len() as u64;
         Ok(buf.len())
     }
@@ -361,10 +376,12 @@ impl std::io::Seek for SeekableFile {
 
 impl sqlite_vfs::File for SeekableFile {
     fn file_size(&self) -> Result<u64, std::io::Error> {
+        info!("file_size {:?}", self);
         self.inner.length().map_err(anyhow_to_io)
     }
 
     fn truncate(&mut self, size: u64) -> Result<(), std::io::Error> {
+        info!("truncate {:?} {}", self, size);
         self.inner.truncate(size).map_err(anyhow_to_io)
     }
 }
@@ -377,16 +394,19 @@ impl sqlite_vfs::Vfs for SyncDir {
     type File = SeekableFile;
 
     fn open(&self, path: &str, opts: OpenOptions) -> Result<Self::File, std::io::Error> {
+        info!("open {:?} {} {:?}", self, path, opts);
         let inner = self.open_file(path).map_err(anyhow_to_io)?;
         Ok(SeekableFile::new(inner))
     }
 
     fn delete(&self, path: &str) -> Result<(), std::io::Error> {
+        info!("delete {:?} {}", self, path);
         self.delete_file(path).map_err(anyhow_to_io)?;
         Ok(())
     }
 
     fn exists(&self, path: &str) -> Result<bool, std::io::Error> {
+        info!("exists {:?} {}", self, path);
         let res = self.file_exists(path).map_err(anyhow_to_io)?;
         Ok(res)
     }
@@ -533,11 +553,13 @@ const PRAGMAS: &str = r#"
     PRAGMA page_size = 40960;
 "#;
 
-fn sqlite_test() -> anyhow::Result<()> {
+fn sqlite_test(pool: ThreadPool) -> anyhow::Result<()> {
     use rusqlite::{Connection, OpenFlags};
-    let vfs = MemVfs::new();
+    let fs = SimpleWebCacheFs::new(pool);
+    fs.delete_dir("sqlite")?;
+    let dir = fs.open_dir("sqlite")?;
 
-    sqlite_vfs::register("test", vfs).unwrap();
+    sqlite_vfs::register("test", dir).unwrap();
     let conn = Connection::open_with_flags_and_vfs(
         "db/main.db3",
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -553,7 +575,7 @@ fn sqlite_test() -> anyhow::Result<()> {
         [],
     )?;
 
-    for i in 0..1000 {
+    for i in 0..10 {
         conn.execute("INSERT INTO vals (val) VALUES ('test')", [])?;
     }
 

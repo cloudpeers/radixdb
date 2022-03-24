@@ -612,6 +612,7 @@ checksum = "fe0f37c9e8f3c5a4a66ad655a93c74daac4ad00c441533bf5c6e7990bb42604e"
 [[package]]
 name = "sqlite-vfs"
 version = "0.1.0"
+source = "git+https://github.com/rklaehn/sqlite-vfs?branch=wasm#b1835bd79b184d094398239d7ad1f5887d74666e"
 dependencies = [
  "getrandom",
  "libsqlite3-sys",

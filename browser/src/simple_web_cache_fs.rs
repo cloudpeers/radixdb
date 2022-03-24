@@ -400,7 +400,7 @@ impl WebCacheFile {
         let range = start..end;
         let current_end = self.prev().range().end;
         anyhow::ensure!(start <= current_end, "non consecutive write");
-        anyhow::ensure!(end >= current_end, "write in the middle");
+        // anyhow::ensure!(end >= current_end, "write in the middle");
         let chunk = self.mk_chunk(range);
         write_chunk(&self.cache, &self.file_name, &chunk, &mut data).await?;
         self.chunks.push(chunk);
