@@ -18,7 +18,7 @@ impl DatabaseFile {
 }
 
 impl sqlite_vfs::File for DatabaseFile {
-    fn read_exact(&mut self, start: u64, buf: &mut [u8]) -> VfsResult<usize> {
+    fn read(&mut self, start: u64, buf: &mut [u8]) -> VfsResult<usize> {
         info!("read_exact {:?}, {}", self, buf.len());
         let current_len = self.inner.length().map_err(anyhow_to_vfs)?;
         let end = current_len.min(start + buf.len() as u64);
@@ -31,7 +31,7 @@ impl sqlite_vfs::File for DatabaseFile {
         Ok(len_usize)
     }
 
-    fn write_all(&mut self, start: u64, buf: &[u8]) -> VfsResult<usize> {
+    fn write(&mut self, start: u64, buf: &[u8]) -> VfsResult<usize> {
         info!("write_all {:?} {} {}", self, start, buf.len());
         let res = self
             .inner
@@ -50,7 +50,7 @@ impl sqlite_vfs::File for DatabaseFile {
         self.inner.truncate(size).map_err(anyhow_to_vfs)
     }
 
-    fn flush(&mut self) -> VfsResult<()> {
+    fn sync(&mut self) -> VfsResult<()> {
         self.inner.flush().map_err(anyhow_to_vfs)
     }
 }
@@ -60,23 +60,23 @@ fn anyhow_to_vfs(_: anyhow::Error) -> VfsError {
 }
 
 impl sqlite_vfs::Vfs for SyncDir {
-    type File = DatabaseFile;
+    type File = Box<dyn sqlite_vfs::File>;
 
-    fn open(&self, path: &CStr, opts: OpenOptions) -> VfsResult<Self::File> {
+    fn open(&mut self, path: &CStr, opts: OpenOptions) -> VfsResult<Self::File> {
         let path = path.to_string_lossy();
         info!("open {:?} {} {:?}", self, path, opts);
         let inner = self.open_file(path).map_err(anyhow_to_vfs)?;
-        Ok(DatabaseFile::new(inner))
+        Ok(Box::new(DatabaseFile::new(inner)))
     }
 
-    fn delete(&self, path: &CStr) -> VfsResult<()> {
+    fn delete(&mut self, path: &CStr) -> VfsResult<()> {
         let path = path.to_string_lossy();
         info!("delete {:?} {}", self, path);
         self.delete_file(path).map_err(anyhow_to_vfs)?;
         Ok(())
     }
 
-    fn exists(&self, path: &CStr) -> VfsResult<bool> {
+    fn exists(&mut self, path: &CStr) -> VfsResult<bool> {
         let path = path.to_string_lossy();
         info!("exists {:?} {}", self, path);
         let res = self.file_exists(path).map_err(anyhow_to_vfs)?;
