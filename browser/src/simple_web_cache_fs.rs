@@ -592,7 +592,7 @@ impl ChunkMeta {
 
     fn to_request_str(&self, file_name: &str) -> String {
         format!(
-            "/{}?{:016x}-{:016x}-{:016x}",
+            "/{}?{:04x}-{:08x}-{:04x}",
             file_name, self.level, self.offset, self.len
         )
     }
@@ -600,7 +600,7 @@ impl ChunkMeta {
 
 impl ToString for ChunkMeta {
     fn to_string(&self) -> String {
-        format!("{:016x}-{:016x}-{:016x}", self.level, self.offset, self.len)
+        format!("{:04x}-{:08x}-{:04x}", self.level, self.offset, self.len)
     }
 }
 

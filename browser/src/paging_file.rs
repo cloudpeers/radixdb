@@ -207,13 +207,6 @@ const ALIGNMENT: u64 = 8;
 struct Page(Arc<[u8]>);
 
 impl BlobOwner for Page {
-    fn get_slice(&self, offset: usize) -> &[u8] {
-        let data = &self.0;
-        let base = offset + 4;
-        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        &data[base..base + length]
-    }
-
     fn is_valid(&self, offset: usize) -> bool {
         let data = &self.0;
         if offset + 4 <= data.len() {
@@ -222,6 +215,13 @@ impl BlobOwner for Page {
         } else {
             false
         }
+    }
+
+    fn get_slice(&self, offset: usize) -> &[u8] {
+        let data = &self.0;
+        let base = offset + 4;
+        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        &data[base..base + length]
     }
 }
 
