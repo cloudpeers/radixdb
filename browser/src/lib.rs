@@ -22,10 +22,12 @@ use sync_fs::Command;
 pub use sync_fs::{SyncDir, SyncFile, SyncFs};
 mod simple_web_cache_fs;
 pub use simple_web_cache_fs::WebCacheFs as SimpleWebCacheFs;
+mod web_fs;
+pub use web_fs::WebFs as WebFs;
 mod paging_file;
 pub use paging_file::PagingFile;
 
-use crate::simple_web_cache_fs::WebCacheDir;
+use crate::{simple_web_cache_fs::WebCacheDir, web_fs::get_origin_private_file_system_root};
 
 // macro_rules! console_log {
 //     // Note that this is using the `log` function imported above during
@@ -289,11 +291,11 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
 }
 
 #[derive(Debug)]
-pub struct SeekableFile {
+pub struct SqliteVfsFile {
     inner: SyncFile,
 }
 
-impl SeekableFile {
+impl SqliteVfsFile {
     fn new(file: SyncFile) -> Self {
         Self {
             inner: file,
@@ -301,7 +303,7 @@ impl SeekableFile {
     }
 }
 
-impl sqlite_vfs::File for SeekableFile {
+impl sqlite_vfs::File for SqliteVfsFile {
 
     fn read_exact(&mut self, start: u64, buf: &mut [u8]) -> VfsResult<usize> {
         info!("read_exact {:?}, {}", self, buf.len());
@@ -344,13 +346,13 @@ fn anyhow_to_vfs(error: anyhow::Error) -> VfsError {
 }
 
 impl sqlite_vfs::Vfs for SyncDir {
-    type File = SeekableFile;
+    type File = SqliteVfsFile;
 
     fn open(&self, path: &CStr, opts: OpenOptions) -> VfsResult<Self::File> {
         let path = path.to_string_lossy();
         info!("open {:?} {} {:?}", self, path, opts);
         let inner = self.open_file(path).map_err(anyhow_to_vfs)?;
-        Ok(SeekableFile::new(inner))
+        Ok(SqliteVfsFile::new(inner))
     }
 
     fn delete(&self, path: &CStr) -> VfsResult<()> {
@@ -368,14 +370,10 @@ impl sqlite_vfs::Vfs for SyncDir {
     }
 }
 
-const PRAGMAS: &str = r#"
-    --! PRAGMA journal_mode = WAL; requires SHM
-    PRAGMA page_size = 40960;
-"#;
-
 fn sqlite_test(pool: ThreadPool) -> anyhow::Result<()> {
     use rusqlite::{Connection, OpenFlags};
-    let fs = SimpleWebCacheFs::new(pool);
+    // let fs = SimpleWebCacheFs::new(pool);
+    let fs = WebFs::new(pool, || get_origin_private_file_system_root())?;
     fs.delete_dir("sqlite")?;
     let dir = fs.open_dir("sqlite")?;
 

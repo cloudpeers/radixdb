@@ -30,4 +30,4 @@ sqlite-vfs = { git = "https://github.com/rklaehn/sqlite-vfs", branch = "wasm" }
 
 [dependencies.web-sys]
 version = "0.3.53"
-features = ['DedicatedWorkerGlobalScope', 'WorkerGlobalScope', 'WorkerLocation', 'console', 'Blob', 'IdbIndex', 'IdbObjectStore', 'CacheStorage', 'Cache', 'Request', 'Response', 'StorageManager', 'Navigator', 'CacheQueryOptions']
+features = ['DedicatedWorkerGlobalScope', 'WorkerGlobalScope', 'WorkerNavigator', 'WorkerLocation', 'console', 'Blob', 'IdbIndex', 'IdbObjectStore', 'CacheStorage', 'Cache', 'Request', 'Response', 'StorageManager', 'Navigator', 'CacheQueryOptions', 'Directory', 'File']
