@@ -388,7 +388,12 @@ fn sqlite_test(pool: ThreadPool) -> anyhow::Result<()> {
         "test",
     )?;
 
-    conn.execute_batch(PRAGMAS)?;
+    conn.execute_batch(
+        r#"
+        PRAGMA page_size = 32768;
+        PRAGMA journal_mode = MEMORY;
+        "#,
+    )?;
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS vals (id INT PRIMARY KEY, val VARCHAR NOT NULL)",
