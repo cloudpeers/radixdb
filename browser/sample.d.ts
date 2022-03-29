@@ -35,10 +35,6 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
   readonly start: () => number;
-  readonly __wbg_threadpool_free: (a: number) => void;
-  readonly loaderhelper_mainJS: (a: number) => number;
-  readonly worker_entry_point: (a: number) => void;
-  readonly __wbg_loaderhelper_free: (a: number) => void;
   readonly sqlite3_os_init: () => number;
   readonly wasm_vfs_currenttime: (a: number, b: number) => number;
   readonly wasm_vfs_sleep: (a: number, b: number) => number;
@@ -54,6 +50,10 @@ export interface InitOutput {
   readonly free: (a: number) => void;
   readonly realloc: (a: number, b: number) => number;
   readonly wasm_vfs_fullpathname: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbg_threadpool_free: (a: number) => void;
+  readonly loaderhelper_mainJS: (a: number) => number;
+  readonly worker_entry_point: (a: number) => void;
+  readonly __wbg_loaderhelper_free: (a: number) => void;
   readonly memory: WebAssembly.Memory;
   readonly __wbindgen_malloc: (a: number) => number;
   readonly __wbindgen_realloc: (a: number, b: number, c: number) => number;

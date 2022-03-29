@@ -189,15 +189,15 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
 }
 
 impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
-    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         self.0.lock().bytes(id)
     }
 
-    fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
         self.0.lock().append(data)
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
+    fn sync(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -276,7 +276,7 @@ mod tests {
         info!("attaching tree...");
         let t0 = Instant::now();
         tree.attach(&mut store)?;
-        store.flush()?;
+        store.sync()?;
         info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
         info!("traversing attached tree values...");
         let t0 = Instant::now();
@@ -354,7 +354,7 @@ mod tests {
         let offsets = (0u64..BLOCK_COUNT)
             .map(|i| {
                 let data = mk_block::<BLOCK_SIZE>(i);
-                db.append(&data)
+                db.write(&data)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let dt = t.elapsed().as_secs_f64();
@@ -370,7 +370,7 @@ mod tests {
         let t = Instant::now();
         for (i, offset) in offsets.into_iter().enumerate() {
             let expected = mk_block::<BLOCK_SIZE>(i as u64);
-            let actual = db.bytes(offset)?;
+            let actual = db.read(offset)?;
             assert_eq!(&expected[..], actual.as_ref());
         }
         let dt = t.elapsed().as_secs_f64();

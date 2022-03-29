@@ -32,7 +32,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("attaching tree...");
     let t0 = Instant::now();
     tree.attach(&mut store)?;
-    store.flush()?;
+    store.sync()?;
     info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
     info!("traversing attached tree values...");
     let t0 = Instant::now();

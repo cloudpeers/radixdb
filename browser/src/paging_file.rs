@@ -67,7 +67,7 @@ impl PagingFileInner {
         Ok(())
     }
 
-    pub(crate) fn flush(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn sync(&mut self) -> anyhow::Result<()> {
         let page_num = page_num(self.length, self.page_size);
         let page_start = page_range(self.length, self.page_size).start;
         let page_end = self.length;
@@ -154,16 +154,16 @@ impl PagingFile {
 }
 
 impl BlobStore for PagingFile {
-    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         self.0.lock().load_length_prefixed(id)
     }
 
-    fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
         self.0.lock().append_length_prefixed(data.to_vec())
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
-        self.0.lock().flush()
+    fn sync(&self) -> anyhow::Result<()> {
+        self.0.lock().sync()
     }
 }
 

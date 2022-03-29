@@ -51,7 +51,7 @@ impl sqlite_vfs::File for DatabaseFile {
     }
 
     fn sync(&mut self) -> VfsResult<()> {
-        self.inner.flush().map_err(anyhow_to_vfs)
+        self.inner.sync().map_err(anyhow_to_vfs)
     }
 }
 

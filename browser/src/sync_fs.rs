@@ -228,7 +228,7 @@ impl SyncFile {
 }
 
 impl radixdb::BlobStore for SyncFile {
-    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::ReadFileLengthPrefixed {
             offset: id,
@@ -240,7 +240,7 @@ impl radixdb::BlobStore for SyncFile {
         Ok(data)
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
+    fn sync(&self) -> anyhow::Result<()> {
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::FlushFile {
             dir_name: self.dir_name.clone(),
@@ -251,7 +251,7 @@ impl radixdb::BlobStore for SyncFile {
         Ok(())
     }
 
-    fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::AppendFileLengthPrefixed {
             dir_name: self.dir_name.clone(),

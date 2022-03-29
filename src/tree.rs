@@ -41,7 +41,7 @@ impl TreeValue {
         } else if let Some(data) = self.0.inline_as_ref() {
             Ok(Some(Blob::inline(data).unwrap()))
         } else if let Some(id) = self.0.id_u64() {
-            store.bytes(id).map(Some)
+            store.read(id).map(Some)
         } else if self.0.is_none() {
             Ok(None)
         } else {
@@ -57,7 +57,7 @@ impl TreeValue {
     /// detaches the value from the store. on success it will either be none, inline, or owned
     fn detach(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
-            let slice = store.bytes(id)?;
+            let slice = store.read(id)?;
             self.0 = FlexRef::inline_or_owned_from_slice(slice.as_ref());
         }
         Ok(())
@@ -76,7 +76,7 @@ impl TreeValue {
         if let Some(arc) = self.0.owned_arc_ref() {
             let data = arc.as_ref();
             let first = data.get(0).cloned();
-            let id = store.append(data)?;
+            let id = store.write(data)?;
             self.0 = FlexRef::id_from_u64_and_extra(id, first).context("id too large")?;
         }
         Ok(())
@@ -170,7 +170,7 @@ impl TreePrefix {
         } else if let Some(slice) = self.0.inline_as_ref() {
             Ok(Blob::inline(slice).unwrap())
         } else if let Some(id) = self.0.id_u64() {
-            store.bytes(id).map(|x| x)
+            store.read(id).map(|x| x)
         } else {
             unreachable!("invalid state of a TreePrefix");
         }
@@ -189,7 +189,7 @@ impl TreePrefix {
     /// detaches the prefix from the store. on success it will either be inline or owned
     fn detach(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
-            let slice = store.bytes(id)?;
+            let slice = store.read(id)?;
             self.0 = FlexRef::inline_or_owned_from_slice(slice.as_ref());
         }
         Ok(())
@@ -208,7 +208,7 @@ impl TreePrefix {
         if let Some(arc) = self.0.owned_arc_ref() {
             let data = arc.as_ref();
             let first = data.get(0).cloned();
-            let id = store.append(data)?;
+            let id = store.write(data)?;
             self.0 = FlexRef::id_from_u64_and_extra(id, first).context("id too large")?;
         }
         Ok(())
@@ -308,7 +308,7 @@ impl TreeChildren {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Blob::arc_vec_t(arc.clone()))
         } else if let Some(id) = self.0.id_u64() {
-            store.bytes(id).and_then(|x| x.cast::<TreeNode>())
+            store.read(id).and_then(|x| x.cast::<TreeNode>())
         } else if self.0.is_none() {
             Ok(Blob::inline(&[]).unwrap())
         } else {
@@ -331,7 +331,7 @@ impl TreeChildren {
 
     fn detach(&mut self, store: &DynBlobStore, recursive: bool) -> anyhow::Result<()> {
         if let Some(id) = self.0.id_u64() {
-            let mut children = TreeNode::nodes_from_bytes(store.bytes(id)?.as_ref())?.to_vec();
+            let mut children = TreeNode::nodes_from_bytes(store.read(id)?.as_ref())?.to_vec();
             if recursive {
                 for child in &mut children {
                     child.detach(store, recursive)?;
@@ -351,7 +351,7 @@ impl TreeChildren {
             }
             let bytes = TreeNode::slice_to_bytes(&children)?;
             let first = bytes.get(0).cloned();
-            self.0 = FlexRef::id_from_u64_and_extra(store.append(&bytes)?, first)
+            self.0 = FlexRef::id_from_u64_and_extra(store.write(&bytes)?, first)
                 .context("id too large")?;
         }
         Ok(())

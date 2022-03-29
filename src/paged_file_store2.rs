@@ -9,12 +9,10 @@ use crate::{
 };
 use std::{
     fmt::Debug,
-    fs::{self, File},
-    io::{Seek, SeekFrom, Write},
-    path::Path,
+    fs::File,
+    io::{Seek, Write},
     sync::Arc,
 };
-use thousands::Separable;
 
 #[derive(Debug, Clone)]
 pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
@@ -282,26 +280,27 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
 }
 
 impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
-    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         self.0.lock().bytes(id)
     }
 
-    fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
         self.0.lock().append(data)
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
+    fn sync(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::{time::Instant, fs};
 
     use super::*;
     use proptest::prelude::*;
     use tempfile::tempdir;
+    use thousands::Separable;
 
     const TEST_SIZE: usize = 1024;
 
@@ -353,7 +352,7 @@ mod tests {
         let offsets = (0u64..BLOCK_COUNT)
             .map(|i| {
                 let data = mk_block::<BLOCK_SIZE>(i);
-                db.append(&data)
+                db.write(&data)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let dt = t.elapsed().as_secs_f64();
@@ -369,7 +368,7 @@ mod tests {
         let t = Instant::now();
         for (i, offset) in offsets.into_iter().enumerate() {
             let expected = mk_block::<BLOCK_SIZE>(i as u64);
-            let actual = db.bytes(offset)?;
+            let actual = db.read(offset)?;
             assert_eq!(&expected[..], actual.as_ref());
         }
         let dt = t.elapsed().as_secs_f64();

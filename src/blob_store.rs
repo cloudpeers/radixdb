@@ -8,11 +8,11 @@ use parking_lot::Mutex;
 use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
 
 pub trait BlobStore: Debug + Send + Sync {
-    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>>;
+    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>>;
 
-    fn append(&self, data: &[u8]) -> anyhow::Result<u64>;
+    fn write(&self, data: &[u8]) -> anyhow::Result<u64>;
 
-    fn flush(&self) -> anyhow::Result<()>;
+    fn sync(&self) -> anyhow::Result<()>;
 }
 
 pub type DynBlobStore = Box<dyn BlobStore>;
@@ -27,15 +27,15 @@ impl NoStore {
 }
 
 impl BlobStore for NoStore {
-    fn bytes(&self, _: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, _: u64) -> anyhow::Result<Blob<u8>> {
         anyhow::bail!("no store");
     }
 
-    fn append(&self, _: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, _: &[u8]) -> anyhow::Result<u64> {
         anyhow::bail!("no store");
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
+    fn sync(&self) -> anyhow::Result<()> {
         anyhow::bail!("no store");
     }
 }
@@ -62,12 +62,12 @@ impl Debug for MemStore {
 }
 
 impl BlobStore for MemStore {
-    fn bytes(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         let data = self.data.lock();
         data.get(&id).cloned().context("value not found")
     }
 
-    fn append(&self, sluce: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, sluce: &[u8]) -> anyhow::Result<u64> {
         let mut data = self.data.lock();
         let max = data.keys().next_back().cloned().unwrap_or(0);
         let id = max + 1;
@@ -76,7 +76,7 @@ impl BlobStore for MemStore {
         Ok(id)
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
+    fn sync(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -263,15 +263,15 @@ impl<const SIZE: usize> PagedMemStore<SIZE> {
 }
 
 impl<const SIZE: usize> BlobStore for PagedMemStore<SIZE> {
-    fn bytes(&self, offset: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, offset: u64) -> anyhow::Result<Blob<u8>> {
         self.0.lock().bytes(offset)
     }
 
-    fn append(&self, data: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
         self.0.lock().append(data)
     }
 
-    fn flush(&self) -> anyhow::Result<()> {
+    fn sync(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -327,10 +327,10 @@ mod tests {
             let res =
                 blocks
                     .into_iter()
-                    .map(|block| store.append(block.as_ref())
+                    .map(|block| store.write(block.as_ref())
                         .map(|offset| (offset, block))).collect::<anyhow::Result<Vec<_>>>().unwrap();
             for (offset, block) in res.iter() {
-                let actual = store.bytes(*offset).unwrap();
+                let actual = store.read(*offset).unwrap();
                 let expected: &[u8] = &block;
                 prop_assert_eq!(actual.as_ref(), expected);
             }

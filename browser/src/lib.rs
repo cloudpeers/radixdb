@@ -20,14 +20,14 @@ use web_sys::DedicatedWorkerGlobalScope;
 mod sync_fs;
 use sync_fs::Command;
 pub use sync_fs::{SyncDir, SyncFile, SyncFs};
-mod simple_web_cache_fs;
-pub use simple_web_cache_fs::WebCacheFs as SimpleWebCacheFs;
+mod web_cache_fs;
+pub use web_cache_fs::WebCacheFs as SimpleWebCacheFs;
 mod paging_file;
 pub use paging_file::PagingFile;
 mod vfs;
 pub use vfs::*;
 
-use crate::simple_web_cache_fs::WebCacheDir;
+use crate::web_cache_fs::WebCacheDir;
 
 // macro_rules! console_log {
 //     // Note that this is using the `log` function imported above during
@@ -246,7 +246,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("attaching tree...");
     let t0 = now();
     tree.attach(&mut store)?;
-    store.flush()?;
+    store.sync()?;
     info!("attached tree {:?} {} s", tree, now() - t0);
     info!("traversing attached tree values...");
     let t0 = now();
