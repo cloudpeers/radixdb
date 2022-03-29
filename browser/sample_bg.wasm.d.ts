@@ -1,6 +1,10 @@
 /* tslint:disable */
 /* eslint-disable */
 export function start(): number;
+export function __wbg_threadpool_free(a: number): void;
+export function loaderhelper_mainJS(a: number): number;
+export function worker_entry_point(a: number): void;
+export function __wbg_loaderhelper_free(a: number): void;
 export function sqlite3_os_init(): number;
 export function wasm_vfs_currenttime(a: number, b: number): number;
 export function wasm_vfs_sleep(a: number, b: number): number;
@@ -16,10 +20,6 @@ export function malloc(a: number): number;
 export function free(a: number): void;
 export function realloc(a: number, b: number): number;
 export function wasm_vfs_fullpathname(a: number, b: number, c: number, d: number): number;
-export function __wbg_threadpool_free(a: number): void;
-export function loaderhelper_mainJS(a: number): number;
-export function worker_entry_point(a: number): void;
-export function __wbg_loaderhelper_free(a: number): void;
 export const memory: WebAssembly.Memory;
 export function __wbindgen_malloc(a: number): number;
 export function __wbindgen_realloc(a: number, b: number, c: number): number;
