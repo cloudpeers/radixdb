@@ -148,21 +148,21 @@ impl<'a, A, B> MergeStateMut for BoolOpMergeState<'a, A, B> {
 }
 
 /// A merge state where we build into a new vec
-pub(crate) struct VecMergeState<'a> {
-    pub a: SliceIterator<'a, TreeNode>,
-    pub b: SliceIterator<'a, TreeNode>,
-    pub r: Vec<TreeNode>,
+pub(crate) struct VecMergeState<'a, T> {
+    pub a: SliceIterator<'a, TreeNode<T>>,
+    pub b: SliceIterator<'a, TreeNode<T>>,
+    pub r: Vec<TreeNode<T>>,
     pub err: Option<anyhow::Error>,
 }
 
-impl<'a> Debug for VecMergeState<'a> {
+impl<'a, T> Debug for VecMergeState<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "a: {:?}, b: {:?}", self.a_slice(), self.b_slice(),)
     }
 }
 
-impl<'a> VecMergeState<'a> {
-    fn new(a: &'a [TreeNode], b: &'a [TreeNode], r: Vec<TreeNode>) -> Self {
+impl<'a, T> VecMergeState<'a, T> {
+    fn new(a: &'a [TreeNode<T>], b: &'a [TreeNode<T>], r: Vec<TreeNode<T>>) -> Self {
         Self {
             a: SliceIterator(a),
             b: SliceIterator(b),
@@ -171,7 +171,7 @@ impl<'a> VecMergeState<'a> {
         }
     }
 
-    fn into_vec(self) -> anyhow::Result<Vec<TreeNode>> {
+    fn into_vec(self) -> anyhow::Result<Vec<TreeNode<T>>> {
         if let Some(err) = self.err {
             Err(err)
         } else {
@@ -180,29 +180,29 @@ impl<'a> VecMergeState<'a> {
     }
 
     pub fn merge<O: MergeOperation<Self>>(
-        a: &'a [TreeNode],
-        b: &'a [TreeNode],
+        a: &'a [TreeNode<T>],
+        b: &'a [TreeNode<T>],
         o: &'a O,
-    ) -> anyhow::Result<Vec<TreeNode>> {
-        let t: Vec<TreeNode> = Vec::new();
+    ) -> anyhow::Result<Vec<TreeNode<T>>> {
+        let t: Vec<TreeNode<T>> = Vec::new();
         let mut state = Self::new(a, b, t);
         o.merge(&mut state);
         state.into_vec()
     }
 }
 
-impl<'a> MergeState for VecMergeState<'a> {
-    type A = TreeNode;
-    type B = TreeNode;
-    fn a_slice(&self) -> &[TreeNode] {
+impl<'a, T> MergeState for VecMergeState<'a, T> {
+    type A = TreeNode<T>;
+    type B = TreeNode<T>;
+    fn a_slice(&self) -> &[TreeNode<T>] {
         self.a.as_slice()
     }
-    fn b_slice(&self) -> &[TreeNode] {
+    fn b_slice(&self) -> &[TreeNode<T>] {
         self.b.as_slice()
     }
 }
 
-impl<'a> MergeStateMut for VecMergeState<'a> {
+impl<'a, T> MergeStateMut for VecMergeState<'a, T> {
     fn advance_a(&mut self, n: usize, take: bool) -> bool {
         if take {
             self.r.reserve(n);

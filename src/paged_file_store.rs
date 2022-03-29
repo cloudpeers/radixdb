@@ -209,7 +209,7 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::{DynBlobStore, TreeNode};
+    use crate::{DynBlobStore, Owned, TreeNode};
 
     use super::*;
     use log::info;
@@ -260,7 +260,7 @@ mod tests {
         });
         let t0 = Instant::now();
         info!("building tree");
-        let mut tree: TreeNode = elems.collect();
+        let mut tree: TreeNode<Owned> = elems.collect();
         info!(
             "unattached tree {:?} {} s",
             tree,

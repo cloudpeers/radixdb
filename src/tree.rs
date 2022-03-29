@@ -1,6 +1,6 @@
 use anyhow::Context;
 use binary_merge::{MergeOperation, MergeState};
-use std::{borrow::Borrow, cmp::Ordering, fmt::Debug, sync::Arc};
+use std::{borrow::Borrow, cmp::Ordering, fmt::Debug, marker::PhantomData, sync::Arc};
 
 use crate::{
     flex_ref::FlexRef,
@@ -9,14 +9,29 @@ use crate::{
 
 use super::*;
 
+trait TreeMode {}
+
+pub struct Attached;
+
+impl TreeMode for Attached {}
+
+pub struct Owned;
+
+impl TreeMode for Owned {}
+
 #[repr(transparent)]
-#[derive(Clone)]
-pub struct TreeValue(FlexRef<Vec<u8>>);
+pub struct TreeValue<T = Attached>(FlexRef<Vec<u8>>, PhantomData<T>);
+
+impl<T> Clone for TreeValue<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone())
+    }
+}
 
 /// A tree prefix is an optional blob, that is stored either inline, on the heap, or as an id
-impl TreeValue {
+impl<T> TreeValue<T> {
     fn none() -> Self {
-        Self(FlexRef::none())
+        Self(FlexRef::none(), PhantomData)
     }
 
     fn is_none(&self) -> bool {
@@ -28,7 +43,7 @@ impl TreeValue {
     }
 
     fn from_slice(data: &[u8]) -> Self {
-        Self(FlexRef::inline_or_owned_from_slice(data))
+        Self(FlexRef::inline_or_owned_from_slice(data), PhantomData)
     }
 
     fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Option<Blob<u8>>> {
@@ -79,7 +94,7 @@ impl TreeValue {
     }
 }
 
-impl Debug for TreeValue {
+impl<T> Debug for TreeValue<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(data) = self.0.inline_as_ref() {
             f.debug_tuple("Inline").field(&Hex::new(data)).finish()
@@ -97,7 +112,7 @@ impl Debug for TreeValue {
     }
 }
 
-impl Default for TreeValue {
+impl<T> Default for TreeValue<T> {
     fn default() -> Self {
         Self::none()
     }
@@ -105,28 +120,33 @@ impl Default for TreeValue {
 
 /// A tree prefix is a blob, that is stored either inline, on the heap, or as an id
 #[repr(transparent)]
-#[derive(Clone)]
-pub struct TreePrefix(FlexRef<Vec<u8>>);
+pub struct TreePrefix<T = Attached>(FlexRef<Vec<u8>>, PhantomData<T>);
 
-impl TreePrefix {
+impl<T> Clone for TreePrefix<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone())
+    }
+}
+
+impl<T> TreePrefix<T> {
     fn validate_serialized(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.0.is_inline() || self.0.is_id());
         Ok(())
     }
 
     fn from_slice(data: &[u8]) -> Self {
-        Self(FlexRef::inline_or_owned_from_slice(data))
+        Self(FlexRef::inline_or_owned_from_slice(data), PhantomData)
     }
 
     fn from_vec(data: Vec<u8>) -> Self {
-        Self(FlexRef::inline_or_owned_from_vec(data))
+        Self(FlexRef::inline_or_owned_from_vec(data), PhantomData)
     }
 
     fn from_arc_vec(data: Arc<Vec<u8>>) -> Self {
-        Self(FlexRef::owned_from_arc(data))
+        Self(FlexRef::owned_from_arc(data), PhantomData)
     }
 
-    fn truncate(&mut self, n: usize, store: &DynBlobStore) -> anyhow::Result<TreePrefix> {
+    fn truncate(&mut self, n: usize, store: &DynBlobStore) -> anyhow::Result<TreePrefix<T>> {
         let mut r;
         if self.load(store)?.as_ref().len() <= n {
             r = TreePrefix::empty();
@@ -141,7 +161,7 @@ impl TreePrefix {
         Ok(r)
     }
 
-    fn append(&mut self, that: &TreePrefix, store: &DynBlobStore) -> anyhow::Result<()> {
+    fn append(&mut self, that: &TreePrefix<T>, store: &DynBlobStore) -> anyhow::Result<()> {
         if !that.is_empty() {
             if self.is_empty() {
                 *self = that.clone();
@@ -219,7 +239,7 @@ impl TreePrefix {
     }
 
     fn empty() -> Self {
-        Self(FlexRef::inline_empty_array())
+        Self(FlexRef::inline_empty_array(), PhantomData)
     }
 
     fn first_opt(&self) -> Option<u8> {
@@ -247,11 +267,11 @@ impl TreePrefix {
         let mut t = Vec::with_capacity(a.len() + b.len());
         t.extend_from_slice(a);
         t.extend_from_slice(b);
-        Self(FlexRef::inline_or_owned_from_vec(t))
+        Self(FlexRef::inline_or_owned_from_vec(t), PhantomData)
     }
 }
 
-impl Debug for TreePrefix {
+impl<T> Debug for TreePrefix<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(data) = self.0.inline_as_ref() {
             f.debug_tuple("Inline").field(&Hex::new(data)).finish()
@@ -267,7 +287,7 @@ impl Debug for TreePrefix {
     }
 }
 
-impl Default for TreePrefix {
+impl<T> Default for TreePrefix<T> {
     fn default() -> Self {
         Self::empty()
     }
@@ -275,15 +295,20 @@ impl Default for TreePrefix {
 
 /// Tree children are an optional array, that are stored either on the heap, or as an id
 #[repr(transparent)]
-#[derive(Clone)]
-pub struct TreeChildren(FlexRef<Vec<TreeNode>>);
+pub struct TreeChildren<T = Attached>(FlexRef<Vec<TreeNode<T>>>);
 
-impl TreeChildren {
-    fn from_arc(data: Arc<Vec<TreeNode>>) -> Self {
+impl<T> Clone for TreeChildren<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> TreeChildren<T> {
+    fn from_arc(data: Arc<Vec<TreeNode<T>>>) -> Self {
         Self(FlexRef::owned_from_arc(data))
     }
 
-    fn from_vec(vec: Vec<TreeNode>) -> Self {
+    fn from_vec(vec: Vec<TreeNode<T>>) -> Self {
         if vec.is_empty() {
             Self::default()
         } else {
@@ -291,7 +316,7 @@ impl TreeChildren {
         }
     }
 
-    fn from_slice(slice: &[TreeNode]) -> Self {
+    fn from_slice(slice: &[TreeNode<T>]) -> Self {
         if slice.is_empty() {
             Self::default()
         } else {
@@ -307,11 +332,11 @@ impl TreeChildren {
         self.0.is_none()
     }
 
-    fn load(&self, store: &DynBlobStore) -> anyhow::Result<Blob<TreeNode>> {
+    fn load(&self, store: &DynBlobStore) -> anyhow::Result<Blob<TreeNode<T>>> {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Blob::arc_vec_t(arc.clone()))
         } else if let Some(id) = self.0.id_u64() {
-            store.read(id).and_then(|x| x.cast::<TreeNode>())
+            store.read(id).and_then(|x| x.cast::<TreeNode<T>>())
         } else if self.0.is_none() {
             Ok(Blob::inline(&[]).unwrap())
         } else {
@@ -324,7 +349,7 @@ impl TreeChildren {
         Ok(())
     }
 
-    fn make_mut(&mut self) -> Option<&mut Vec<TreeNode>> {
+    fn make_mut(&mut self) -> Option<&mut Vec<TreeNode<T>>> {
         if let Some(arc) = self.0.owned_arc_ref_mut() {
             Some(Arc::make_mut(arc))
         } else {
@@ -367,7 +392,7 @@ impl TreeChildren {
     }
 }
 
-impl Debug for TreeChildren {
+impl<T> Debug for TreeChildren<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(arc) = self.0.owned_arc_ref() {
             let data = arc.as_ref();
@@ -382,21 +407,50 @@ impl Debug for TreeChildren {
     }
 }
 
-impl Default for TreeChildren {
+impl<T> Default for TreeChildren<T> {
     fn default() -> Self {
         Self::empty()
     }
 }
 
-#[derive(Default, Clone, Debug)]
 #[repr(C)]
-pub struct TreeNode {
-    prefix: TreePrefix,
-    value: TreeValue,
-    children: TreeChildren,
+pub struct TreeNode<T = Attached> {
+    prefix: TreePrefix<T>,
+    value: TreeValue<T>,
+    children: TreeChildren<T>,
 }
 
-impl TreeNode {
+impl<T> Debug for TreeNode<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TreeNode")
+            .field("prefix", &self.prefix)
+            .field("value", &self.value)
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
+impl<T> Clone for TreeNode<T> {
+    fn clone(&self) -> Self {
+        Self {
+            prefix: self.prefix.clone(),
+            value: self.value.clone(),
+            children: self.children.clone(),
+        }
+    }
+}
+
+impl<T> Default for TreeNode<T> {
+    fn default() -> Self {
+        Self {
+            prefix: Default::default(),
+            value: Default::default(),
+            children: Default::default(),
+        }
+    }
+}
+
+impl<T> TreeNode<T> {
     fn validate_serialized(&self) -> anyhow::Result<()> {
         self.prefix.validate_serialized()?;
         self.value.validate_serialized()?;
@@ -416,8 +470,8 @@ impl TreeNode {
         self.children.is_empty() && self.value.is_none()
     }
 
-    pub fn nodes_from_bytes(bytes: &[u8]) -> anyhow::Result<&[TreeNode]> {
-        let res: &[TreeNode] = slice_cast(bytes)?;
+    pub fn nodes_from_bytes(bytes: &[u8]) -> anyhow::Result<&[TreeNode<T>]> {
+        let res: &[TreeNode<T>] = slice_cast(bytes)?;
         for node in res {
             node.validate_serialized()?;
         }
@@ -474,7 +528,7 @@ impl TreeNode {
     pub fn filter_prefix(&self, store: &DynBlobStore, prefix: &[u8]) -> anyhow::Result<Self> {
         Ok(match find(store, self, prefix)? {
             FindResult::Found(mut res) => {
-                res.prefix = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
+                res.prefix = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix), PhantomData);
                 res
             }
             FindResult::Prefix { tree: mut res, rt } => {
@@ -488,7 +542,7 @@ impl TreeNode {
 
     /// Prepend a prefix to the tree
     pub fn prepend(&mut self, prefix: &[u8], store: &DynBlobStore) -> anyhow::Result<()> {
-        let mut t = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
+        let mut t = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix), PhantomData);
         t.append(&self.prefix, store)?;
         self.prefix = t;
         Ok(())
@@ -519,7 +573,7 @@ impl TreeNode {
         &self,
         store: &'a DynBlobStore,
         prefix: &[u8],
-    ) -> anyhow::Result<Iter<'a>> {
+    ) -> anyhow::Result<Iter<'a, T>> {
         Ok(match find(store, self, prefix)? {
             FindResult::Found(tree) => {
                 let prefix = IterKey::new(prefix);
@@ -648,11 +702,11 @@ impl TreeNode {
         Ok(())
     }
 
-    pub fn try_group_by<'a, F: Fn(&[u8], &TreeNode) -> bool>(
+    pub fn try_group_by<'a, F: Fn(&[u8], &TreeNode<T>) -> bool>(
         &'a self,
         store: &'a DynBlobStore,
         descend: F,
-    ) -> anyhow::Result<GroupBy<'a, F>> {
+    ) -> anyhow::Result<GroupBy<'a, F, T>> {
         let prefix = self.prefix.load(store)?;
         Ok(GroupBy::new(
             self,
@@ -663,7 +717,7 @@ impl TreeNode {
     }
 
     /// iterate over all elements
-    pub fn try_iter<'a>(&self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a>> {
+    pub fn try_iter<'a>(&self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a, T>> {
         let prefix = self.prefix.load(store)?;
         Ok(Iter::new(
             self.clone(),
@@ -673,13 +727,13 @@ impl TreeNode {
     }
 
     /// iterate over all values - this is cheaper than iterating over elements, since it does not have to build the keys from fragments
-    pub fn try_values<'a>(&self, store: &'a DynBlobStore) -> Values<'a> {
+    pub fn try_values<'a>(&self, store: &'a DynBlobStore) -> Values<'a, T> {
         Values::new(self.clone(), store)
     }
 }
 
-impl<'a> FromIterator<(&'a [u8], &'a [u8])> for TreeNode {
-    fn from_iter<T: IntoIterator<Item = (&'a [u8], &'a [u8])>>(iter: T) -> Self {
+impl<'a, T> FromIterator<(&'a [u8], &'a [u8])> for TreeNode<T> {
+    fn from_iter<I: IntoIterator<Item = (&'a [u8], &'a [u8])>>(iter: I) -> Self {
         let store = &NoStore::new();
         iter.into_iter().fold(TreeNode::empty(), |a, (key, value)| {
             let b = TreeNode::single(key, value);
@@ -688,8 +742,8 @@ impl<'a> FromIterator<(&'a [u8], &'a [u8])> for TreeNode {
     }
 }
 
-impl FromIterator<(Vec<u8>, Vec<u8>)> for TreeNode {
-    fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
+impl<T> FromIterator<(Vec<u8>, Vec<u8>)> for TreeNode<T> {
+    fn from_iter<I: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: I) -> Self {
         let store = &NoStore::new();
         iter.into_iter().fold(TreeNode::empty(), |a, (key, value)| {
             let b = TreeNode::single(&key, &value);
@@ -723,11 +777,11 @@ enum FindResult<T> {
 /// - Found(tree) if we found the tree exactly,
 /// - Prefix if we found a tree of which prefix is a prefix
 /// - NotFound if there is no tree
-fn find<'a>(
+fn find<'a, T>(
     store: &'a DynBlobStore,
-    tree: &'a TreeNode,
+    tree: &'a TreeNode<T>,
     prefix: &[u8],
-) -> anyhow::Result<FindResult<TreeNode>> {
+) -> anyhow::Result<FindResult<TreeNode<T>>> {
     let tree_prefix = tree.prefix.load(store)?;
     let n = common_prefix(tree_prefix.as_ref(), prefix);
     // remaining in prefix
@@ -769,13 +823,13 @@ fn find<'a>(
 }
 
 /// Outer combine two trees with a function f
-fn outer_combine(
-    a: &TreeNode,
+fn outer_combine<T>(
+    a: &TreeNode<T>,
     ab: &DynBlobStore,
-    b: &TreeNode,
+    b: &TreeNode<T>,
     bb: &DynBlobStore,
-    f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
-) -> anyhow::Result<TreeNode> {
+    f: impl Fn(TreeValue<T>, TreeValue<T>) -> anyhow::Result<TreeValue<T>> + Copy,
+) -> anyhow::Result<TreeNode<T>> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
@@ -844,13 +898,13 @@ fn outer_combine(
 }
 
 /// Inner combine two trees with a function f
-fn inner_combine(
-    a: &TreeNode,
+fn inner_combine<T>(
+    a: &TreeNode<T>,
     ab: &DynBlobStore,
-    b: &TreeNode,
+    b: &TreeNode<T>,
     bb: &DynBlobStore,
-    f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
-) -> anyhow::Result<TreeNode> {
+    f: impl Fn(TreeValue<T>, TreeValue<T>) -> anyhow::Result<TreeValue<T>> + Copy,
+) -> anyhow::Result<TreeNode<T>> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
@@ -907,13 +961,13 @@ fn inner_combine(
 }
 
 /// Left combine two trees with a function f
-fn left_combine(
-    a: &TreeNode,
+fn left_combine<T>(
+    a: &TreeNode<T>,
     ab: &DynBlobStore,
-    b: &TreeNode,
+    b: &TreeNode<T>,
     bb: &DynBlobStore,
-    f: impl Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
-) -> anyhow::Result<TreeNode> {
+    f: impl Fn(TreeValue<T>, TreeValue<T>) -> anyhow::Result<TreeValue<T>> + Copy,
+) -> anyhow::Result<TreeNode<T>> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
@@ -966,10 +1020,10 @@ fn left_combine(
 }
 
 /// Left combine two trees with a function f
-fn intersects(
-    a: &TreeNode,
+fn intersects<T>(
+    a: &TreeNode<T>,
     ab: &DynBlobStore,
-    b: &TreeNode,
+    b: &TreeNode<T>,
     bb: &DynBlobStore,
 ) -> anyhow::Result<bool> {
     let ap = a.prefix.load(ab)?;
@@ -1041,20 +1095,20 @@ impl core::ops::Deref for IterKey {
 ///
 /// This is more efficient than taking the value part of an entry iteration, because the keys
 /// do not have to be constructed.
-pub struct Values<'a> {
-    stack: Vec<(TreeNode, usize)>,
+pub struct Values<'a, T> {
+    stack: Vec<(TreeNode<T>, usize)>,
     store: &'a DynBlobStore,
 }
 
-impl<'a> Values<'a> {
-    fn new(tree: TreeNode, store: &'a DynBlobStore) -> Self {
+impl<'a, T> Values<'a, T> {
+    fn new(tree: TreeNode<T>, store: &'a DynBlobStore) -> Self {
         Self {
             stack: vec![(tree, 0)],
             store,
         }
     }
 
-    fn tree(&self) -> &TreeNode {
+    fn tree(&self) -> &TreeNode<T> {
         &self.stack.last().unwrap().0
     }
 
@@ -1065,7 +1119,7 @@ impl<'a> Values<'a> {
         res
     }
 
-    fn next0(&mut self) -> anyhow::Result<Option<TreeValue>> {
+    fn next0(&mut self) -> anyhow::Result<Option<TreeValue<T>>> {
         while !self.stack.is_empty() {
             if let Some(pos) = self.inc() {
                 let children = self.tree().children.load(self.store)?;
@@ -1082,8 +1136,8 @@ impl<'a> Values<'a> {
     }
 }
 
-impl<'a> Iterator for Values<'a> {
-    type Item = anyhow::Result<TreeValue>;
+impl<'a, T> Iterator for Values<'a, T> {
+    type Item = anyhow::Result<TreeValue<T>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -1098,15 +1152,15 @@ impl<'a> Iterator for Values<'a> {
     }
 }
 
-pub struct GroupBy<'a, F> {
+pub struct GroupBy<'a, F, T> {
     path: IterKey,
-    stack: Vec<(TreeNode, usize)>,
+    stack: Vec<(TreeNode<T>, usize)>,
     store: &'a DynBlobStore,
     descend: F,
 }
 
-impl<'a, F: Fn(&[u8], &TreeNode) -> bool> GroupBy<'a, F> {
-    fn new(tree: &'a TreeNode, store: &'a DynBlobStore, prefix: IterKey, descend: F) -> Self {
+impl<'a, T, F: Fn(&[u8], &TreeNode<T>) -> bool> GroupBy<'a, F, T> {
+    fn new(tree: &'a TreeNode<T>, store: &'a DynBlobStore, prefix: IterKey, descend: F) -> Self {
         Self {
             stack: vec![(tree.clone(), 0)],
             path: prefix,
@@ -1115,7 +1169,7 @@ impl<'a, F: Fn(&[u8], &TreeNode) -> bool> GroupBy<'a, F> {
         }
     }
 
-    fn tree(&self) -> &TreeNode {
+    fn tree(&self) -> &TreeNode<T> {
         &self.stack.last().unwrap().0
     }
 
@@ -1126,11 +1180,11 @@ impl<'a, F: Fn(&[u8], &TreeNode) -> bool> GroupBy<'a, F> {
         res
     }
 
-    fn prefix(&self) -> TreePrefix {
+    fn prefix(&self) -> TreePrefix<T> {
         TreePrefix::from_arc_vec(self.path.0.clone())
     }
 
-    fn push(&mut self, child: TreeNode) -> anyhow::Result<()> {
+    fn push(&mut self, child: TreeNode<T>) -> anyhow::Result<()> {
         let child_prefix = child.prefix.load(&self.store)?;
         self.path.append(child_prefix.as_ref());
         self.stack.push((child, 0));
@@ -1144,7 +1198,7 @@ impl<'a, F: Fn(&[u8], &TreeNode) -> bool> GroupBy<'a, F> {
         Ok(())
     }
 
-    fn next0(&mut self) -> anyhow::Result<Option<TreeNode>> {
+    fn next0(&mut self) -> anyhow::Result<Option<TreeNode<T>>> {
         while !self.stack.is_empty() {
             if let Some(pos) = self.inc() {
                 let children = self.tree().children.load(&self.store)?;
@@ -1183,8 +1237,8 @@ impl<'a, F: Fn(&[u8], &TreeNode) -> bool> GroupBy<'a, F> {
     }
 }
 
-impl<'a, F: Fn(&[u8], &TreeNode) -> bool> Iterator for GroupBy<'a, F> {
-    type Item = anyhow::Result<TreeNode>;
+impl<'a, T, F: Fn(&[u8], &TreeNode<T>) -> bool> Iterator for GroupBy<'a, F, T> {
+    type Item = anyhow::Result<TreeNode<T>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -1199,13 +1253,13 @@ impl<'a, F: Fn(&[u8], &TreeNode) -> bool> Iterator for GroupBy<'a, F> {
     }
 }
 
-pub struct Iter<'a> {
+pub struct Iter<'a, T> {
     path: IterKey,
-    stack: Vec<(TreeNode, usize)>,
+    stack: Vec<(TreeNode<T>, usize)>,
     store: &'a DynBlobStore,
 }
 
-impl<'a> Iter<'a> {
+impl<'a, T> Iter<'a, T> {
     fn empty() -> Self {
         Self {
             stack: Vec::new(),
@@ -1214,7 +1268,7 @@ impl<'a> Iter<'a> {
         }
     }
 
-    fn new(tree: TreeNode, store: &'a DynBlobStore, prefix: IterKey) -> Self {
+    fn new(tree: TreeNode<T>, store: &'a DynBlobStore, prefix: IterKey) -> Self {
         Self {
             stack: vec![(tree, 0)],
             path: prefix,
@@ -1222,7 +1276,7 @@ impl<'a> Iter<'a> {
         }
     }
 
-    fn tree(&self) -> &TreeNode {
+    fn tree(&self) -> &TreeNode<T> {
         &self.stack.last().unwrap().0
     }
 
@@ -1233,7 +1287,7 @@ impl<'a> Iter<'a> {
         res
     }
 
-    fn next0(&mut self) -> anyhow::Result<Option<(IterKey, TreeValue)>> {
+    fn next0(&mut self) -> anyhow::Result<Option<(IterKey, TreeValue<T>)>> {
         while !self.stack.is_empty() {
             if let Some(pos) = self.inc() {
                 let children = self.tree().children.load(&self.store)?;
@@ -1255,8 +1309,8 @@ impl<'a> Iter<'a> {
     }
 }
 
-impl<'a> Iterator for Iter<'a> {
-    type Item = anyhow::Result<(IterKey, TreeValue)>;
+impl<'a> Iterator for Iter<'a, Attached> {
+    type Item = anyhow::Result<(IterKey, TreeValue<Attached>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -1271,26 +1325,40 @@ impl<'a> Iterator for Iter<'a> {
     }
 }
 
+impl<'a> Iterator for Iter<'a, Owned> {
+    type Item = (IterKey, TreeValue<Owned>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next0() {
+            Ok(Some(x)) => Some(x),
+            Ok(None) => None,
+            Err(_) => {
+                panic!()
+            }
+        }
+    }
+}
+
 struct OuterCombineOp<'a, F> {
     f: F,
     ab: &'a DynBlobStore,
     bb: &'a DynBlobStore,
 }
 
-impl<'a, F> MergeOperation<VecMergeState<'a>> for OuterCombineOp<'a, F>
+impl<'a, T, F> MergeOperation<VecMergeState<'a, T>> for OuterCombineOp<'a, F>
 where
-    F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
+    F: Fn(TreeValue<T>, TreeValue<T>) -> anyhow::Result<TreeValue<T>> + Copy,
 {
-    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+    fn cmp(&self, a: &TreeNode<T>, b: &TreeNode<T>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
-    fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_a(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_a(n, true)
     }
-    fn from_b(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_b(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_b(n, true)
     }
-    fn collision(&self, m: &mut VecMergeState<'a>) -> bool {
+    fn collision(&self, m: &mut VecMergeState<'a, T>) -> bool {
         let a = m.a.next().unwrap();
         let b = m.b.next().unwrap();
         match outer_combine(a, self.ab, b, self.bb, self.f) {
@@ -1312,20 +1380,20 @@ struct InnerCombineOp<'a, F> {
     bb: &'a DynBlobStore,
 }
 
-impl<'a, F> MergeOperation<VecMergeState<'a>> for InnerCombineOp<'a, F>
+impl<'a, T, F> MergeOperation<VecMergeState<'a, T>> for InnerCombineOp<'a, F>
 where
-    F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
+    F: Fn(TreeValue<T>, TreeValue<T>) -> anyhow::Result<TreeValue<T>> + Copy,
 {
-    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+    fn cmp(&self, a: &TreeNode<T>, b: &TreeNode<T>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
-    fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_a(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_a(n, false)
     }
-    fn from_b(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_b(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_b(n, false)
     }
-    fn collision(&self, m: &mut VecMergeState<'a>) -> bool {
+    fn collision(&self, m: &mut VecMergeState<'a, T>) -> bool {
         let a = m.a.next().unwrap();
         let b = m.b.next().unwrap();
         match inner_combine(a, self.ab, b, self.bb, self.f) {
@@ -1346,20 +1414,20 @@ struct LeftCombineOp<'a, F> {
     bb: &'a DynBlobStore,
 }
 
-impl<'a, F> MergeOperation<VecMergeState<'a>> for LeftCombineOp<'a, F>
+impl<'a, T, F> MergeOperation<VecMergeState<'a, T>> for LeftCombineOp<'a, F>
 where
-    F: Fn(TreeValue, TreeValue) -> anyhow::Result<TreeValue> + Copy,
+    F: Fn(TreeValue<T>, TreeValue<T>) -> anyhow::Result<TreeValue<T>> + Copy,
 {
-    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+    fn cmp(&self, a: &TreeNode<T>, b: &TreeNode<T>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
-    fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_a(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_a(n, true)
     }
-    fn from_b(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_b(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_b(n, false)
     }
-    fn collision(&self, m: &mut VecMergeState<'a>) -> bool {
+    fn collision(&self, m: &mut VecMergeState<'a, T>) -> bool {
         let a = m.a.next().unwrap();
         let b = m.b.next().unwrap();
         match left_combine(a, self.ab, b, self.bb, self.f) {
@@ -1380,17 +1448,17 @@ struct IntersectOp<'a> {
     bb: &'a DynBlobStore,
 }
 
-impl<'a> MergeOperation<VecMergeState<'a>> for IntersectOp<'a> {
-    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+impl<'a, T> MergeOperation<VecMergeState<'a, T>> for IntersectOp<'a> {
+    fn cmp(&self, a: &TreeNode<T>, b: &TreeNode<T>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
-    fn from_a(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_a(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_a(n, false)
     }
-    fn from_b(&self, m: &mut VecMergeState<'a>, n: usize) -> bool {
+    fn from_b(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_b(n, false)
     }
-    fn collision(&self, m: &mut VecMergeState<'a>) -> bool {
+    fn collision(&self, m: &mut VecMergeState<'a, T>) -> bool {
         let a = &m.a_slice()[0];
         let b = &m.b_slice()[0];
         // if this is true, we have found an intersection and can abort.
@@ -1447,7 +1515,7 @@ mod tests {
         }
 
         /// unfltten from a radix tree, using a separator char '.'
-        fn from_radix_tree_separated(tree: &TreeNode) -> anyhow::Result<Self> {
+        fn from_radix_tree_separated<T>(tree: &TreeNode<T>) -> anyhow::Result<Self> {
             let sep = ".".as_bytes()[0];
             Ok(if tree.prefix.is_empty() && tree.value.is_some() {
                 Jsonish::String(
@@ -1747,18 +1815,18 @@ mod tests {
     #[test]
     fn tree_node_create() -> anyhow::Result<()> {
         let store = &NO_STORE;
-        let node = TreeNode::leaf(b"abcd");
+        let node = TreeNode::<Owned>::leaf(b"abcd");
         assert!(node.prefix.load(&store)? == Blob::<u8>::from_slice(&[]));
         assert!(node.value.load(&store)? == Some(Blob::<u8>::from_slice(b"abcd")));
         assert!(node.children.load(&store)?.is_empty());
         println!("{:?}", node);
-        let node = TreeNode::leaf(b"abcdefgh");
+        let node = TreeNode::<Owned>::leaf(b"abcdefgh");
         println!("{:?}", node);
-        let node = TreeNode::single(b"abcd", b"ijklmnop");
+        let node = TreeNode::<Owned>::single(b"abcd", b"ijklmnop");
         println!("{:?}", node);
-        let node = TreeNode::single(b"abcdefgh", b"ijklmnop");
+        let node = TreeNode::<Owned>::single(b"abcdefgh", b"ijklmnop");
         println!("{:?}", node);
-        let node = TreeNode::new(b"a", None, &[node]);
+        let node = TreeNode::<Owned>::new(b"a", None, &[node]);
         println!("{:?}", node);
         node.dump_tree(&store)?;
         Ok(())
@@ -1767,7 +1835,7 @@ mod tests {
     #[test]
     fn tree_node_attach_detach() -> anyhow::Result<()> {
         let mut store: DynBlobStore = Box::new(MemStore::default());
-        let node = TreeNode::single(b"abcdefgh", b"ijklmnop");
+        let node = TreeNode::<Owned>::single(b"abcdefgh", b"ijklmnop");
         let mut node = TreeNode::new(b"a", None, &[node]);
         println!("{:?}", node);
         node.attach(&mut store)?;
@@ -1786,7 +1854,7 @@ mod tests {
             TreeNode::single(key.as_bytes(), value.as_bytes())
         });
         let mut store: DynBlobStore = Box::new(MemStore::default());
-        let mut res = nodes.try_fold(TreeNode::empty(), |a, b| {
+        let mut res = nodes.try_fold(TreeNode::<Owned>::empty(), |a, b| {
             outer_combine(&a, &store, &b, &store, |_, b| Ok(b))
         })?;
         res.dump_tree(&store)?;
@@ -1801,26 +1869,26 @@ mod tests {
         let store = &NO_STORE;
 
         println!("disjoint");
-        let a = TreeNode::single(b"a", b"1");
-        let b = TreeNode::single(b"b", b"2");
+        let a = TreeNode::<Owned>::single(b"a", b"1");
+        let b = TreeNode::<Owned>::single(b"b", b"2");
         let t = outer_combine(&a, &store, &b, &store, |_, b| Ok(b))?;
         t.dump_tree(&store)?;
 
         println!("a prefix of b");
-        let a = TreeNode::single(b"a", b"1");
-        let b = TreeNode::single(b"ab", b"2");
+        let a = TreeNode::<Owned>::single(b"a", b"1");
+        let b = TreeNode::<Owned>::single(b"ab", b"2");
         let t = outer_combine(&a, &store, &b, &store, |_, b| Ok(b))?;
         t.dump_tree(&store)?;
 
         println!("b prefix of a");
-        let a = TreeNode::single(b"ab", b"1");
-        let b = TreeNode::single(b"a", b"2");
+        let a = TreeNode::<Owned>::single(b"ab", b"1");
+        let b = TreeNode::<Owned>::single(b"a", b"2");
         let t = outer_combine(&a, &store, &b, &store, |_, b| Ok(b))?;
         t.dump_tree(&store)?;
 
         println!("same prefix");
-        let a = TreeNode::single(b"ab", b"1");
-        let b = TreeNode::single(b"ab", b"2");
+        let a = TreeNode::<Owned>::single(b"ab", b"1");
+        let b = TreeNode::<Owned>::single(b"ab", b"2");
         let t = outer_combine(&a, &store, &b, &store, |_, b| Ok(b))?;
         t.dump_tree(&store)?;
 
