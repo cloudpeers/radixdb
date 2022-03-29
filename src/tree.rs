@@ -11,10 +11,6 @@ use super::*;
 
 #[repr(transparent)]
 #[derive(Clone)]
-pub struct Inline(FlexRef<()>);
-
-#[repr(transparent)]
-#[derive(Clone)]
 pub struct TreeValue(FlexRef<Vec<u8>>);
 
 /// A tree prefix is an optional blob, that is stored either inline, on the heap, or as an id
@@ -246,6 +242,13 @@ impl TreePrefix {
         let arc = self.0.owned_arc_ref_mut().expect("must be an arc");
         Ok(Arc::make_mut(arc))
     }
+
+    fn join(a: &[u8], b: &[u8]) -> Self {
+        let mut t = Vec::with_capacity(a.len() + b.len());
+        t.extend_from_slice(a);
+        t.extend_from_slice(b);
+        Self(FlexRef::inline_or_owned_from_vec(t))
+    }
 }
 
 impl Debug for TreePrefix {
@@ -467,6 +470,72 @@ impl TreeNode {
         Ok(())
     }
 
+    /// Return the subtree with the given prefix. Will return an empty tree in case there is no match.
+    pub fn filter_prefix(&self, store: &DynBlobStore, prefix: &[u8]) -> anyhow::Result<Self> {
+        Ok(match find(store, self, prefix)? {
+            FindResult::Found(mut res) => {
+                res.prefix = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
+                res
+            }
+            FindResult::Prefix { tree: mut res, rt } => {
+                let rp = res.prefix.load(&store)?;
+                res.prefix = TreePrefix::join(prefix, &rp[rp.len() - rt..]);
+                res
+            }
+            FindResult::NotFound { .. } => Self::default(),
+        })
+    }
+
+    /// Prepend a prefix to the tree
+    pub fn prepend(&mut self, prefix: &[u8], store: &DynBlobStore) -> anyhow::Result<()> {
+        let mut t = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
+        t.append(&self.prefix, store)?;
+        self.prefix = t;
+        Ok(())
+    }
+
+    /// True if key is contained in this set
+    pub fn contains_key(&self, store: &DynBlobStore, key: &[u8]) -> anyhow::Result<bool> {
+        // if we find a tree at exactly the location, and it has a value, we have a hit
+        Ok(if let FindResult::Found(tree) = find(store, self, key)? {
+            tree.value.is_some()
+        } else {
+            false
+        })
+    }
+
+    /// Get the value for a given key
+    pub fn get(&self, store: &DynBlobStore, key: &[u8]) -> anyhow::Result<Option<Blob<u8>>> {
+        // if we find a tree at exactly the location, and it has a value, we have a hit
+        Ok(if let FindResult::Found(tree) = find(store, self, key)? {
+            tree.value.load(store)?
+        } else {
+            None
+        })
+    }
+
+    /// An iterator for all pairs with a certain prefix
+    pub fn scan_prefix<'a>(
+        &self,
+        store: &'a DynBlobStore,
+        prefix: &[u8],
+    ) -> anyhow::Result<Iter<'a>> {
+        Ok(match find(store, self, prefix)? {
+            FindResult::Found(tree) => {
+                let prefix = IterKey::new(prefix);
+                Iter::new(tree, store, prefix)
+            }
+            FindResult::Prefix { tree, rt } => {
+                let tree_prefix = tree.prefix.load(store)?;
+                let mut prefix = IterKey::new(prefix);
+                let remaining = &tree_prefix.as_ref()[tree_prefix.len() - rt..];
+                prefix.append(remaining);
+                Iter::new(tree, store, prefix)
+            }
+            FindResult::NotFound { .. } => Iter::empty(),
+        })
+    }
+
     /// detach the node from its `store`.
     ///
     /// if `recursive` is true, the tree gets completely detached, otherwise just one level deep.
@@ -594,14 +663,18 @@ impl TreeNode {
     }
 
     /// iterate over all elements
-    pub fn try_iter<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a>> {
+    pub fn try_iter<'a>(&self, store: &'a DynBlobStore) -> anyhow::Result<Iter<'a>> {
         let prefix = self.prefix.load(store)?;
-        Ok(Iter::new(self, store, IterKey::new(prefix.as_ref())))
+        Ok(Iter::new(
+            self.clone(),
+            store,
+            IterKey::new(prefix.as_ref()),
+        ))
     }
 
     /// iterate over all values - this is cheaper than iterating over elements, since it does not have to build the keys from fragments
-    pub fn try_values<'a>(&'a self, store: &'a DynBlobStore) -> Values<'a> {
-        Values::new(self, store)
+    pub fn try_values<'a>(&self, store: &'a DynBlobStore) -> Values<'a> {
+        Values::new(self.clone(), store)
     }
 }
 
@@ -623,6 +696,76 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for TreeNode {
             outer_combine(&a, &store, &b, &store, |_, b| Ok(b)).unwrap()
         })
     }
+}
+
+enum FindResult<T> {
+    // Found an exact match
+    Found(T),
+    // found a tree for which the path is a prefix, with n remaining chars in the prefix of T
+    Prefix {
+        // a tree of which the searched path is a prefix
+        tree: T,
+        // number of remaining elements in the prefix of the tree
+        rt: usize,
+    },
+    // did not find anything, T is the closest match, with n remaining (unmatched) in the prefix of T
+    NotFound {
+        // the closest match
+        closest: T,
+        // number of remaining elements in the prefix of the tree
+        rt: usize,
+        // number of remaining elements in the search prefix
+        rp: usize,
+    },
+}
+
+/// find a prefix in a tree. Will either return
+/// - Found(tree) if we found the tree exactly,
+/// - Prefix if we found a tree of which prefix is a prefix
+/// - NotFound if there is no tree
+fn find<'a>(
+    store: &'a DynBlobStore,
+    tree: &'a TreeNode,
+    prefix: &[u8],
+) -> anyhow::Result<FindResult<TreeNode>> {
+    let tree_prefix = tree.prefix.load(store)?;
+    let n = common_prefix(tree_prefix.as_ref(), prefix);
+    // remaining in prefix
+    let rp = prefix.len() - n;
+    // remaining in tree prefix
+    let rt = tree_prefix.len() - n;
+    Ok(if rp == 0 && rt == 0 {
+        // direct hit
+        FindResult::Found(tree.clone())
+    } else if rp == 0 {
+        // tree is a subtree of prefix
+        FindResult::Prefix {
+            tree: tree.clone(),
+            rt,
+        }
+    } else if rt == 0 {
+        // prefix is a subtree of tree
+        let c = &prefix[n];
+        let tree_children = tree.children.load(store)?;
+        if let Ok(index) = tree_children.binary_search_by(|e| e.prefix.first_opt().unwrap().cmp(c))
+        {
+            let child = &tree_children[index];
+            find(store, child, &prefix[n..])?
+        } else {
+            FindResult::NotFound {
+                closest: tree.clone(),
+                rp,
+                rt,
+            }
+        }
+    } else {
+        // disjoint, but we still need to store how far we matched
+        FindResult::NotFound {
+            closest: tree.clone(),
+            rp,
+            rt,
+        }
+    })
 }
 
 /// Outer combine two trees with a function f
@@ -904,9 +1047,9 @@ pub struct Values<'a> {
 }
 
 impl<'a> Values<'a> {
-    fn new(tree: &'a TreeNode, store: &'a DynBlobStore) -> Self {
+    fn new(tree: TreeNode, store: &'a DynBlobStore) -> Self {
         Self {
-            stack: vec![(tree.clone(), 0)],
+            stack: vec![(tree, 0)],
             store,
         }
     }
@@ -1071,9 +1214,9 @@ impl<'a> Iter<'a> {
         }
     }
 
-    fn new(tree: &'a TreeNode, store: &'a DynBlobStore, prefix: IterKey) -> Self {
+    fn new(tree: TreeNode, store: &'a DynBlobStore, prefix: IterKey) -> Self {
         Self {
-            stack: vec![(tree.clone(), 0)],
+            stack: vec![(tree, 0)],
             path: prefix,
             store,
         }
@@ -1444,6 +1587,44 @@ mod tests {
                 r.unwrap().load(&NO_STORE).unwrap().unwrap().to_vec()
             }).collect::<Vec<_>>();
             prop_assert_eq!(reference, actual);
+        }
+
+        #[test]
+        fn get_contains(x in arb_tree_contents()) {
+            let reference = x;
+            let tree = mk_owned_tree(&reference);
+            for (k, v) in reference {
+                prop_assert!(tree.contains_key(&NO_STORE, &k).unwrap());
+                prop_assert_eq!(tree.get(&NO_STORE, &k).unwrap(), Some(Blob::from_slice(&v)));
+            }
+        }
+
+        #[test]
+        fn scan_prefix(x in arb_tree_contents(), prefix in any::<Vec<u8>>()) {
+            let reference = x;
+            let tree = mk_owned_tree(&reference);
+            let filtered = tree.scan_prefix(&NO_STORE, &prefix).unwrap();
+            for r in filtered {
+                let (k, v) = r.unwrap();
+                prop_assert!(k.as_ref().starts_with(&prefix));
+                let v = v.load(&NO_STORE).unwrap().unwrap();
+                let t = reference.get(k.as_ref()).unwrap();
+                prop_assert_eq!(v.as_ref(), t);
+            }
+        }
+
+        #[test]
+        fn filter_prefix(x in arb_tree_contents(), prefix in any::<Vec<u8>>()) {
+            let reference = x;
+            let tree = mk_owned_tree(&reference);
+            let filtered = tree.filter_prefix(&NO_STORE, &prefix).unwrap();
+            for r in filtered.try_iter(&NO_STORE).unwrap() {
+                let (k, v) = r.unwrap();
+                prop_assert!(k.as_ref().starts_with(&prefix));
+                let v = v.load(&NO_STORE).unwrap().unwrap();
+                let t = reference.get(k.as_ref()).unwrap();
+                prop_assert_eq!(v.as_ref(), t);
+            }
         }
 
         #[test]

@@ -295,7 +295,7 @@ impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use std::{time::Instant, fs};
+    use std::{fs, time::Instant};
 
     use super::*;
     use proptest::prelude::*;
