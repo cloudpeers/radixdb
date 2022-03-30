@@ -25,8 +25,6 @@ mod paging_file;
 pub use paging_file::PagingFile;
 mod vfs;
 pub use vfs::*;
-
-#[cfg(target_arch = "wasm32")]
 mod browser;
 
 use crate::web_cache_fs::WebCacheDir;

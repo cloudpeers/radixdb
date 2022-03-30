@@ -29,5 +29,5 @@ rusqlite = { git = "https://github.com/trevyn/rusqlite", branch = "wasm32-unknow
 libsqlite3-sys = { git = "https://github.com/trevyn/rusqlite", branch = "wasm32-unknown-unknown", features = ["bundled"] }
 range-collections = "0.2.4"
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+# [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-futures-executor = { git = "https://github.com/rklaehn/wasm-futures-executor", branch = "send_lazy" }

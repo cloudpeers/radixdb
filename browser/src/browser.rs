@@ -1,3 +1,4 @@
+//! This is what is executed in the browser, basically the main
 use crate::{
     err_to_jsvalue, web_cache_fs::WebCacheDir, worker_scope, JsError, PagingFile, SimpleWebCacheFs,
 };
@@ -33,36 +34,35 @@ async fn pool_test() -> anyhow::Result<()> {
     let pool = ThreadPool::new(2).await.map_err(JsError::from)?;
     let pool2 = pool.clone();
     // the outer spawn is necessary so we don't block on the main thread, which is not allowed
+    let (tx, rx) = futures::channel::oneshot::channel();
     pool.spawn_lazy(move || {
         async move {
             // info!("starting cache_bench");
             // cache_bench().await.unwrap();
-            info!("starting sqlite_test");
+            info!("starting sqlite_test!");
             sqlite_test(pool2).unwrap();
-            // info!("starting cache_test");
-            // cache_test().await.unwrap();
+            info!("looking at the cache");
+            cache_list().await.unwrap();
+            let _ = tx.send(());
             // info!("starting cache_test_sync");
             // cache_test_sync(pool2).unwrap();
         }
         .boxed_local()
     });
+    rx.await?;
     Ok(())
 }
 
-async fn cache_test() -> anyhow::Result<()> {
-    info!("{}", worker_scope().location().origin());
-    let dir = WebCacheDir::new("test").await?;
-    let deleted = dir.delete("file1").await?;
-    info!("deleted {}", deleted);
-    let mut file = dir.open_file("file1".into()).await?;
-    for i in 0..5u8 {
-        let mut data = vec![i; 100];
-        file.append(&mut data).await?;
-    }
-    let data = file.read(10..240).await?;
+async fn cache_list() -> anyhow::Result<()> {
+    info!("cache_list");
+    info!("origin {}", worker_scope().location().origin());
+    info!("opening dir sqlite");
+    let dir = WebCacheDir::new("sqlite").await;
     info!("{:?}", dir);
-    info!("{:?}", file);
-    info!("{}", hex::encode(data));
+    let dir = dir?;
+    info!("opening file db/main.db3");
+    let mut file = dir.open_file("db/main.db3".into()).await?;
+    info!("length is {}", file.length().await?);
     Ok(())
 }
 
@@ -172,7 +172,7 @@ fn sqlite_test(pool: ThreadPool) -> anyhow::Result<()> {
     conn.execute_batch(
         r#"
         PRAGMA page_size = 32768;
-        PRAGMA journal_mode = MEMORY;
+        PRAGMA journal_mode = TRUNCATE;
         "#,
     )?;
 

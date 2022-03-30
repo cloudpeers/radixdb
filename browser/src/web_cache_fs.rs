@@ -1,6 +1,7 @@
 use anyhow::Context;
 use futures::{channel::mpsc, FutureExt, StreamExt};
 use js_sys::{Array, ArrayBuffer, Uint8Array};
+use log::info;
 use radixdb::Blob;
 use range_collections::{AbstractRangeSet, RangeSet, RangeSet2};
 use std::{
@@ -24,7 +25,7 @@ pub struct WebCacheFs {
 }
 
 impl WebCacheFs {
-    #[cfg(target_arch = "wasm32")]
+    /// #[cfg(target_arch = "wasm32")]
     /// create a new WebCacheFs on a separate thread, and wrap it in a SyncFs
     pub fn new(pool: wasm_futures_executor::ThreadPool) -> SyncFs {
         let (tx, rx) = mpsc::unbounded();
@@ -307,6 +308,7 @@ pub struct WebCacheFile {
 impl WebCacheFile {
     pub(crate) async fn new(cache: web_sys::Cache, file_name: SharedStr) -> anyhow::Result<Self> {
         let chunks = chunks(&cache, &file_name).await?;
+        info!("opened file {:?} {} {:?}", cache, file_name, chunks);
         // let to_delete = retain_relevant(&mut chunks);
         // delete(&cache, &file_name, &to_delete).await?;
         Ok(Self {
@@ -327,16 +329,10 @@ impl WebCacheFile {
 
     pub(crate) async fn append(&mut self, data: &mut Vec<u8>) -> anyhow::Result<u64> {
         let prev = self.prev();
-        let chunk = ChunkMeta {
-            level: prev.level,
-            offset: prev.range().end,
-            len: data.len().try_into()?,
-        };
-        let request = chunk.to_request_str(&self.file_name);
-        let response = Response::new_with_opt_u8_array(Some(data)).map_err(JsError::from)?;
-        let _: JsValue = js_async(self.cache.put_with_str(&request, &response)).await?;
-        self.chunks.insert(chunk);
-        Ok(chunk.range().start)
+        let offset = prev.range().end;
+        let plan = add(&self.chunks, offset, data.clone());
+        execute_plan(&self.cache, &self.file_name, plan, &mut self.chunks).await?;
+        Ok(offset)
     }
 
     pub(crate) async fn append_length_prefixed(
@@ -396,17 +392,8 @@ impl WebCacheFile {
     }
 
     pub(crate) async fn write(&mut self, offset: u64, mut data: Vec<u8>) -> anyhow::Result<()> {
-        let start = offset;
-        let end = start + u64::try_from(data.len())?;
-        let range = start..end;
-        let current_end = self.prev().range().end;
-        anyhow::ensure!(start <= current_end, "non consecutive write");
-        // anyhow::ensure!(end >= current_end, "write in the middle");
-        let chunk = self.mk_chunk(range);
-        write_chunk(&self.cache, &self.file_name, &chunk, &mut data).await?;
-        self.chunks.insert(chunk);
-        // let to_delete = retain_relevant(&mut self.chunks);
-        // delete(&self.cache, &self.file_name, &to_delete).await?;
+        let plan = add(&self.chunks, offset, data);
+        execute_plan(&self.cache, &self.file_name, plan, &mut self.chunks).await?;
         Ok(())
     }
 
@@ -414,8 +401,10 @@ impl WebCacheFile {
         Ok(self.prev().range().end)
     }
 
-    pub(crate) async fn truncate(&mut self, size: u64) -> anyhow::Result<()> {
-        todo!()
+    pub(crate) async fn truncate(&mut self, offset: u64) -> anyhow::Result<()> {
+        let plan = truncate(&self.chunks, offset);
+        execute_plan(&self.cache, &self.file_name, plan, &mut self.chunks).await?;
+        Ok(())
     }
 
     async fn load(&self, chunk: &ChunkMeta) -> anyhow::Result<Vec<u8>> {
@@ -455,21 +444,25 @@ fn intersecting_chunks<'a>(
 async fn execute_plan(
     cache: &web_sys::Cache,
     file_name: &str,
-    ops: Vec<Op>,
+    plan: Vec<Op>,
     chunks: &mut BTreeSet<ChunkMeta>,
 ) -> anyhow::Result<()> {
-    for op in ops {
+    info!("plan {:#?}", plan);
+    for op in plan {
         match op {
             Op::Delete(chunk) => {
                 let request = chunk.to_request_str(file_name);
                 let _: JsValue = js_async(cache.delete_with_str(&request)).await?;
+                chunks.remove(&chunk);
             }
             Op::Write(chunk, mut data) => {
                 write_chunk(cache, file_name, &chunk, &mut data).await?;
+                chunks.insert(chunk);
             }
             Op::Rewrite(chunk) => {
                 let mut data = read(cache, file_name, chunks, chunk.range()).await?;
                 write_chunk(cache, file_name, &chunk, &mut data).await?;
+                chunks.insert(chunk);
             }
         }
     }
@@ -669,7 +662,7 @@ impl FromStr for ChunkMeta {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 enum Op {
     // read the range and then write it again with the given level
     Rewrite(ChunkMeta),
@@ -679,9 +672,23 @@ enum Op {
     Write(ChunkMeta, Vec<u8>),
 }
 
+impl std::fmt::Debug for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rewrite(arg0) => f.debug_tuple("Rewrite").field(arg0).finish(),
+            Self::Delete(arg0) => f.debug_tuple("Delete").field(arg0).finish(),
+            Self::Write(arg0, arg1) => f
+                .debug_tuple("Write")
+                .field(arg0)
+                .field(&arg1.len())
+                .finish(),
+        }
+    }
+}
+
 // produces the sequence of ops to atomically add a chunk
-fn add(ranges: &BTreeSet<ChunkMeta>, range: Range<u64>, data: Vec<u8>) -> Vec<Op> {
-    assert!(range.end - range.start == u64::try_from(data.len()).unwrap());
+fn add(ranges: &BTreeSet<ChunkMeta>, offset: u64, data: Vec<u8>) -> Vec<Op> {
+    let range = offset..offset + (data.len() as u64);
     // all existing chunks that are relevant for the new chunk
     let relevant = ranges
         .iter()
@@ -808,13 +815,13 @@ mod tests {
 
         // append without overlap - just a write op
         assert_eq!(
-            add(&ranges, 200..250, vec![0; 50]),
+            add(&ranges, 200, vec![0; 50]),
             vec![Op::Write(ChunkMeta::new(200..250, 0), vec![0; 50])]
         );
 
         // append with full overlap - just delete
         assert_eq!(
-            add(&ranges, 100..250, vec![0; 150]),
+            add(&ranges, 100, vec![0; 150]),
             vec![
                 Op::Write(ChunkMeta::new(100..250, 1), vec![0; 150]),
                 Op::Delete(ChunkMeta::new(100..200, 0)),
@@ -823,7 +830,7 @@ mod tests {
 
         // append with overlap - first rewrite, then delete
         assert_eq!(
-            add(&ranges, 190..240, vec![0; 50]),
+            add(&ranges, 190, vec![0; 50]),
             vec![
                 Op::Write(ChunkMeta::new(190..240, 1), vec![0; 50]),
                 Op::Rewrite(ChunkMeta::new(100..190, 1)),
@@ -833,7 +840,7 @@ mod tests {
 
         // overwrite in the middle - rewrite and delete
         assert_eq!(
-            add(&ranges, 50..150, vec![0; 100]),
+            add(&ranges, 50, vec![0; 100]),
             vec![
                 Op::Write(ChunkMeta::new(50..150, 1), vec![0; 100]),
                 Op::Rewrite(ChunkMeta::new(0..50, 1)),
@@ -845,7 +852,7 @@ mod tests {
 
         // overwrite in the middle - rewrite and delete
         assert_eq!(
-            add(&ranges, 25..75, vec![0; 50]),
+            add(&ranges, 25, vec![0; 50]),
             vec![
                 Op::Write(ChunkMeta::new(25..75, 1), vec![0; 50]),
                 Op::Rewrite(ChunkMeta::new(0..25, 1)),
