@@ -1,8 +1,8 @@
 [package]
 name = "sample"
 version = "0.1.0"
-edition = "2018"
-authors = ["Oliver Wangler <oliver@wngr.de>"]
+edition = "2021"
+authors = ["Rüdiger Klaehn <rklaehn@protonmail.com"]
 
 [lib]
 crate-type = ["cdylib"]
