@@ -1,0 +1,12 @@
+[package]
+name = "ipfs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rüdiger Klaehn <rklaehn@protonmail.com"]
+
+[dependencies]
+anyhow = "1.0.56"
+radixdb = { path = "../" }
+hex = "0.4.3"
+num-traits = "0.2.14"
+parking_lot = "0.12.0"
