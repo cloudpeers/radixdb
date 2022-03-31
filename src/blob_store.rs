@@ -5,7 +5,7 @@ use anyhow::Context;
 use fnv::FnvHashMap;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
-use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
+use std::{collections::BTreeMap, fmt::Debug, sync::Arc, convert::Infallible};
 
 pub trait BlobStore: Debug + Send + Sync {
     type Error;
@@ -38,10 +38,18 @@ impl BlobStore for DynBlobStore {
 #[derive(Default, Debug, Clone)]
 pub struct NoStore;
 
-pub enum NoStoreError {}
+#[derive(Debug)]
+pub enum NoError {}
+
+impl From<NoError> for anyhow::Error {
+
+    fn from(_: NoError) -> anyhow::Error {
+        panic!()
+    }
+}
 
 impl BlobStore for NoStore {
-    type Error = NoStoreError;
+    type Error = NoError;
 
     fn read(&self, _: u64) -> std::result::Result<Blob<u8>, Self::Error> {
         panic!("no store");
@@ -86,7 +94,7 @@ lazy_static! {
     pub static ref NO_STORE: DynBlobStore = NoStoreDyn::new();
 }
 
-pub fn no_store() -> &'static DynBlobStore {
+pub fn no_store_dyn() -> &'static DynBlobStore {
     &*NO_STORE
 }
 

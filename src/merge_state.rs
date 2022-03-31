@@ -1,7 +1,8 @@
 #![allow(dead_code)]
-use crate::{iterators::SliceIterator, tree::TreeNode, BlobStore, DynBlobStore};
+use crate::{iterators::SliceIterator, tree::TreeNode, BlobStore, DynBlobStore, blob_store::{NoStore, NoError}};
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
+use std::{convert::Infallible, marker::PhantomData};
 use inplace_vec_builder::InPlaceVecBuilder;
 
 /// A typical write part for the merge state
@@ -154,6 +155,28 @@ pub trait TT: Default {
         + From<<<Self as TT>::BB as BlobStore>::Error>;
 }
 
+pub struct TTI<AB, BB, E>(PhantomData<(AB, BB, E)>);
+
+impl<AB, BB, E> Default for TTI<AB, BB, E> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<AB: BlobStore, BB: BlobStore, E: From<AB::Error> + From<BB::Error>> TT for TTI<AB, BB, E> {
+    type AB = AB;
+
+    type BB = BB;
+
+    type E = E;
+}
+
+impl<AB, BB, E> TTI<AB, BB, E> {
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
 #[derive(Default)]
 pub struct DynT;
 
@@ -163,6 +186,17 @@ impl TT for DynT {
     type BB = DynBlobStore;
 
     type E = anyhow::Error;
+}
+
+#[derive(Default)]
+pub struct NoStoreT;
+
+impl TT for NoStoreT {
+    type AB = NoStore;
+
+    type BB = NoStore;
+
+    type E = NoError;
 }
 
 /// A merge state where we build into a new vec
