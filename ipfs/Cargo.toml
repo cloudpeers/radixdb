@@ -10,3 +10,8 @@ radixdb = { path = "../" }
 hex = "0.4.3"
 num-traits = "0.2.14"
 parking_lot = "0.12.0"
+log = "0.4.16"
+env_logger = "0.9.0"
+fnv = "1.0.7"
+tempfile = "3.3.0"
+sha2 = "0.10.2"

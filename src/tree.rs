@@ -1,6 +1,6 @@
 use anyhow::Context;
 use binary_merge::{MergeOperation, MergeState};
-use std::{borrow::Borrow, cmp::Ordering, fmt::Debug, sync::Arc};
+use std::{any, borrow::Borrow, cmp::Ordering, fmt::Debug, sync::Arc};
 
 use crate::{
     flex_ref::FlexRef,
@@ -31,7 +31,7 @@ impl TreeValue {
         Self(FlexRef::inline_or_owned_from_slice(data))
     }
 
-    fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Option<Blob<u8>>> {
+    pub fn load(&self, store: &DynBlobStore) -> anyhow::Result<Option<Blob<u8>>> {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Some(Blob::arc_vec_t(arc.clone())))
         } else if let Some(data) = self.0.inline_as_ref() {
@@ -160,7 +160,7 @@ impl TreePrefix {
         Ok(())
     }
 
-    fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Blob<u8>> {
+    pub fn load<'a>(&'a self, store: &'a DynBlobStore) -> anyhow::Result<Blob<u8>> {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Blob::arc_vec_t(arc.clone()))
         } else if let Some(slice) = self.0.inline_as_ref() {
@@ -514,6 +514,28 @@ impl TreeNode {
         })
     }
 
+    pub fn insert(&mut self, store: &DynBlobStore, key: &[u8], value: &[u8]) -> anyhow::Result<()> {
+        *self = outer_combine(
+            self,
+            store,
+            &TreeNode::single(key, value),
+            &NO_STORE,
+            |_, b| Ok(b),
+        )?;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, store: &DynBlobStore, key: &[u8]) -> anyhow::Result<()> {
+        *self = left_combine(
+            self,
+            store,
+            &TreeNode::single(key, &[]),
+            &NO_STORE,
+            |_, _| Ok(TreeValue::none()),
+        )?;
+        Ok(())
+    }
+
     /// An iterator for all pairs with a certain prefix
     pub fn scan_prefix<'a>(
         &self,
@@ -580,7 +602,7 @@ impl TreeNode {
         Ok(())
     }
 
-    pub(crate) fn unsplit(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn unsplit(&mut self, store: &DynBlobStore) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.children.0.is_id(),
             "called unsplit on an attached node"
@@ -593,7 +615,7 @@ impl TreeNode {
                 // a single child and no own value is degenerate
                 if children.len() == 1 && self.value.is_none() {
                     let child = children.pop().unwrap();
-                    self.prefix.append(&child.prefix, &NO_STORE)?;
+                    self.prefix.append(&child.prefix, &store)?;
                     self.children = child.children;
                     self.value = child.value;
                 } else if children.len() == 0 {
@@ -611,39 +633,46 @@ impl TreeNode {
         Ok(())
     }
 
-    pub(crate) fn dump_tree(&self, store: &DynBlobStore) -> anyhow::Result<()> {
+    pub fn dump_tree(&self, store: &DynBlobStore) -> anyhow::Result<()> {
         fn hex(x: &[u8]) -> anyhow::Result<String> {
             Ok(hex::encode(x))
         }
-        self.dump_tree0("", store, hex, hex)
+        self.dump_tree_custom("", store, hex, |_, v| hex(v), |_| Ok("".into()))
     }
 
-    pub(crate) fn dump_tree_utf8(&self, store: &DynBlobStore) -> anyhow::Result<()> {
+    pub fn dump_tree_utf8(&self, store: &DynBlobStore) -> anyhow::Result<()> {
         fn utf8(x: &[u8]) -> anyhow::Result<String> {
             Ok(std::str::from_utf8(x)?.to_owned())
         }
-        self.dump_tree0("", store, utf8, utf8)
+        self.dump_tree_custom("", store, utf8, |_, v| utf8(v), |_| Ok("".into()))
     }
 
-    fn dump_tree0(
+    pub fn dump_tree_custom(
         &self,
         indent: &str,
         store: &DynBlobStore,
         p: impl Fn(&[u8]) -> anyhow::Result<String> + Copy,
-        v: impl Fn(&[u8]) -> anyhow::Result<String> + Copy,
+        v: impl Fn(&[u8], &[u8]) -> anyhow::Result<String> + Copy,
+        n: impl Fn(&Self) -> anyhow::Result<String> + Copy,
     ) -> anyhow::Result<()> {
         let prefix = self.prefix.load(store)?;
         let value = self.value.load(store)?;
         let children = self.children.load(store)?;
-        let hex_prefix = p(prefix.as_ref())?;
+        let formatted_prefix = p(prefix.as_ref())?;
         if let Some(value) = value {
-            println!("{}{}:{}", indent, hex_prefix, v(value.as_ref())?,);
+            println!(
+                "{}{}:{}\t{}",
+                indent,
+                formatted_prefix,
+                v(prefix.as_ref(), value.as_ref())?,
+                n(self)?,
+            );
         } else {
-            println!("{}{}", indent, hex_prefix)
+            println!("{}{}\t{}", indent, formatted_prefix, n(self)?);
         }
-        let indent = indent.to_owned() + &hex_prefix;
+        let indent = indent.to_owned() + &formatted_prefix;
         for child in children.as_ref() {
-            child.dump_tree0(&indent, store, p, v)?;
+            child.dump_tree_custom(&indent, store, p, v, n)?;
         }
         Ok(())
     }
@@ -675,6 +704,74 @@ impl TreeNode {
     /// iterate over all values - this is cheaper than iterating over elements, since it does not have to build the keys from fragments
     pub fn try_values<'a>(&self, store: &'a DynBlobStore) -> Values<'a> {
         Values::new(self.clone(), store)
+    }
+
+    /// get the first value
+    pub fn first_value(&self, store: &DynBlobStore) -> anyhow::Result<Option<TreeValue>> {
+        Ok(if self.children.is_empty() {
+            if self.value.is_none() {
+                None
+            } else {
+                Some(self.value.clone())
+            }
+        } else {
+            let children = self.children.load(store)?;
+            children[0].first_value(store)?
+        })
+    }
+
+    /// get the last value
+    pub fn last_value(&self, store: &DynBlobStore) -> anyhow::Result<Option<TreeValue>> {
+        Ok(if self.children.is_empty() {
+            if self.value.is_none() {
+                None
+            } else {
+                Some(self.value.clone())
+            }
+        } else {
+            let children = self.children.load(store)?;
+            children[children.len() - 1].last_value(store)?
+        })
+    }
+
+    /// get the first entry
+    pub fn first_entry(
+        &self,
+        store: &DynBlobStore,
+        mut prefix: TreePrefix,
+    ) -> anyhow::Result<Option<(TreePrefix, TreeValue)>> {
+        prefix.append(&self.prefix, store)?;
+        Ok(if self.children.is_empty() {
+            if self.value.is_none() {
+                // huh?
+                None
+            } else {
+                Some((prefix, self.value.clone()))
+            }
+        } else {
+            let children = self.children.load(store)?;
+            children[0].first_entry(store, prefix)?
+        })
+    }
+
+    /// get the last entry
+    pub fn last_entry(
+        &self,
+        store: &DynBlobStore,
+        mut prefix: TreePrefix,
+    ) -> anyhow::Result<Option<(TreePrefix, TreeValue)>> {
+        prefix.append(&self.prefix, store)?;
+        Ok(if self.children.is_empty() {
+            if self.value.is_none() {
+                // huh?
+                None
+            } else {
+                Some((prefix, self.value.clone()))
+            }
+        } else {
+            let children = self.children.load(store)?;
+            children[children.len() - 1].last_entry(store, prefix)?
+        })
     }
 }
 
@@ -839,7 +936,7 @@ fn outer_combine(
         value,
         children: TreeChildren::from_vec(children),
     };
-    res.unsplit()?;
+    res.unsplit(&ab)?;
     Ok(res)
 }
 
@@ -902,12 +999,12 @@ fn inner_combine(
         value,
         children: TreeChildren::from_vec(children),
     };
-    res.unsplit()?;
+    res.unsplit(&ab)?;
     Ok(res)
 }
 
 /// Left combine two trees with a function f
-fn left_combine(
+pub fn left_combine(
     a: &TreeNode,
     ab: &DynBlobStore,
     b: &TreeNode,
@@ -961,7 +1058,7 @@ fn left_combine(
         value,
         children: TreeChildren::from_vec(children),
     };
-    res.unsplit()?;
+    res.unsplit(&ab)?;
     Ok(res)
 }
 
@@ -1435,7 +1532,7 @@ mod tests {
                                     None,
                                     &[v.to_radix_tree_separated()],
                                 );
-                                res.unsplit().unwrap();
+                                res.unsplit(&NO_STORE).unwrap();
                                 res
                             }
                         }

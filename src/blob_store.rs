@@ -257,7 +257,7 @@ impl<const SIZE: usize> Inner<SIZE> {
 }
 
 impl<const SIZE: usize> PagedMemStore<SIZE> {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self(Arc::new(Mutex::new(Inner::new())))
     }
 }

@@ -16,8 +16,19 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
+
+impl<const SIZE: usize> Debug for PagedFileStore<SIZE> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.0.lock();
+        f.debug_struct("PagedFileStore")
+            .field("pages", &inner.pages.len())
+            .field("recent", &inner.recent.len())
+            .field("size", &(inner.pages.len() * SIZE))
+            .finish()
+    }
+}
 
 struct Inner<const SIZE: usize> {
     file: File,
@@ -161,14 +172,15 @@ impl<const SIZE: usize> Inner<SIZE> {
         if end_page != current_page {
             self.close_page(current_page)?;
         }
-        // println!("{}.{}", current_page, offset);
-        self.file.write_all(&[0u8; 4])?;
+        // make sure the content (not the size) is 8 byte aligned
+        // todo: do this as a single write
+        while (self.file.stream_position()? + 4) % 8 != 0 {
+            self.file.write(&[0u8])?;
+        }
         let id = self.file.stream_position()?;
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         self.file.write_all(data)?;
         self.file.flush()?;
-        let aligned_end = align(end);
-        self.pad_to(aligned_end)?;
         self.recent.insert(id, Blob::arc_from_byte_slice(data));
         Ok(id)
     }

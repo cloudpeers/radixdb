@@ -14,7 +14,7 @@ pub use blob::{Blob, BlobOwner};
 pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStore, PagedMemStore, NO_STORE};
 #[cfg(not(target_arch = "wasm32"))]
 pub use paged_file_store::PagedFileStore;
-pub use tree::TreeNode;
+pub use tree::{TreeChildren, TreeNode, TreePrefix, TreeValue};
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///
