@@ -3,9 +3,9 @@ use binary_merge::{MergeOperation, MergeState};
 use std::{borrow::Borrow, cmp::Ordering, fmt::Debug, sync::Arc};
 
 use crate::{
-    blob_store::{no_store_dyn, NoStore},
+    blob_store::NoStore,
     flex_ref::FlexRef,
-    merge_state::{DynT, MergeStateMut, VecMergeState, TT, NoStoreT},
+    merge_state::{DynT, MergeStateMut, NoStoreT, VecMergeState, TT, TTI},
 };
 
 use super::*;
@@ -69,12 +69,12 @@ impl TreeValue {
     /// attaches the value to the store. on success it will either be none, inline or id
     ///
     /// if the value is already attached, it is assumed that it is to the store, so it is a noop
-    fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
+    fn attach<S: BlobStore>(&mut self, store: &mut S) -> std::result::Result<(), S::Error> {
         if let Some(arc) = self.0.owned_arc_ref() {
             let data = arc.as_ref();
             let first = data.get(0).cloned();
             let id = store.write(data)?;
-            self.0 = FlexRef::id_from_u64_and_extra(id, first).context("id too large")?;
+            self.0 = FlexRef::id_from_u64_and_extra(id, first).unwrap();
         }
         Ok(())
     }
@@ -209,12 +209,12 @@ impl TreePrefix {
     /// attaches the prefix to the store. on success it will either be inline or id
     ///
     /// if the prefix is already attached, it is assumed that it is to the store, so it is a noop
-    fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
+    fn attach<S: BlobStore>(&mut self, store: &mut S) -> std::result::Result<(), S::Error> {
         if let Some(arc) = self.0.owned_arc_ref() {
             let data = arc.as_ref();
             let first = data.get(0).cloned();
             let id = store.write(data)?;
-            self.0 = FlexRef::id_from_u64_and_extra(id, first).context("id too large")?;
+            self.0 = FlexRef::id_from_u64_and_extra(id, first).unwrap();
         }
         Ok(())
     }
@@ -355,7 +355,7 @@ impl TreeChildren {
     }
 
     /// attaches the children to the store. on success it be an id
-    fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
+    fn attach<S: BlobStore>(&mut self, store: &mut S) -> std::result::Result<(), S::Error> {
         if let Some(arc) = self.0.owned_arc_ref() {
             let mut children = arc.as_ref().clone();
             for child in &mut children {
@@ -363,13 +363,16 @@ impl TreeChildren {
             }
             let bytes = TreeNode::slice_to_bytes(&children)?;
             let first = bytes.get(0).cloned();
-            self.0 = FlexRef::id_from_u64_and_extra(store.write(&bytes)?, first)
-                .context("id too large")?;
+            self.0 = FlexRef::id_from_u64_and_extra(store.write(&bytes)?, first).unwrap();
         }
         Ok(())
     }
 
-    fn detached(&self, store: &DynBlobStore, recursive: bool) -> anyhow::Result<Self> {
+    fn detached<S: BlobStore>(
+        &self,
+        store: &S,
+        recursive: bool,
+    ) -> std::result::Result<Self, S::Error> {
         let mut t = self.clone();
         t.detach(store)?;
         Ok(t)
@@ -478,7 +481,11 @@ impl TreeNode {
     }
 
     /// Return the subtree with the given prefix. Will return an empty tree in case there is no match.
-    pub fn filter_prefix<S: BlobStore>(&self, store: &S, prefix: &[u8]) -> std::result::Result<Self, S::Error> {
+    pub fn filter_prefix<S: BlobStore>(
+        &self,
+        store: &S,
+        prefix: &[u8],
+    ) -> std::result::Result<Self, S::Error> {
         Ok(match find(store, self, prefix)? {
             FindResult::Found(mut res) => {
                 res.prefix = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
@@ -494,7 +501,11 @@ impl TreeNode {
     }
 
     /// Prepend a prefix to the tree
-    pub fn prepend<S: BlobStore>(&mut self, prefix: &[u8], store: &S) -> std::result::Result<(), S::Error> {
+    pub fn prepend<S: BlobStore>(
+        &mut self,
+        prefix: &[u8],
+        store: &S,
+    ) -> std::result::Result<(), S::Error> {
         let mut t = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
         t.append(&self.prefix, store)?;
         self.prefix = t;
@@ -502,7 +513,11 @@ impl TreeNode {
     }
 
     /// True if key is contained in this set
-    pub fn contains_key<S: BlobStore>(&self, store: &S, key: &[u8]) -> std::result::Result<bool, S::Error> {
+    pub fn contains_key<S: BlobStore>(
+        &self,
+        store: &S,
+        key: &[u8],
+    ) -> std::result::Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         Ok(if let FindResult::Found(tree) = find(store, self, key)? {
             tree.value.is_some()
@@ -512,7 +527,11 @@ impl TreeNode {
     }
 
     /// Get the value for a given key
-    pub fn get<S: BlobStore>(&self, store: &S, key: &[u8]) -> std::result::Result<Option<Blob<u8>>, S::Error> {
+    pub fn get<S: BlobStore>(
+        &self,
+        store: &S,
+        key: &[u8],
+    ) -> std::result::Result<Option<Blob<u8>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         Ok(if let FindResult::Found(tree) = find(store, self, key)? {
             tree.value.load(store)?
@@ -521,25 +540,34 @@ impl TreeNode {
         })
     }
 
-    pub fn insert(&mut self, store: &DynBlobStore, key: &[u8], value: &[u8]) -> anyhow::Result<()> {
+    pub fn insert<S: BlobStore>(
+        &mut self,
+        store: &S,
+        key: &[u8],
+        value: &[u8],
+    ) -> std::result::Result<(), S::Error> {
         *self = outer_combine(
-            DynT,
+            TTI::<S, NoStore, S::Error>::new(),
             self,
             store,
             &TreeNode::single(key, value),
-            no_store_dyn(),
+            &NoStore,
             |_, b| Ok(b),
         )?;
         Ok(())
     }
 
-    pub fn remove(&mut self, store: &DynBlobStore, key: &[u8]) -> anyhow::Result<()> {
+    pub fn remove<S: BlobStore>(
+        &mut self,
+        store: &S,
+        key: &[u8],
+    ) -> std::result::Result<(), S::Error> {
         *self = left_combine(
-            DynT,
+            TTI::<S, NoStore, S::Error>::new(),
             self,
             store,
             &TreeNode::single(key, &[]),
-            no_store_dyn(),
+            &NoStore,
             |_, _| Ok(TreeValue::none()),
         )?;
         Ok(())
@@ -577,7 +605,7 @@ impl TreeNode {
     }
 
     /// attaches the node components to the store
-    pub fn attach(&mut self, store: &mut DynBlobStore) -> anyhow::Result<()> {
+    pub fn attach<S: BlobStore>(&mut self, store: &mut S) -> std::result::Result<(), S::Error> {
         self.prefix.attach(store)?;
         self.value.attach(store)?;
         self.children.attach(store)?;
@@ -703,7 +731,10 @@ impl TreeNode {
     }
 
     /// iterate over all elements
-    pub fn try_iter<'a, S: BlobStore>(&self, store: &'a S) -> std::result::Result<Iter<'a, S>, S::Error> {
+    pub fn try_iter<'a, S: BlobStore>(
+        &self,
+        store: &'a S,
+    ) -> std::result::Result<Iter<'a, S>, S::Error> {
         let prefix = self.prefix.load(store)?;
         Ok(Iter::new(
             self.clone(),
@@ -915,10 +946,10 @@ enum FindResult<T> {
 /// - Prefix if we found a tree of which prefix is a prefix
 /// - NotFound if there is no tree
 fn find<S: BlobStore>(
-        store: &S,
-        tree: &TreeNode,
-        prefix: &[u8],
-    ) -> std::result::Result<FindResult<TreeNode>, S::Error> {
+    store: &S,
+    tree: &TreeNode,
+    prefix: &[u8],
+) -> std::result::Result<FindResult<TreeNode>, S::Error> {
     let tree_prefix = tree.prefix.load(store)?;
     let n = common_prefix(tree_prefix.as_ref(), prefix);
     // remaining in prefix
@@ -946,7 +977,7 @@ fn find<S: BlobStore>(
         };
         if let Ok(index) = index {
             let child = &tree_children[index];
-            find(store, child,&prefix[n..])?
+            find(store, child, &prefix[n..])?
         } else {
             FindResult::NotFound {
                 closest: tree.clone(),
@@ -1752,7 +1783,8 @@ mod tests {
                         }
                     })
                     .fold(TreeNode::empty(), |a, b| {
-                        outer_combine(DynT, &a, no_store_dyn(), &b, no_store_dyn(), |_, b| Ok(b)).unwrap()
+                        outer_combine(DynT, &a, no_store_dyn(), &b, no_store_dyn(), |_, b| Ok(b))
+                            .unwrap()
                     }),
             }
         }
@@ -1762,8 +1794,10 @@ mod tests {
             let sep = ".".as_bytes()[0];
             Ok(if tree.prefix.is_empty() && tree.value.is_some() {
                 Jsonish::String(
-                    std::str::from_utf8(tree.value.load(no_store_dyn()).unwrap().unwrap().as_ref())?
-                        .to_owned(),
+                    std::str::from_utf8(
+                        tree.value.load(no_store_dyn()).unwrap().unwrap().as_ref(),
+                    )?
+                    .to_owned(),
                 )
             } else {
                 let iter = tree.try_group_by(no_store_dyn(), |p, _| !p.contains(&sep))?;

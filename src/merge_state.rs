@@ -1,9 +1,11 @@
 #![allow(dead_code)]
-use crate::{iterators::SliceIterator, tree::TreeNode, BlobStore, DynBlobStore, blob_store::{NoStore, NoError}};
+use crate::{
+    blob_store::NoStore, iterators::SliceIterator, tree::TreeNode, BlobStore, DynBlobStore,
+};
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
-use std::{convert::Infallible, marker::PhantomData};
 use inplace_vec_builder::InPlaceVecBuilder;
+use std::{convert::Infallible, marker::PhantomData};
 
 /// A typical write part for the merge state
 pub(crate) trait MergeStateMut: MergeState {
@@ -196,7 +198,7 @@ impl TT for NoStoreT {
 
     type BB = NoStore;
 
-    type E = NoError;
+    type E = Infallible;
 }
 
 /// A merge state where we build into a new vec
