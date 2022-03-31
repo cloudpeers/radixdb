@@ -146,6 +146,23 @@ impl TreePrefix {
         Ok(r)
     }
 
+    fn drop<S: BlobStore>(
+        &self,
+        n: usize,
+        store: &S,
+    ) -> std::result::Result<TreePrefix, S::Error> {
+        Ok(if n == 0 {
+            self.clone()
+        } else {
+            let bytes = self.load(store)?.as_ref();
+            if n >= bytes.len() {
+                TreePrefix::empty()
+            } else {
+                TreePrefix::from_slice(&bytes[n..])
+            }
+        })
+    }
+
     fn append<S: BlobStore>(
         &mut self,
         that: &TreePrefix,
@@ -175,7 +192,7 @@ impl TreePrefix {
         } else if let Some(slice) = self.0.inline_as_ref() {
             Ok(Blob::inline(slice).unwrap())
         } else if let Some(id) = self.0.id_u64() {
-            store.read(id).map(|x| x)
+            store.read(id)
         } else {
             unreachable!("invalid state of a TreePrefix");
         }
@@ -192,7 +209,7 @@ impl TreePrefix {
     }
 
     /// detaches the prefix from the store. on success it will either be inline or owned
-    fn detach<S: BlobStore>(&mut self, store: &S) -> std::result::Result<(), S::Error> {
+    pub fn detach<S: BlobStore>(&mut self, store: &S) -> std::result::Result<(), S::Error> {
         if let Some(id) = self.0.id_u64() {
             let slice = store.read(id)?;
             self.0 = FlexRef::inline_or_owned_from_slice(slice.as_ref());
@@ -200,7 +217,7 @@ impl TreePrefix {
         Ok(())
     }
 
-    fn detached<S: BlobStore>(&self, store: &S) -> std::result::Result<Self, S::Error> {
+    pub fn detached<S: BlobStore>(&self, store: &S) -> std::result::Result<Self, S::Error> {
         let mut t = self.clone();
         t.detach(store)?;
         Ok(t)
@@ -229,6 +246,10 @@ impl TreePrefix {
 
     fn empty() -> Self {
         Self(FlexRef::inline_empty_array())
+    }
+
+    fn first(&self) -> u8 {
+        self.first_opt().unwrap()
     }
 
     fn first_opt(&self) -> Option<u8> {
@@ -285,14 +306,14 @@ impl Default for TreePrefix {
 /// Tree children are an optional array, that are stored either on the heap, or as an id
 #[repr(transparent)]
 #[derive(Clone)]
-pub struct TreeChildren(FlexRef<Vec<TreeNode>>);
+pub struct TreeChildren(FlexRef<Vec<(TreePrefix, TreeNode)>>);
 
 impl TreeChildren {
-    fn from_arc(data: Arc<Vec<TreeNode>>) -> Self {
+    fn from_arc(data: Arc<Vec<(TreePrefix, TreeNode)>>) -> Self {
         Self(FlexRef::owned_from_arc(data))
     }
 
-    fn from_vec(vec: Vec<TreeNode>) -> Self {
+    fn from_vec(vec: Vec<(TreePrefix, TreeNode)>) -> Self {
         if vec.is_empty() {
             Self::default()
         } else {
@@ -300,7 +321,7 @@ impl TreeChildren {
         }
     }
 
-    fn from_slice(slice: &[TreeNode]) -> Self {
+    fn from_slice(slice: &[(TreePrefix, TreeNode)]) -> Self {
         if slice.is_empty() {
             Self::default()
         } else {
@@ -316,12 +337,12 @@ impl TreeChildren {
         self.0.is_none()
     }
 
-    fn load<S: BlobStore>(&self, store: &S) -> std::result::Result<Blob<TreeNode>, S::Error> {
+    fn load<S: BlobStore>(&self, store: &S) -> std::result::Result<Blob<(TreePrefix, TreeNode)>, S::Error> {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Blob::arc_vec_t(arc.clone()))
         } else if let Some(id) = self.0.id_u64() {
             let blob = store.read(id)?;
-            Ok(blob.cast::<TreeNode>()?)
+            Ok(blob.cast::<(TreePrefix, TreeNode)>()?)
         } else if self.0.is_none() {
             Ok(Blob::inline(&[]).unwrap())
         } else {
@@ -334,7 +355,7 @@ impl TreeChildren {
         Ok(())
     }
 
-    fn make_mut(&mut self) -> Option<&mut Vec<TreeNode>> {
+    fn make_mut(&mut self) -> Option<&mut Vec<(TreePrefix, TreeNode)>> {
         if let Some(arc) = self.0.owned_arc_ref_mut() {
             Some(Arc::make_mut(arc))
         } else {
@@ -347,7 +368,8 @@ impl TreeChildren {
             let mut children = TreeNode::nodes_from_bytes(store.read(id)?.as_ref())
                 .unwrap()
                 .to_vec();
-            for child in &mut children {
+            for (prefix, child) in &mut children {
+                prefix.detach(store)?;
                 child.detach(store)?;
             }
             self.0 = FlexRef::owned_from_arc(Arc::new(children))
@@ -359,7 +381,8 @@ impl TreeChildren {
     fn attach<S: BlobStore>(&mut self, store: &mut S) -> std::result::Result<(), S::Error> {
         if let Some(arc) = self.0.owned_arc_ref() {
             let mut children = arc.as_ref().clone();
-            for child in &mut children {
+            for (prefix, child) in &mut children {
+                prefix.attach(store)?;
                 child.attach(store)?;
             }
             let bytes = TreeNode::slice_to_bytes(&children).unwrap();
@@ -404,14 +427,12 @@ impl Default for TreeChildren {
 #[derive(Default, Clone, Debug)]
 #[repr(C)]
 pub struct TreeNode {
-    prefix: TreePrefix,
     value: TreeValue,
     children: TreeChildren,
 }
 
 impl TreeNode {
     fn validate_serialized(&self) -> anyhow::Result<()> {
-        self.prefix.validate_serialized()?;
         self.value.validate_serialized()?;
         self.children.validate_serialized()?;
         Ok(())
@@ -419,7 +440,6 @@ impl TreeNode {
 
     pub fn empty() -> Self {
         Self {
-            prefix: TreePrefix::empty(),
             value: TreeValue::none(),
             children: TreeChildren::empty(),
         }
@@ -429,23 +449,24 @@ impl TreeNode {
         self.children.is_empty() && self.value.is_none()
     }
 
-    fn nodes_from_bytes(bytes: &[u8]) -> anyhow::Result<&[TreeNode]> {
-        let res: &[TreeNode] = slice_cast(bytes)?;
-        for node in res {
+    fn nodes_from_bytes(bytes: &[u8]) -> anyhow::Result<&[(TreePrefix, TreeNode)]> {
+        let res: &[(TreePrefix, TreeNode)] = slice_cast(bytes)?;
+        for (prefix, node) in res {
+            prefix.validate_serialized()?;
             node.validate_serialized()?;
         }
         Ok(res)
     }
 
-    fn slice_to_bytes(nodes: &[Self]) -> anyhow::Result<Vec<u8>> {
+    fn slice_to_bytes(nodes: &[(TreePrefix, Self)]) -> anyhow::Result<Vec<u8>> {
         let mut res = Vec::with_capacity(nodes.len() * 24);
         for node in nodes {
-            anyhow::ensure!(!node.prefix.0.is_arc());
-            anyhow::ensure!(!node.value.0.is_arc());
-            anyhow::ensure!(!node.children.0.is_arc());
-            res.extend_from_slice(&node.prefix.0 .0);
-            res.extend_from_slice(&node.value.0 .0);
-            res.extend_from_slice(&node.children.0 .0);
+            anyhow::ensure!(!node.0.0.is_arc());
+            anyhow::ensure!(!node.1.value.0.is_arc());
+            anyhow::ensure!(!node.1.children.0.is_arc());
+            res.extend_from_slice(&node.0.0 .0);
+            res.extend_from_slice(&node.1.value.0 .0);
+            res.extend_from_slice(&node.1.children.0 .0);
         }
         Ok(res)
     }
@@ -458,24 +479,25 @@ impl TreeNode {
     }
 
     pub fn single(key: &[u8], value: &[u8]) -> Self {
-        Self {
-            prefix: TreePrefix::from_slice(key),
-            value: TreeValue::from_slice(value),
-            ..Default::default()
-        }
+        todo!()
+        // Self {
+        //     prefix: TreePrefix::from_slice(key),
+        //     value: TreeValue::from_slice(value),
+        //     ..Default::default()
+        // }
     }
 
-    pub fn new(key: &[u8], value: Option<&[u8]>, children: &[Self]) -> Self {
-        Self {
-            prefix: TreePrefix::from_slice(key),
-            value: value.map(TreeValue::from_slice).unwrap_or_default(),
-            children: TreeChildren::from_vec(children.to_vec()),
-        }
+    pub fn new(key: &[u8], value: Option<&[u8]>, children: &[(TreePrefix, Self)]) -> Self {
+        todo!()
+        // Self {
+        //     prefix: TreePrefix::from_slice(key),
+        //     value: value.map(TreeValue::from_slice).unwrap_or_default(),
+        //     children: TreeChildren::from_vec(children.to_vec()),
+        // }
     }
 
     /// detach the node from its `store`.
     pub fn detach<S: BlobStore>(&mut self, store: &S) -> std::result::Result<(), S::Error> {
-        self.prefix.detach(store)?;
         self.value.detach(store)?;
         self.children.detach(store)?;
         Ok(())
@@ -607,7 +629,6 @@ impl TreeNode {
 
     /// attaches the node components to the store
     pub fn attach<S: BlobStore>(&mut self, store: &mut S) -> std::result::Result<(), S::Error> {
-        self.prefix.attach(store)?;
         self.value.attach(store)?;
         self.children.attach(store)?;
         Ok(())
@@ -629,14 +650,14 @@ impl TreeNode {
 
     pub(crate) fn split<S: BlobStore>(
         &mut self,
+        self_prefix: &mut TreePrefix,
         store: &S,
         n: usize,
     ) -> std::result::Result<(), S::Error> {
-        let rest = self.prefix.truncate(n, store)?;
+        let rest = self_prefix.truncate(n, store)?;
         let mut child = Self {
             value: TreeValue::none(),
             children: TreeChildren::empty(),
-            prefix: rest,
         };
         // child.childen = self.children, self.children = empty
         std::mem::swap(&mut self.children, &mut child.children);
@@ -644,20 +665,20 @@ impl TreeNode {
         std::mem::swap(&mut self.value, &mut child.value);
         // now, self is a degenerate empty node with first being the prefix
         // child is the former self (value and children) with rest as prefix
-        self.children = TreeChildren::from_vec(vec![child]);
+        self.children = TreeChildren::from_vec(vec![(rest, child)]);
         Ok(())
     }
 
-    pub(crate) fn unsplit<S: BlobStore>(&mut self, store: &S) -> std::result::Result<(), S::Error> {
+    pub(crate) fn unsplit<S: BlobStore>(&mut self, self_prefix: &mut TreePrefix, store: &S) -> std::result::Result<(), S::Error> {
         // remove all empty children
         // this might sometimes not be necessary, but it is tricky to find out when.
         if !self.children.is_empty() {
             if let Some(children) = self.children.make_mut() {
-                children.retain(|x| !x.is_empty());
+                children.retain(|(prefix, child)| !child.is_empty());
                 // a single child and no own value is degenerate
                 if children.len() == 1 && self.value.is_none() {
-                    let child = children.pop().unwrap();
-                    self.prefix.append(&child.prefix, store)?;
+                    let (child_prefix, child) = children.pop().unwrap();
+                    self_prefix.append(&child_prefix, store)?;
                     self.children = child.children;
                     self.value = child.value;
                 } else if children.len() == 0 {
@@ -668,7 +689,7 @@ impl TreeNode {
         }
         if self.is_empty() {
             // canonicalize prefix
-            self.prefix = TreePrefix::empty();
+            *self_prefix = TreePrefix::empty();
         }
         Ok(())
     }
@@ -996,115 +1017,29 @@ fn find<S: BlobStore>(
     })
 }
 
-/// Outer combine two trees with a function f
-fn outer_combine2<T: TT>(
-    t: T,
-    a: &TreeNode,
-    ab: &T::AB,
-    b: &TreeNode,
-    bb: &T::BB,
-    f: impl Fn(TreeValue, TreeValue) -> std::result::Result<TreeValue, T::E> + Copy,
-) -> std::result::Result<TreeNode, T::E> {
-    let ap = a.prefix.load(ab)?;
-    let bp = b.prefix.load(bb)?;
-    let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let av = || a.value.detached(ab);
-    let bv = || b.value.detached(bb);
-    let prefix = TreePrefix::from_slice(&ap[..n]);
-    let children;
-    let value;
-    if n == ap.len() && n == bp.len() {
-        // prefixes are identical
-        value = if a.value.is_none() {
-            if b.value.is_none() {
-                // both none - none
-                TreeValue::none()
-            } else {
-                // detach and take b
-                bv()?
-            }
-        } else {
-            if b.value.is_none() {
-                // detach and take a
-                av()?
-            } else {
-                // call the combine fn
-                f(av()?, bv()?)?
-            }
-        };
-        children = VecMergeState::<T>::merge(
-            &a.children.load(ab)?,
-            &ab,
-            &b.children.load(bb)?,
-            &bb,
-            &OuterCombineOp { f },
-        )?;
-    } else if n == ap.len() {
-        // a is a prefix of b
-        // value is value of a
-        value = av()?;
-        let b = b.clone_shortened(bb, n)?;
-        children = VecMergeState::<T>::merge(
-            &a.children.load(ab)?,
-            &ab,
-            &[b],
-            &bb,
-            &OuterCombineOp { f },
-        )?;
-    } else if n == bp.len() {
-        // b is a prefix of a
-        // value is value of b
-        value = bv()?;
-        let a = a.clone_shortened(ab, n)?;
-        children = VecMergeState::<T>::merge(
-            &[a],
-            &ab,
-            &b.children.load(bb)?,
-            &bb,
-            &OuterCombineOp { f },
-        )?;
-    } else {
-        // the two nodes are disjoint
-        // value is none
-        value = TreeValue::none();
-        // children is just the shortened children a and b in the right order
-        let mut a = a.clone_shortened(ab, n)?;
-        let mut b = b.clone_shortened(bb, n)?;
-        if ap[n] > bp[n] {
-            std::mem::swap(&mut a, &mut b);
-        }
-        children = vec![a, b];
-    }
-    let mut res = TreeNode {
-        prefix,
-        value,
-        children: TreeChildren::from_vec(children),
-    };
-    res.unsplit(ab)?;
-    Ok(res)
-}
+type ChildEntry = (TreePrefix, TreeNode);
 
 /// Outer combine two trees with a function f
 fn outer_combine<T: TT>(
     _t: T,
-    a: &TreeNode,
+    (ap, an): &ChildEntry,
     ab: &T::AB,
-    b: &TreeNode,
+    (bp, bn): &ChildEntry,
     bb: &T::BB,
     f: impl Fn(TreeValue, TreeValue) -> std::result::Result<TreeValue, T::E> + Copy,
-) -> std::result::Result<TreeNode, T::E> {
-    let ap = a.prefix.load(ab)?;
-    let bp = b.prefix.load(bb)?;
-    let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let av = || a.value.detached(ab);
-    let bv = || b.value.detached(bb);
-    let prefix = TreePrefix::from_slice(&ap[..n]);
+) -> std::result::Result<ChildEntry, T::E> {
+    let apb = ap.load(ab)?;
+    let bpb = bp.load(bb)?;
+    let n = common_prefix(apb.as_ref(), bpb.as_ref());
+    let av = || an.value.detached(ab);
+    let bv = || bn.value.detached(bb);
+    let prefix = TreePrefix::from_slice(&apb[..n]);
     let children;
     let value;
-    if n == ap.len() && n == bp.len() {
+    if n == apb.len() && n == bpb.len() {
         // prefixes are identical
-        value = if a.value.is_none() {
-            if b.value.is_none() {
+        value = if an.value.is_none() {
+            if bn.value.is_none() {
                 // both none - none
                 TreeValue::none()
             } else {
@@ -1112,7 +1047,7 @@ fn outer_combine<T: TT>(
                 bv()?
             }
         } else {
-            if b.value.is_none() {
+            if bn.value.is_none() {
                 // detach and take a
                 av()?
             } else {
@@ -1121,33 +1056,35 @@ fn outer_combine<T: TT>(
             }
         };
         children = VecMergeState::<T>::merge(
-            &a.children.load(ab)?,
+            &an.children.load(ab)?,
             &ab,
-            &b.children.load(bb)?,
+            &bn.children.load(bb)?,
             &bb,
             &OuterCombineOp { f },
         )?;
-    } else if n == ap.len() {
+    } else if n == apb.len() {
         // a is a prefix of b
         // value is value of a
         value = av()?;
-        let b = b.clone_shortened(bb, n)?;
+        let bp = bp.drop(n, ab)?;
+        let b = bn.clone();
         children = VecMergeState::<T>::merge(
-            &a.children.load(ab)?,
+            &an.children.load(ab)?,
             &ab,
-            &[b],
+            &[(bp, b)],
             &bb,
             &OuterCombineOp { f },
         )?;
-    } else if n == bp.len() {
+    } else if n == bpb.len() {
         // b is a prefix of a
         // value is value of b
         value = bv()?;
-        let a = a.clone_shortened(ab, n)?;
+        let ap = ap.drop(n, ab)?;
+        let a = an.clone();
         children = VecMergeState::<T>::merge(
-            &[a],
+            &[(ap, a)],
             &ab,
-            &b.children.load(bb)?,
+            &bn.children.load(bb)?,
             &bb,
             &OuterCombineOp { f },
         )?;
@@ -1156,20 +1093,23 @@ fn outer_combine<T: TT>(
         // value is none
         value = TreeValue::none();
         // children is just the shortened children a and b in the right order
-        let mut a = a.clone_shortened(ab, n)?;
-        let mut b = b.clone_shortened(bb, n)?;
-        if ap[n] > bp[n] {
+        let a = an.clone();
+        let b = bn.clone();
+        let ap = ap.drop(n, ab)?;
+        let bp = bp.drop(n, bb)?;
+        let mut a = (ap, a);
+        let mut b = (bp, b);
+        if apb[n] > bpb[n] {
             std::mem::swap(&mut a, &mut b);
         }
         children = vec![a, b];
     }
     let mut res = TreeNode {
-        prefix,
         value,
         children: TreeChildren::from_vec(children),
     };
-    res.unsplit(ab)?;
-    Ok(res)
+    res.unsplit(&mut prefix, ab)?;
+    Ok((prefix, res))
 }
 
 /// Inner combine two trees with a function f
@@ -1627,8 +1567,8 @@ where
     F: Fn(TreeValue, TreeValue) -> std::result::Result<TreeValue, T::E> + Copy,
     T: TT,
 {
-    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-        a.prefix.first_opt().cmp(&b.prefix.first_opt())
+    fn cmp(&self, a: &(TreePrefix, TreeNode), b: &(TreePrefix, TreeNode)) -> Ordering {
+        a.0.first().cmp(&b.0.first())
     }
     fn from_a(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_a(n, true)
@@ -1639,7 +1579,7 @@ where
     fn collision(&self, m: &mut VecMergeState<'a, T>) -> bool {
         let a = m.a.next().unwrap();
         let b = m.b.next().unwrap();
-        match outer_combine2(T::default(), a, m.ab, b, m.bb, self.f) {
+        match outer_combine(T::default(), a, m.ab, b, m.bb, self.f) {
             Ok(res) => {
                 m.r.push(res);
                 true
@@ -1722,8 +1662,8 @@ where
 struct IntersectOp {}
 
 impl<'a, T: TT> MergeOperation<VecMergeState<'a, T>> for IntersectOp {
-    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
-        a.prefix.first_opt().cmp(&b.prefix.first_opt())
+    fn cmp(&self, a: &(TreePrefix, TreeNode), b: &(TreePrefix, TreeNode)) -> Ordering {
+        a.0.first_opt().cmp(&b.0.first_opt())
     }
     fn from_a(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
         m.advance_a(n, false)

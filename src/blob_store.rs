@@ -7,8 +7,18 @@ use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
 
+pub trait AnyhowCompat {}
+
+impl<T> AnyhowCompat for T
+    where
+        T: From<anyhow::Error>,
+        anyhow::Error: From<T>,
+        T: From<NoError>,
+        NoError: From<T>,
+{}
+
 pub trait BlobStore: Debug + Send + Sync {
-    type Error: From<NoError> + From<anyhow::Error>;
+    type Error: From<anyhow::Error> + From<NoError>;
 
     fn read(&self, id: u64) -> std::result::Result<Blob<u8>, Self::Error>;
 

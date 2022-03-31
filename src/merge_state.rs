@@ -3,12 +3,12 @@ use crate::{
     blob_store::{NoError, NoStore},
     iterators::SliceIterator,
     tree::TreeNode,
-    BlobStore, DynBlobStore,
+    BlobStore, DynBlobStore, TreePrefix,
 };
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
 use inplace_vec_builder::InPlaceVecBuilder;
-use std::{convert::Infallible, marker::PhantomData};
+use std::marker::PhantomData;
 
 /// A typical write part for the merge state
 pub(crate) trait MergeStateMut: MergeState {
@@ -206,11 +206,11 @@ impl TT for NoStoreT {
 
 /// A merge state where we build into a new vec
 pub(crate) struct VecMergeState<'a, T: TT> {
-    pub a: SliceIterator<'a, TreeNode>,
+    pub a: SliceIterator<'a, (TreePrefix, TreeNode)>,
     pub ab: &'a T::AB,
-    pub b: SliceIterator<'a, TreeNode>,
+    pub b: SliceIterator<'a, (TreePrefix, TreeNode)>,
     pub bb: &'a T::BB,
-    pub r: Vec<TreeNode>,
+    pub r: Vec<(TreePrefix, TreeNode)>,
     pub err: Option<T::E>,
 }
 
@@ -222,11 +222,11 @@ impl<'a, T: TT> Debug for VecMergeState<'a, T> {
 
 impl<'a, T: TT> VecMergeState<'a, T> {
     fn new(
-        a: &'a [TreeNode],
+        a: &'a [(TreePrefix, TreeNode)],
         ab: &'a T::AB,
-        b: &'a [TreeNode],
+        b: &'a [(TreePrefix, TreeNode)],
         bb: &'a T::BB,
-        r: Vec<TreeNode>,
+        r: Vec<(TreePrefix, TreeNode)>,
     ) -> Self {
         Self {
             a: SliceIterator(a),
@@ -238,7 +238,7 @@ impl<'a, T: TT> VecMergeState<'a, T> {
         }
     }
 
-    fn into_vec(self) -> std::result::Result<Vec<TreeNode>, T::E> {
+    fn into_vec(self) -> std::result::Result<Vec<(TreePrefix, TreeNode)>, T::E> {
         if let Some(err) = self.err {
             Err(err)
         } else {
@@ -247,13 +247,13 @@ impl<'a, T: TT> VecMergeState<'a, T> {
     }
 
     pub fn merge<O: MergeOperation<Self>>(
-        a: &'a [TreeNode],
+        a: &'a [(TreePrefix, TreeNode)],
         ab: &'a T::AB,
-        b: &'a [TreeNode],
+        b: &'a [(TreePrefix, TreeNode)],
         bb: &'a T::BB,
         o: &'a O,
-    ) -> std::result::Result<Vec<TreeNode>, T::E> {
-        let t: Vec<TreeNode> = Vec::new();
+    ) -> std::result::Result<Vec<(TreePrefix, TreeNode)>, T::E> {
+        let t: Vec<(TreePrefix, TreeNode)> = Vec::new();
         let mut state = Self::new(a, ab, b, bb, t);
         o.merge(&mut state);
         state.into_vec()
@@ -261,12 +261,12 @@ impl<'a, T: TT> VecMergeState<'a, T> {
 }
 
 impl<'a, T: TT> MergeState for VecMergeState<'a, T> {
-    type A = TreeNode;
-    type B = TreeNode;
-    fn a_slice(&self) -> &[TreeNode] {
+    type A = (TreePrefix, TreeNode);
+    type B = (TreePrefix, TreeNode);
+    fn a_slice(&self) -> &[(TreePrefix, TreeNode)] {
         self.a.as_slice()
     }
-    fn b_slice(&self) -> &[TreeNode] {
+    fn b_slice(&self) -> &[(TreePrefix, TreeNode)] {
         self.b.as_slice()
     }
 }
@@ -275,10 +275,10 @@ impl<'a, T: TT> MergeStateMut for VecMergeState<'a, T> {
     fn advance_a(&mut self, n: usize, take: bool) -> bool {
         if take {
             self.r.reserve(n);
-            for e in self.a.take_front(n).iter() {
-                match e.detached(self.ab) {
-                    Ok(e) => self.r.push(e),
-                    Err(cause) => {
+            for (k, v) in self.a.take_front(n).iter() {
+                match (k.detached(self.ab), v.detached(self.ab)) {
+                    (Ok(k), Ok(v)) => self.r.push((k, v)),
+                    (Err(cause), _) => {
                         self.err = Some(cause.into());
                         return false;
                     }
