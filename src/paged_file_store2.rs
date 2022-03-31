@@ -280,6 +280,8 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
 }
 
 impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
+    type Error = anyhow::Error;
+
     fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         self.0.lock().bytes(id)
     }

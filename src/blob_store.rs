@@ -8,25 +8,66 @@ use parking_lot::Mutex;
 use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
 
 pub trait BlobStore: Debug + Send + Sync {
-    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>>;
+    type Error;
 
-    fn write(&self, data: &[u8]) -> anyhow::Result<u64>;
+    fn read(&self, id: u64) -> std::result::Result<Blob<u8>, Self::Error>;
 
-    fn sync(&self) -> anyhow::Result<()>;
+    fn write(&self, data: &[u8]) -> std::result::Result<u64, Self::Error>;
+
+    fn sync(&self) -> std::result::Result<(), Self::Error>;
 }
 
-pub type DynBlobStore = Box<dyn BlobStore>;
+pub type DynBlobStore = Box<dyn BlobStore<Error = anyhow::Error>>;
+
+impl BlobStore for DynBlobStore {
+    type Error = anyhow::Error;
+
+    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+        self.as_ref().read(id)
+    }
+
+    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
+        self.as_ref().write(data)
+    }
+
+    fn sync(&self) -> anyhow::Result<()> {
+        self.as_ref().sync()
+    }
+}
 
 #[derive(Default, Debug, Clone)]
 pub struct NoStore;
 
-impl NoStore {
+pub enum NoStoreError {}
+
+impl BlobStore for NoStore {
+    type Error = NoStoreError;
+
+    fn read(&self, _: u64) -> std::result::Result<Blob<u8>, Self::Error> {
+        panic!("no store");
+    }
+
+    fn write(&self, _: &[u8]) -> std::result::Result<u64, Self::Error> {
+        panic!("no store");
+    }
+
+    fn sync(&self) -> std::result::Result<(), Self::Error> {
+        panic!("no store");
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct NoStoreDyn;
+
+impl NoStoreDyn {
     pub fn new() -> DynBlobStore {
         Box::new(Self)
     }
 }
 
-impl BlobStore for NoStore {
+impl BlobStore for NoStoreDyn {
+    type Error = anyhow::Error;
+
     fn read(&self, _: u64) -> anyhow::Result<Blob<u8>> {
         anyhow::bail!("no store");
     }
@@ -42,7 +83,11 @@ impl BlobStore for NoStore {
 
 lazy_static! {
     /// A noop store, for when we know that a tree is not attached
-    pub static ref NO_STORE: DynBlobStore = NoStore::new();
+    pub static ref NO_STORE: DynBlobStore = NoStoreDyn::new();
+}
+
+pub fn no_store() -> &'static DynBlobStore {
+    &*NO_STORE
 }
 
 #[derive(Default, Clone)]
@@ -62,6 +107,8 @@ impl Debug for MemStore {
 }
 
 impl BlobStore for MemStore {
+    type Error = anyhow::Error;
+
     fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         let data = self.data.lock();
         data.get(&id).cloned().context("value not found")
@@ -263,6 +310,8 @@ impl<const SIZE: usize> PagedMemStore<SIZE> {
 }
 
 impl<const SIZE: usize> BlobStore for PagedMemStore<SIZE> {
+    type Error = anyhow::Error;
+
     fn read(&self, offset: u64) -> anyhow::Result<Blob<u8>> {
         self.0.lock().bytes(offset)
     }

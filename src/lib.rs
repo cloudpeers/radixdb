@@ -11,7 +11,7 @@ mod paged_file_store;
 mod paged_file_store2;
 mod tree;
 pub use blob::{Blob, BlobOwner};
-pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStore, PagedMemStore, NO_STORE};
+pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStoreDyn, PagedMemStore, NO_STORE};
 #[cfg(not(target_arch = "wasm32"))]
 pub use paged_file_store::PagedFileStore;
 pub use tree::{TreeChildren, TreeNode, TreePrefix, TreeValue};
