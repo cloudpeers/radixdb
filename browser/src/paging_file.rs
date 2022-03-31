@@ -154,6 +154,9 @@ impl PagingFile {
 }
 
 impl BlobStore for PagingFile {
+
+    type Error = anyhow::Error;
+
     fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         self.0.lock().load_length_prefixed(id)
     }

@@ -228,6 +228,9 @@ impl SyncFile {
 }
 
 impl radixdb::BlobStore for SyncFile {
+
+    type Error = anyhow::Error;
+
     fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::ReadFileLengthPrefixed {

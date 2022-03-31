@@ -361,7 +361,7 @@ impl TreeChildren {
             for child in &mut children {
                 child.attach(store)?;
             }
-            let bytes = TreeNode::slice_to_bytes(&children)?;
+            let bytes = TreeNode::slice_to_bytes(&children).unwrap();
             let first = bytes.get(0).cloned();
             self.0 = FlexRef::id_from_u64_and_extra(store.write(&bytes)?, first).unwrap();
         }
