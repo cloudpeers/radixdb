@@ -320,7 +320,8 @@ impl TreeChildren {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Blob::arc_vec_t(arc.clone()))
         } else if let Some(id) = self.0.id_u64() {
-            store.read(id).map(|x| x.cast::<TreeNode>().unwrap())
+            let blob = store.read(id)?;
+            Ok(blob.cast::<TreeNode>()?)
         } else if self.0.is_none() {
             Ok(Blob::inline(&[]).unwrap())
         } else {

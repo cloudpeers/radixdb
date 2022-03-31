@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 use crate::{
-    blob_store::NoStore, iterators::SliceIterator, tree::TreeNode, BlobStore, DynBlobStore,
+    blob_store::{NoError, NoStore},
+    iterators::SliceIterator,
+    tree::TreeNode,
+    BlobStore, DynBlobStore,
 };
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
@@ -198,7 +201,7 @@ impl TT for NoStoreT {
 
     type BB = NoStore;
 
-    type E = Infallible;
+    type E = NoError;
 }
 
 /// A merge state where we build into a new vec
