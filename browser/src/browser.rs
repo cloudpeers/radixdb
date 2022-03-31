@@ -131,7 +131,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, now() - t0);
     info!("detaching tree...");
     let t0 = now();
-    tree.detach(&store, true)?;
+    tree.detach(&store)?;
     info!("detached tree {:?} {} s", tree, now() - t0);
     info!("traversing unattached tree...");
     let t0 = now();

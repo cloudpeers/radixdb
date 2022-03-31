@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use crate::{iterators::SliceIterator, tree::TreeNode};
+use crate::{iterators::SliceIterator, tree::TreeNode, DynBlobStore};
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
 use inplace_vec_builder::InPlaceVecBuilder;
@@ -150,7 +150,9 @@ impl<'a, A, B> MergeStateMut for BoolOpMergeState<'a, A, B> {
 /// A merge state where we build into a new vec
 pub(crate) struct VecMergeState<'a> {
     pub a: SliceIterator<'a, TreeNode>,
+    pub ab: &'a DynBlobStore,
     pub b: SliceIterator<'a, TreeNode>,
+    pub bb: &'a DynBlobStore,
     pub r: Vec<TreeNode>,
     pub err: Option<anyhow::Error>,
 }
@@ -162,10 +164,12 @@ impl<'a> Debug for VecMergeState<'a> {
 }
 
 impl<'a> VecMergeState<'a> {
-    fn new(a: &'a [TreeNode], b: &'a [TreeNode], r: Vec<TreeNode>) -> Self {
+    fn new(a: &'a [TreeNode], ab: &'a DynBlobStore, b: &'a [TreeNode], bb: &'a DynBlobStore, r: Vec<TreeNode>) -> Self {
         Self {
             a: SliceIterator(a),
+            ab,
             b: SliceIterator(b),
+            bb,
             r,
             err: None,
         }
@@ -181,11 +185,13 @@ impl<'a> VecMergeState<'a> {
 
     pub fn merge<O: MergeOperation<Self>>(
         a: &'a [TreeNode],
+        ab: &'a DynBlobStore,
         b: &'a [TreeNode],
+        bb: &'a DynBlobStore,
         o: &'a O,
     ) -> anyhow::Result<Vec<TreeNode>> {
         let t: Vec<TreeNode> = Vec::new();
-        let mut state = Self::new(a, b, t);
+        let mut state = Self::new(a, ab, b, bb, t);
         o.merge(&mut state);
         state.into_vec()
     }
@@ -207,7 +213,13 @@ impl<'a> MergeStateMut for VecMergeState<'a> {
         if take {
             self.r.reserve(n);
             for e in self.a.take_front(n).iter() {
-                self.r.push(e.clone())
+                match e.detached(&self.ab) {
+                    Ok(e) => self.r.push(e),
+                    Err(cause) => {
+                        self.err = Some(cause);
+                        return false
+                    }
+                }
             }
         } else {
             self.a.drop_front(n);
@@ -218,7 +230,13 @@ impl<'a> MergeStateMut for VecMergeState<'a> {
         if take {
             self.r.reserve(n);
             for e in self.b.take_front(n).iter() {
-                self.r.push(e.clone())
+                match e.detached(&self.bb) {
+                    Ok(e) => self.r.push(e),
+                    Err(cause) => {
+                        self.err = Some(cause);
+                        return false
+                    }
+                }
             }
         } else {
             self.b.drop_front(n);

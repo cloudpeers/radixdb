@@ -309,7 +309,7 @@ mod tests {
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
         info!("detaching tree...");
         let t0 = Instant::now();
-        tree.detach(&store, true)?;
+        tree.detach(&store)?;
         info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
         info!("traversing unattached tree...");
         let t0 = Instant::now();
