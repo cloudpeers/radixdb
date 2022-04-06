@@ -992,6 +992,14 @@ impl Tree {
     ) -> Tree {
         unwrap_safe(self.try_left_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
+
+    pub fn left_combine_pred(
+        &self,
+        that: &Tree,
+        f: impl Fn(TreeValue, TreeValue) -> bool + Copy,
+    ) -> bool {
+        unwrap_safe(self.try_left_combine_pred::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
+    }
 }
 
 impl<S: BlobStore> Tree<S> {
@@ -1120,6 +1128,23 @@ impl<S: BlobStore> Tree<S> {
             node,
             store: NoStore,
         })
+    }
+
+    pub fn try_left_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
+    where
+        S2: BlobStore,
+        E: From<S::Error>,
+        E: From<S2::Error>,
+        F: Fn(TreeValue, TreeValue) -> Result<bool, E> + Copy,
+    {
+        Ok(left_combine_pred(
+            TTI::<S, S2, E>::default(),
+            &self.node,
+            &self.store,
+            &that.node,
+            &that.store,
+            f,
+        )?)
     }
 }
 
@@ -1476,6 +1501,57 @@ pub fn left_combine<T: TT>(
     };
     res.unsplit(ab)?;
     Ok(res)
+}
+
+/// Left combine two trees with a predicate f
+fn left_combine_pred<T: TT>(
+    t: T,
+    a: &TreeNode,
+    ab: &T::AB,
+    b: &TreeNode,
+    bb: &T::BB,
+    f: impl Fn(TreeValue, TreeValue) -> Result<bool, T::E> + Copy,
+) -> Result<bool, T::E> {
+    let ap = a.prefix.load(ab)?;
+    let bp = b.prefix.load(bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    let av = || a.value.detached(ab);
+    let bv = || b.value.detached(bb);
+    if n == ap.len() && n == bp.len() {
+        // prefixes are identical
+        if a.value.is_some() {
+            if b.value.is_some() {
+                // ask the predicate
+                if f(av()?, bv()?)? {
+                    return Ok(true);
+                }
+            } else {
+                // keys(a) is not subset of keys(b), abort with true
+                return Ok(true);
+            }
+        }
+        let ac = a.children.load(ab)?;
+        let bc = b.children.load(bb)?;
+        BoolOpMergeState::<T>::merge(&ac, &ab, &bc, &bb, &LeftCombineOp { f })
+    } else if n == ap.len() {
+        // a is a prefix of b
+        if a.value.is_some() {
+            // a is a strict superset of b, so abort with true
+            return Ok(true);
+        }
+        // todo: do I need this?
+        // If a has a split where b does not, doesn't that mean that a has more values?
+        let ac = a.children.load(ab)?;
+        let bc = [b.clone_shortened(bb, n)?];
+        BoolOpMergeState::<T>::merge(&ac, &ab, &bc, &bb, &LeftCombineOp { f })
+    } else if n == bp.len() {
+        // b is a prefix of a
+        let ac = [a.clone_shortened(ab, n)?];
+        let bc = b.children.load(bb)?;
+        BoolOpMergeState::<T>::merge(&ac, &ab, &bc, &bb, &LeftCombineOp { f })
+    } else {
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1887,25 +1963,34 @@ where
     }
 }
 
-struct IntersectOp {}
-
-impl<'a, T: TT> MergeOperation<VecMergeState<'a, T>> for IntersectOp {
+impl<'a, T, F> MergeOperation<BoolOpMergeState<'a, T>> for LeftCombineOp<F>
+where
+    T: TT,
+    F: Fn(TreeValue, TreeValue) -> Result<bool, T::E> + Copy,
+{
     fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
     }
-    fn from_a(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
-        m.advance_a(n, false)
+    fn from_a(&self, m: &mut BoolOpMergeState<'a, T>, n: usize) -> bool {
+        m.advance_a(n, true)
     }
-    fn from_b(&self, m: &mut VecMergeState<'a, T>, n: usize) -> bool {
+    fn from_b(&self, m: &mut BoolOpMergeState<'a, T>, n: usize) -> bool {
         m.advance_b(n, false)
     }
-    fn collision(&self, m: &mut VecMergeState<'a, T>) -> bool {
-        let a = &m.a_slice()[0];
-        let b = &m.b_slice()[0];
-        // if this is true, we have found an intersection and can abort.
-        todo!()
-        // let take = intersects(a, self.ab, b, self.bb);
-        // m.advance_a(1, take) && m.advance_b(1, false)
+    fn collision(&self, m: &mut BoolOpMergeState<'a, T>) -> bool {
+        let a = m.a.next().unwrap();
+        let b = m.b.next().unwrap();
+        match left_combine_pred(T::default(), a, m.ab, b, m.bb, self.f) {
+            Ok(res) => {
+                m.r = res;
+                // continue iteration unless res is true
+                !res
+            }
+            Err(cause) => {
+                m.err = Some(cause);
+                false
+            }
+        }
     }
 }
 
@@ -2077,8 +2162,8 @@ mod tests {
         #[test]
         fn attach_detach_roundtrip(x in arb_tree_contents()) {
             let reference = x;
-            let mut tree = mk_owned_tree(&reference);
-            let mut store: DynBlobStore = Box::new(MemStore::default());
+            let tree = mk_owned_tree(&reference);
+            let store: DynBlobStore = Box::new(MemStore::default());
             let tree = tree.attach(store).unwrap();
             let tree = tree.try_detach().unwrap();
             let actual = to_btree_map(&tree);
@@ -2182,6 +2267,15 @@ mod tests {
         }
 
         #[test]
+        fn is_subset(a in arb_tree_contents(), b in arb_tree_contents()) {
+            let at = mk_owned_tree(&a);
+            let bt = mk_owned_tree(&b);
+            let at_subset_bt = !at.left_combine_pred(  &bt, |_, _| false);
+            let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+            prop_assert_eq!(at_subset_bt, at_subset_bt_ref);
+        }
+
+        #[test]
         fn group_by_true(a in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
             let trees: Vec<Tree> = at.group_by(|_, _| true).collect::<Vec<_>>();
@@ -2237,6 +2331,50 @@ mod tests {
         let bt = mk_owned_tree(&b);
         let res = at.inner_combine_pred(&bt, |_, _| true);
         assert_eq!(res, true);
+    }
+
+    #[test]
+    fn is_subset1() {
+        let a = btreemap! { vec![1] => vec![] };
+        let b = btreemap! {};
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+        let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+        assert_eq!(at_subset_bt, at_subset_bt_ref);
+    }
+
+    #[test]
+    fn is_subset2() {
+        let a = btreemap! { vec![1, 1, 1] => vec![] };
+        let b = btreemap! { vec![1, 2] => vec![] };
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+        let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+        assert_eq!(at_subset_bt, at_subset_bt_ref);
+    }
+
+    #[test]
+    fn is_subset3() {
+        let a = btreemap! { vec![1, 1] => vec![], vec![1, 2] => vec![] };
+        let b = btreemap! {};
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+        let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+        assert_eq!(at_subset_bt, at_subset_bt_ref);
+    }
+
+    #[test]
+    fn is_subset4() {
+        let a = btreemap! { vec![1] => vec![] };
+        let b = btreemap! { vec![] => vec![], vec![1] => vec![] };
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+        let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+        assert_eq!(at_subset_bt, at_subset_bt_ref);
     }
 
     #[test]
