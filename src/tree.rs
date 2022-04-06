@@ -541,10 +541,14 @@ impl TreeNode {
     }
 
     /// Prepend a prefix to the tree
-    pub fn prepend<S: BlobStore>(&mut self, prefix: &[u8], store: &S) -> Result<(), S::Error> {
-        let mut t = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
-        t.append(&self.prefix, store)?;
-        self.prefix = t;
+    pub fn prepend<S: BlobStore>(
+        &mut self,
+        prefix: impl Into<TreePrefix>,
+        store: &S,
+    ) -> Result<(), S::Error> {
+        let mut prefix = prefix.into();
+        prefix.append(&self.prefix, store)?;
+        self.prefix = prefix;
         Ok(())
     }
 
@@ -917,6 +921,7 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for TreeNode {
     }
 }
 
+#[repr(C)]
 #[derive(Debug)]
 pub struct Tree<S: BlobStore = NoStore> {
     node: TreeNode,
@@ -956,8 +961,8 @@ impl Tree {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.node.is_empty()
+    pub fn prepend(&mut self, prefix: impl Into<TreePrefix>) {
+        unwrap_safe(self.node.prepend(prefix, &self.store));
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
@@ -1045,6 +1050,10 @@ impl Tree {
 }
 
 impl<S: BlobStore> Tree<S> {
+    pub fn is_empty(&self) -> bool {
+        self.node.is_empty()
+    }
+
     pub fn try_values(&self) -> impl Iterator<Item = Result<TreeValue, S::Error>> + '_ {
         self.node.try_values(&self.store)
     }
@@ -1075,10 +1084,11 @@ impl<S: BlobStore> Tree<S> {
         self.node.last_entry(&self.store, prefix)
     }
 
-    pub fn dump_tree(&self) -> Result<(), S::Error> {
+    pub fn try_dump_tree(&self) -> Result<(), S::Error> {
         self.node.dump_tree(&self.store)
     }
-    pub fn detach(&self) -> Result<Tree, S::Error> {
+
+    pub fn try_detach(&self) -> Result<Tree, S::Error> {
         let mut tree = self.node.clone();
         tree.detach(&self.store)?;
         Ok(Tree {
@@ -2034,7 +2044,7 @@ mod tests {
     proptest! {
         #[test]
         fn tree_dump(x in arb_owned_tree()) {
-            x.dump_tree().unwrap();
+            x.try_dump_tree().unwrap();
             println!();
         }
 
@@ -2042,7 +2052,7 @@ mod tests {
         fn tree_iter(x in arb_owned_tree()) {
             let iter = x.iter();
             println!();
-            x.dump_tree().unwrap();
+            x.try_dump_tree().unwrap();
             println!();
             for (k, v) in iter {
                 let data = v.load(&NoStore).unwrap().unwrap();
@@ -2065,7 +2075,7 @@ mod tests {
             let mut tree = mk_owned_tree(&reference);
             let mut store: DynBlobStore = Box::new(MemStore::default());
             let tree = tree.attach(store).unwrap();
-            let tree = tree.detach().unwrap();
+            let tree = tree.try_detach().unwrap();
             let actual = to_btree_map(&tree);
             prop_assert_eq!(reference, actual);
         }
@@ -2276,10 +2286,10 @@ mod tests {
         });
         let store: DynBlobStore = Box::new(MemStore::default());
         let res = nodes.fold(Tree::empty(), |a, b| a.outer_combine(&b, |_, b| b));
-        res.dump_tree()?;
+        res.try_dump_tree()?;
         let res = res.attach(store)?;
         println!("{:?}", res);
-        res.dump_tree()?;
+        res.try_dump_tree()?;
         Ok(())
     }
 
@@ -2289,25 +2299,25 @@ mod tests {
         let a = Tree::single(b"a".as_ref(), b"1".as_ref());
         let b = Tree::single(b"b".as_ref(), b"2".as_ref());
         let t = a.outer_combine(&b, |_, b| b);
-        t.dump_tree()?;
+        t.try_dump_tree()?;
 
         println!("a prefix of b");
         let a = Tree::single(b"a".as_ref(), b"1".as_ref());
         let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
         let t = a.outer_combine(&b, |_, b| b);
-        t.dump_tree()?;
+        t.try_dump_tree()?;
 
         println!("b prefix of a");
         let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
         let b = Tree::single(b"a".as_ref(), b"2".as_ref());
         let t = a.outer_combine(&b, |_, b| b);
-        t.dump_tree()?;
+        t.try_dump_tree()?;
 
         println!("same prefix");
         let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
         let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
         let t = a.outer_combine(&b, |_, b| b);
-        t.dump_tree()?;
+        t.try_dump_tree()?;
 
         Ok(())
     }

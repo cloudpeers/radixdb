@@ -280,7 +280,6 @@ dependencies = [
  "fnv",
  "hex",
  "inplace-vec-builder",
- "lazy_static",
  "log",
  "memmap",
  "obey",

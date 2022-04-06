@@ -3,7 +3,6 @@ use crate::{blob::BlobOwner, Blob};
 use super::Hex;
 use anyhow::Context;
 use fnv::FnvHashMap;
-use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
 

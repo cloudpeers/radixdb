@@ -202,10 +202,9 @@ impl<T> Borrow<[T]> for Blob<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Borrow, sync::Arc};
+    use std::{borrow::Borrow, ops::Deref, sync::Arc};
 
     use super::Blob;
-    use lazy_static::__Deref;
     use proptest::prelude::*;
 
     #[test]
