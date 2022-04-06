@@ -11,10 +11,10 @@ mod paged_file_store;
 mod paged_file_store2;
 mod tree;
 pub use blob::{Blob, BlobOwner};
-pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStoreDyn, PagedMemStore, NO_STORE};
+pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStoreDyn, PagedMemStore};
 #[cfg(not(target_arch = "wasm32"))]
 pub use paged_file_store::PagedFileStore;
-pub use tree::{TreeChildren, TreeNode, TreePrefix, TreeValue};
+pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///

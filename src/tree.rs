@@ -2,7 +2,7 @@ use binary_merge::{MergeOperation, MergeState};
 use std::{borrow::Borrow, cmp::Ordering, fmt::Debug, result::Result, sync::Arc};
 
 use crate::{
-    blob_store::NoStore,
+    blob_store::{unwrap_safe, NoError, NoStore},
     flex_ref::FlexRef,
     merge_state::{DynT, MergeStateMut, NoStoreT, VecMergeState, TT, TTI},
 };
@@ -692,28 +692,28 @@ impl TreeNode {
         Ok(())
     }
 
-    pub fn dump_tree(&self, store: &DynBlobStore) -> anyhow::Result<()> {
+    pub fn dump_tree<S: BlobStore>(&self, store: &S) -> Result<(), S::Error> {
         fn hex(x: &[u8]) -> anyhow::Result<String> {
             Ok(hex::encode(x))
         }
         self.dump_tree_custom("", store, hex, |_, v| hex(v), |_| Ok("".into()))
     }
 
-    pub fn dump_tree_utf8(&self, store: &DynBlobStore) -> anyhow::Result<()> {
+    pub fn dump_tree_utf8<S: BlobStore>(&self, store: &S) -> Result<(), S::Error> {
         fn utf8(x: &[u8]) -> anyhow::Result<String> {
             Ok(std::str::from_utf8(x)?.to_owned())
         }
         self.dump_tree_custom("", store, utf8, |_, v| utf8(v), |_| Ok("".into()))
     }
 
-    pub fn dump_tree_custom(
+    pub fn dump_tree_custom<S: BlobStore>(
         &self,
         indent: &str,
-        store: &DynBlobStore,
+        store: &S,
         p: impl Fn(&[u8]) -> anyhow::Result<String> + Copy,
         v: impl Fn(&[u8], &[u8]) -> anyhow::Result<String> + Copy,
         n: impl Fn(&Self) -> anyhow::Result<String> + Copy,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), S::Error> {
         let prefix = self.prefix.load(store)?;
         let value = self.value.load(store)?;
         let children = self.children.load(store)?;
@@ -917,18 +917,10 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for TreeNode {
     }
 }
 
+#[derive(Debug)]
 pub struct Tree<S: BlobStore = NoStore> {
-    tree: TreeNode,
+    node: TreeNode,
     store: S,
-}
-
-impl<S: BlobStore> Tree<S> {
-    pub fn as_ref(&self) -> TreeRef<'_, S> {
-        TreeRef {
-            tree: &self.tree,
-            store: &self.store,
-        }
-    }
 }
 
 impl Tree {
@@ -938,103 +930,224 @@ impl Tree {
         children: impl Into<TreeChildren>,
     ) -> Self {
         Self {
-            tree: TreeNode::new(key, value, children),
+            node: TreeNode::new(key, value, children),
             store: NoStore,
         }
     }
 
     pub fn leaf(value: impl Into<TreeValue>) -> Self {
         Self {
-            tree: TreeNode::leaf(value),
+            node: TreeNode::leaf(value),
             store: NoStore,
         }
     }
 
     pub fn single(key: impl Into<TreePrefix>, value: impl Into<TreeValue>) -> Self {
         Self {
-            tree: TreeNode::single(key, value),
+            node: TreeNode::single(key, value),
             store: NoStore,
         }
     }
 
     pub fn empty() -> Self {
         Self {
-            tree: TreeNode::empty(),
+            node: TreeNode::empty(),
             store: NoStore,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tree.is_empty()
+        self.node.is_empty()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
         // all this unwrap is safe because we have a NoStore store, which does not ever fail
-        self.try_iter().unwrap().map(|x| x.unwrap())
+        unwrap_safe(self.try_iter()).map(unwrap_safe)
     }
 
     pub fn values(&self) -> impl Iterator<Item = TreeValue> + '_ {
         // all this unwrap is safe because we have a NoStore store, which does not ever fail
-        self.try_values().map(|x| x.unwrap())
+        self.try_values().map(unwrap_safe)
     }
 
     pub fn group_by<'a>(
         &'a self,
         f: impl Fn(&[u8], &TreeNode) -> bool + 'a,
-    ) -> impl Iterator<Item = TreeNode> + 'a {
+    ) -> impl Iterator<Item = Tree> + 'a {
         // all this unwrap is safe because we have a NoStore store, which does not ever fail
-        self.tree
-            .try_group_by(&self.store, f)
-            .unwrap()
-            .map(|x| x.unwrap())
+        unwrap_safe(self.node.try_group_by(&self.store, f)).map(|r| Tree {
+            node: unwrap_safe(r),
+            store: self.store.clone(),
+        })
+    }
+
+    pub fn scan_prefix(&self, prefix: &[u8]) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
+        unwrap_safe(self.node.scan_prefix(&self.store, prefix)).map(unwrap_safe)
+    }
+
+    pub fn filter_prefix(&self, prefix: &[u8]) -> TreeNode {
+        unwrap_safe(self.node.filter_prefix(&self.store, prefix))
     }
 
     pub fn first_value(&self) -> Option<TreeValue> {
-        self.try_first_value().unwrap()
+        unwrap_safe(self.try_first_value())
     }
 
     pub fn last_value(&self) -> Option<TreeValue> {
-        self.try_last_value().unwrap()
+        unwrap_safe(self.try_last_value())
     }
 
     pub fn first_entry(&self, prefix: TreePrefix) -> Option<(TreePrefix, TreeValue)> {
-        self.try_first_entry(prefix).unwrap()
+        unwrap_safe(self.try_first_entry(prefix))
     }
 
     pub fn last_entry(&self, prefix: TreePrefix) -> Option<(TreePrefix, TreeValue)> {
-        self.try_last_entry(prefix).unwrap()
+        unwrap_safe(self.try_last_entry(prefix))
+    }
+
+    pub fn attach<S: BlobStore>(&self, mut store: S) -> Result<Tree<S>, S::Error> {
+        let mut tree = self.node.clone();
+        tree.attach(&mut store)?;
+        Ok(Tree { node: tree, store })
+    }
+
+    pub fn contains_key(&self, key: &[u8]) -> bool {
+        unwrap_safe(self.node.contains_key(&self.store, key))
+    }
+
+    pub fn get(&self, key: &[u8]) -> Option<Blob<u8>> {
+        unwrap_safe(self.node.get(&self.store, key))
+    }
+
+    pub fn outer_combine(
+        &self,
+        that: &Tree,
+        f: impl Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+    ) -> Tree {
+        unwrap_safe(self.try_outer_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
+    }
+
+    pub fn inner_combine(
+        &self,
+        that: &Tree,
+        f: impl Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+    ) -> Tree {
+        unwrap_safe(self.try_inner_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
+    }
+
+    pub fn left_combine(
+        &self,
+        that: &Tree,
+        f: impl Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+    ) -> Tree {
+        unwrap_safe(self.try_left_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 }
 
 impl<S: BlobStore> Tree<S> {
     pub fn try_values(&self) -> impl Iterator<Item = Result<TreeValue, S::Error>> + '_ {
-        self.tree.try_values(&self.store)
+        self.node.try_values(&self.store)
     }
 
     pub fn try_iter(&self) -> Result<Iter<'_, S>, S::Error> {
-        self.tree.try_iter(&self.store)
+        self.node.try_iter(&self.store)
     }
 
     pub fn try_first_value(&self) -> Result<Option<TreeValue>, S::Error> {
-        self.tree.first_value(&self.store)
+        self.node.first_value(&self.store)
     }
 
     pub fn try_last_value(&self) -> Result<Option<TreeValue>, S::Error> {
-        self.tree.last_value(&self.store)
+        self.node.last_value(&self.store)
     }
 
     pub fn try_first_entry(
         &self,
         prefix: TreePrefix,
     ) -> Result<Option<(TreePrefix, TreeValue)>, S::Error> {
-        self.tree.first_entry(&self.store, prefix)
+        self.node.first_entry(&self.store, prefix)
     }
 
     pub fn try_last_entry(
         &self,
         prefix: TreePrefix,
     ) -> Result<Option<(TreePrefix, TreeValue)>, S::Error> {
-        self.tree.last_entry(&self.store, prefix)
+        self.node.last_entry(&self.store, prefix)
+    }
+
+    pub fn dump_tree(&self) -> Result<(), S::Error> {
+        self.node.dump_tree(&self.store)
+    }
+    pub fn detach(&self) -> Result<Tree, S::Error> {
+        let mut tree = self.node.clone();
+        tree.detach(&self.store)?;
+        Ok(Tree {
+            node: tree,
+            store: NoStore,
+        })
+    }
+
+    pub fn try_outer_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
+    where
+        S2: BlobStore,
+        E: From<S::Error>,
+        E: From<S2::Error>,
+        F: Fn(TreeValue, TreeValue) -> Result<TreeValue, E> + Copy,
+    {
+        let node = outer_combine(
+            TTI::<S, S2, E>::default(),
+            &self.node,
+            &self.store,
+            &that.node,
+            &that.store,
+            f,
+        )?;
+        Ok(Tree {
+            node,
+            store: NoStore,
+        })
+    }
+
+    pub fn try_inner_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
+    where
+        S2: BlobStore,
+        E: From<S::Error>,
+        E: From<S2::Error>,
+        F: Fn(TreeValue, TreeValue) -> Result<TreeValue, E> + Copy,
+    {
+        let node = inner_combine(
+            TTI::<S, S2, E>::default(),
+            &self.node,
+            &self.store,
+            &that.node,
+            &that.store,
+            f,
+        )?;
+        Ok(Tree {
+            node,
+            store: NoStore,
+        })
+    }
+
+    pub fn try_left_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
+    where
+        S2: BlobStore,
+        E: From<S::Error>,
+        E: From<S2::Error>,
+        F: Fn(TreeValue, TreeValue) -> Result<TreeValue, E> + Copy,
+    {
+        let node = left_combine(
+            TTI::<S, S2, E>::default(),
+            &self.node,
+            &self.store,
+            &that.node,
+            &that.store,
+            f,
+        )?;
+        Ok(Tree {
+            node,
+            store: NoStore,
+        })
     }
 }
 
@@ -1045,22 +1158,7 @@ impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
             let b = TreeNode::single(key, value);
             outer_combine(NoStoreT, &a, &store, &b, &store, |_, b| Ok(b)).unwrap()
         });
-        Self { tree, store }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct TreeRef<'a, S: BlobStore> {
-    tree: &'a TreeNode,
-    store: &'a S,
-}
-
-impl<'a, S: BlobStore + Clone> TreeRef<'a, S> {
-    pub fn to_owned(&self) -> Tree<S> {
-        Tree {
-            tree: self.tree.clone(),
-            store: self.store.clone(),
-        }
+        Self { node: tree, store }
     }
 }
 
@@ -1798,7 +1896,6 @@ impl<'a, T: TT> MergeOperation<VecMergeState<'a, T>> for IntersectOp {
 
 #[cfg(test)]
 mod tests {
-    use crate::blob_store::no_store_dyn;
 
     use super::*;
     use proptest::prelude::*;
@@ -1833,14 +1930,13 @@ mod tests {
                                     TreeValue::none(),
                                     [v.to_radix_tree_separated()].as_ref(),
                                 );
-                                res.unsplit(no_store_dyn()).unwrap();
+                                res.unsplit(&NoStore).unwrap();
                                 res
                             }
                         }
                     })
                     .fold(TreeNode::empty(), |a, b| {
-                        outer_combine(DynT, &a, no_store_dyn(), &b, no_store_dyn(), |_, b| Ok(b))
-                            .unwrap()
+                        outer_combine(NoStoreT, &a, &NoStore, &b, &NoStore, |_, b| Ok(b)).unwrap()
                     }),
             }
         }
@@ -1850,17 +1946,15 @@ mod tests {
             let sep = ".".as_bytes()[0];
             Ok(if tree.prefix.is_empty() && tree.value.is_some() {
                 Jsonish::String(
-                    std::str::from_utf8(
-                        tree.value.load(no_store_dyn()).unwrap().unwrap().as_ref(),
-                    )?
-                    .to_owned(),
+                    std::str::from_utf8(tree.value.load(&NoStore).unwrap().unwrap().as_ref())?
+                        .to_owned(),
                 )
             } else {
-                let iter = tree.try_group_by(no_store_dyn(), |p, _| !p.contains(&sep))?;
+                let iter = tree.try_group_by(&NoStore, |p, _| !p.contains(&sep))?;
                 Jsonish::Map(
                     iter.map(|child| {
                         let mut child = child?;
-                        let prefix = child.prefix.load(no_store_dyn())?;
+                        let prefix = child.prefix.load(&NoStore)?;
                         Ok(if let Some(p) = prefix.iter().position(|x| *x == sep) {
                             let key = std::str::from_utf8(&prefix[..p])?.to_owned();
                             child.prefix = TreePrefix::from_slice(&prefix[p + 1..]);
@@ -1871,7 +1965,7 @@ mod tests {
                                 prefix,
                                 Jsonish::String(
                                     std::str::from_utf8(
-                                        child.value.load(no_store_dyn()).unwrap().unwrap().as_ref(),
+                                        child.value.load(&NoStore).unwrap().unwrap().as_ref(),
                                     )?
                                     .to_owned(),
                                 ),
@@ -1911,29 +2005,26 @@ mod tests {
         proptest::collection::btree_map(arb_prefix(), arb_value(), 0..10)
     }
 
-    fn arb_owned_tree() -> impl Strategy<Value = TreeNode> {
+    fn arb_owned_tree() -> impl Strategy<Value = Tree> {
         arb_tree_contents().prop_map(|x| mk_owned_tree(&x))
     }
 
-    fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> TreeNode {
+    fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> Tree {
         v.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect()
     }
 
-    fn to_btree_map(t: &TreeNode) -> BTreeMap<Vec<u8>, Vec<u8>> {
-        let store = no_store_dyn();
-        t.try_iter(store)
-            .unwrap()
-            .map(|r| {
-                let (k, v) = r.unwrap();
-                let data = v.load(store).unwrap().unwrap();
+    fn to_btree_map(t: &Tree) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        t.iter()
+            .map(|(k, v)| {
+                let data = v.load(&NoStore).unwrap().unwrap();
                 (k.to_vec(), data.to_vec())
             })
             .collect()
     }
 
-    impl Arbitrary for TreeNode {
+    impl Arbitrary for Tree {
         type Parameters = ();
-        type Strategy = BoxedStrategy<TreeNode>;
+        type Strategy = BoxedStrategy<Tree>;
 
         fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
             arb_owned_tree().boxed()
@@ -1943,19 +2034,18 @@ mod tests {
     proptest! {
         #[test]
         fn tree_dump(x in arb_owned_tree()) {
-            x.dump_tree(no_store_dyn()).unwrap();
+            x.dump_tree().unwrap();
             println!();
         }
 
         #[test]
         fn tree_iter(x in arb_owned_tree()) {
-            let iter = x.try_iter(no_store_dyn()).unwrap();
+            let iter = x.iter();
             println!();
-            x.dump_tree(no_store_dyn()).unwrap();
+            x.dump_tree().unwrap();
             println!();
-            for r in iter {
-                let (k, v) = r.unwrap();
-                let data = v.load(no_store_dyn()).unwrap().unwrap();
+            for (k, v) in iter {
+                let data = v.load(&NoStore).unwrap().unwrap();
                 println!("{}: {}", Hex::new(&k), Hex::new(data.as_ref()));
             }
             println!();
@@ -1974,8 +2064,8 @@ mod tests {
             let reference = x;
             let mut tree = mk_owned_tree(&reference);
             let mut store: DynBlobStore = Box::new(MemStore::default());
-            tree.attach(&mut store).unwrap();
-            tree.detach(&store).unwrap();
+            let tree = tree.attach(store).unwrap();
+            let tree = tree.detach().unwrap();
             let actual = to_btree_map(&tree);
             prop_assert_eq!(reference, actual);
         }
@@ -1984,8 +2074,8 @@ mod tests {
         fn btreemap_tree_values_roundtrip(x in arb_tree_contents()) {
             let reference = x.values().cloned().collect::<Vec<_>>();
             let tree = mk_owned_tree(&x);
-            let actual = tree.try_values(no_store_dyn()).map(|r| {
-                r.unwrap().load(no_store_dyn()).unwrap().unwrap().to_vec()
+            let actual = tree.values().map(|r| {
+                r.load(&NoStore).unwrap().unwrap().to_vec()
             }).collect::<Vec<_>>();
             prop_assert_eq!(reference, actual);
         }
@@ -1995,8 +2085,8 @@ mod tests {
             let reference = x;
             let tree = mk_owned_tree(&reference);
             for (k, v) in reference {
-                prop_assert!(tree.contains_key(no_store_dyn(), &k).unwrap());
-                prop_assert_eq!(tree.get(no_store_dyn(), &k).unwrap(), Some(Blob::from_slice(&v)));
+                prop_assert!(tree.contains_key(&k));
+                prop_assert_eq!(tree.get(&k), Some(Blob::from_slice(&v)));
             }
         }
 
@@ -2004,11 +2094,10 @@ mod tests {
         fn scan_prefix(x in arb_tree_contents(), prefix in any::<Vec<u8>>()) {
             let reference = x;
             let tree = mk_owned_tree(&reference);
-            let filtered = tree.scan_prefix(no_store_dyn(), &prefix).unwrap();
-            for r in filtered {
-                let (k, v) = r.unwrap();
+            let filtered = tree.scan_prefix(&prefix);
+            for (k, v) in filtered {
                 prop_assert!(k.as_ref().starts_with(&prefix));
-                let v = v.load(no_store_dyn()).unwrap().unwrap();
+                let v = v.load(&NoStore).unwrap().unwrap();
                 let t = reference.get(k.as_ref()).unwrap();
                 prop_assert_eq!(v.as_ref(), t);
             }
@@ -2018,11 +2107,11 @@ mod tests {
         fn filter_prefix(x in arb_tree_contents(), prefix in any::<Vec<u8>>()) {
             let reference = x;
             let tree = mk_owned_tree(&reference);
-            let filtered = tree.filter_prefix(no_store_dyn(), &prefix).unwrap();
-            for r in filtered.try_iter(no_store_dyn()).unwrap() {
+            let filtered = tree.filter_prefix(&prefix);
+            for r in filtered.try_iter(&NoStore).unwrap() {
                 let (k, v) = r.unwrap();
                 prop_assert!(k.as_ref().starts_with(&prefix));
-                let v = v.load(no_store_dyn()).unwrap().unwrap();
+                let v = v.load(&NoStore).unwrap().unwrap();
                 let t = reference.get(k.as_ref()).unwrap();
                 prop_assert_eq!(v.as_ref(), t);
             }
@@ -2033,7 +2122,7 @@ mod tests {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
             // check right biased union
-            let rbut = outer_combine(DynT, &at, no_store_dyn(), &bt, no_store_dyn(), |_, b| Ok(b)).unwrap();
+            let rbut = at.outer_combine(&bt, |_, b| b);
             let rbu = to_btree_map(&rbut);
             let mut rbu_reference = a.clone();
             for (k, v) in b.clone() {
@@ -2041,7 +2130,7 @@ mod tests {
             }
             prop_assert_eq!(rbu, rbu_reference);
             // check left biased union
-            let lbut = outer_combine(DynT, &at, no_store_dyn(), &bt, no_store_dyn(), |a, _| Ok(a)).unwrap();
+            let lbut = at.outer_combine(&bt, |a, _| a);
             let lbu = to_btree_map(&lbut);
             let mut lbu_reference = b.clone();
             for (k, v) in a.clone() {
@@ -2055,13 +2144,13 @@ mod tests {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
             // check right biased intersection
-            let rbut = inner_combine(DynT, &at, no_store_dyn(), &bt, no_store_dyn(), |_, b| Ok(b)).unwrap();
+            let rbut = at.inner_combine(&bt, |_, b| b);
             let rbu = to_btree_map(&rbut);
             let mut rbu_reference = b.clone();
             rbu_reference.retain(|k, _| a.contains_key(k));
             prop_assert_eq!(rbu, rbu_reference);
             // check left biased intersection
-            let lbut = inner_combine(DynT, &at, no_store_dyn(), &bt, no_store_dyn(), |a, _| Ok(a)).unwrap();
+            let lbut = at.inner_combine(&bt, |a, _| a);
             let lbu = to_btree_map(&lbut);
             let mut lbu_reference = a.clone();
             lbu_reference.retain(|k, _| b.contains_key(k));
@@ -2072,14 +2161,14 @@ mod tests {
         #[test]
         fn group_by_true(a in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
-            let trees: Vec<TreeNode> = at.try_group_by(no_store_dyn(), |_, _| true).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
+            let trees: Vec<Tree> = at.group_by(|_, _| true).collect::<Vec<_>>();
             prop_assert_eq!(a.len(), trees.len());
             for ((k0, v0), tree) in a.iter().zip(trees) {
                 let k0: &[u8] = &k0;
                 let v0: &[u8] = &v0;
-                let k1 = tree.prefix.load(no_store_dyn()).unwrap().to_vec();
-                let v1 = tree.value.load(no_store_dyn()).unwrap().map(|x| x.to_vec());
-                prop_assert!(tree.children.is_empty());
+                let k1 = tree.node.prefix.load(&NoStore).unwrap().to_vec();
+                let v1 = tree.node.value.load(&NoStore).unwrap().map(|x| x.to_vec());
+                prop_assert!(tree.node.children.is_empty());
                 prop_assert_eq!(k0, k1);
                 prop_assert_eq!(Some(v0.to_vec()), v1);
             }
@@ -2095,21 +2184,20 @@ mod tests {
         #[test]
         fn group_by_fixed(a in arb_tree_contents(), n in 0usize..8) {
             let at = mk_owned_tree(&a);
-            let trees: Vec<TreeNode> = at.try_group_by(no_store_dyn(), |x, _| x.len() <= n).unwrap().collect::<anyhow::Result<Vec<_>>>().unwrap();
+            let trees: Vec<Tree> = at.group_by(|x, _| x.len() <= n).collect::<Vec<_>>();
             prop_assert!(trees.len() <= a.len());
             let mut leafs = BTreeMap::new();
             for tree in &trees {
-                let prefix = tree.prefix.load(no_store_dyn()).unwrap();
+                let prefix = tree.node.prefix.load(&NoStore).unwrap();
                 if prefix.len() <= n {
-                    prop_assert!(tree.children.is_empty());
-                    prop_assert!(tree.value.is_some());
-                    let value = tree.value.load(no_store_dyn()).unwrap().unwrap();
+                    prop_assert!(tree.node.children.is_empty());
+                    prop_assert!(tree.node.value.is_some());
+                    let value = tree.node.value.load(&NoStore).unwrap().unwrap();
                     let prev = leafs.insert(prefix.to_vec(), value.to_vec());
                     prop_assert!(prev.is_none());
                 } else {
-                    for x in tree.try_iter(no_store_dyn()).unwrap() {
-                        let (k, v) = x.unwrap();
-                        let prev = leafs.insert(k.to_vec(), v.load(no_store_dyn()).unwrap().unwrap().to_vec());
+                    for (k, v) in tree.iter() {
+                        let prev = leafs.insert(k.to_vec(), v.load(&NoStore).unwrap().unwrap().to_vec());
                         prop_assert!(prev.is_none());
                     }
                 }
@@ -2147,11 +2235,11 @@ mod tests {
 
     #[test]
     fn tree_node_create() -> anyhow::Result<()> {
-        let store = no_store_dyn();
+        let store = NoStore;
         let node = TreeNode::leaf(b"abcd".as_ref());
-        assert!(node.prefix.load(store)? == Blob::<u8>::from_slice(&[]));
-        assert!(node.value.load(store)? == Some(Blob::<u8>::from_slice(b"abcd")));
-        assert!(node.children.load(store)?.is_empty());
+        assert!(node.prefix.load(&store)? == Blob::<u8>::from_slice(&[]));
+        assert!(node.value.load(&store)? == Some(Blob::<u8>::from_slice(b"abcd")));
+        assert!(node.children.load(&store)?.is_empty());
         println!("{:?}", node);
         let node = TreeNode::leaf(b"abcdefgh".as_ref());
         println!("{:?}", node);
@@ -2181,49 +2269,45 @@ mod tests {
 
     #[test]
     fn union_large() -> anyhow::Result<()> {
-        let mut nodes = (0..1000u64).map(|i| {
+        let nodes = (0..1000u64).map(|i| {
             let key = i.to_string() + "000000000";
             let value = i.to_string() + "000000000";
-            TreeNode::single(key.as_bytes(), value.as_bytes())
+            Tree::single(key.as_bytes(), value.as_bytes())
         });
-        let mut store: DynBlobStore = Box::new(MemStore::default());
-        let mut res = nodes.try_fold(TreeNode::empty(), |a, b| {
-            outer_combine(DynT, &a, &store, &b, &store, |_, b| Ok(b))
-        })?;
-        res.dump_tree(&store)?;
-        res.attach(&mut store)?;
+        let store: DynBlobStore = Box::new(MemStore::default());
+        let res = nodes.fold(Tree::empty(), |a, b| a.outer_combine(&b, |_, b| b));
+        res.dump_tree()?;
+        let res = res.attach(store)?;
         println!("{:?}", res);
-        res.dump_tree(&store)?;
+        res.dump_tree()?;
         Ok(())
     }
 
     #[test]
     fn union() -> anyhow::Result<()> {
-        let store = no_store_dyn();
-
         println!("disjoint");
-        let a = TreeNode::single(b"a".as_ref(), b"1".as_ref());
-        let b = TreeNode::single(b"b".as_ref(), b"2".as_ref());
-        let t = outer_combine(DynT, &a, &store, &b, &store, |_, b| Ok(b))?;
-        t.dump_tree(&store)?;
+        let a = Tree::single(b"a".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"b".as_ref(), b"2".as_ref());
+        let t = a.outer_combine(&b, |_, b| b);
+        t.dump_tree()?;
 
         println!("a prefix of b");
-        let a = TreeNode::single(b"a".as_ref(), b"1".as_ref());
-        let b = TreeNode::single(b"ab".as_ref(), b"2".as_ref());
-        let t = outer_combine(DynT, &a, &store, &b, &store, |_, b| Ok(b))?;
-        t.dump_tree(&store)?;
+        let a = Tree::single(b"a".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
+        let t = a.outer_combine(&b, |_, b| b);
+        t.dump_tree()?;
 
         println!("b prefix of a");
-        let a = TreeNode::single(b"ab".as_ref(), b"1".as_ref());
-        let b = TreeNode::single(b"a".as_ref(), b"2".as_ref());
-        let t = outer_combine(DynT, &a, &store, &b, &store, |_, b| Ok(b))?;
-        t.dump_tree(&store)?;
+        let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"a".as_ref(), b"2".as_ref());
+        let t = a.outer_combine(&b, |_, b| b);
+        t.dump_tree()?;
 
         println!("same prefix");
-        let a = TreeNode::single(b"ab".as_ref(), b"1".as_ref());
-        let b = TreeNode::single(b"ab".as_ref(), b"2".as_ref());
-        let t = outer_combine(DynT, &a, &store, &b, &store, |_, b| Ok(b))?;
-        t.dump_tree(&store)?;
+        let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
+        let t = a.outer_combine(&b, |_, b| b);
+        t.dump_tree()?;
 
         Ok(())
     }

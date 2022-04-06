@@ -57,6 +57,10 @@ impl From<anyhow::Error> for NoError {
     }
 }
 
+pub fn unwrap_safe<T>(x: Result<T, NoError>) -> T {
+    x.unwrap()
+}
+
 impl BlobStore for NoStore {
     type Error = NoError;
 
@@ -96,15 +100,6 @@ impl BlobStore for NoStoreDyn {
     fn sync(&self) -> anyhow::Result<()> {
         anyhow::bail!("no store");
     }
-}
-
-lazy_static! {
-    /// A noop store, for when we know that a tree is not attached
-    pub static ref NO_STORE: DynBlobStore = NoStoreDyn::new();
-}
-
-pub fn no_store_dyn() -> &'static DynBlobStore {
-    &*NO_STORE
 }
 
 #[derive(Default, Clone)]
