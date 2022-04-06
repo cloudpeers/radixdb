@@ -4,7 +4,10 @@ use std::{borrow::Borrow, cmp::Ordering, fmt::Debug, result::Result, sync::Arc};
 use crate::{
     blob_store::{unwrap_safe, NoError, NoStore},
     flex_ref::FlexRef,
-    merge_state::{BoolOpMergeState, MergeStateMut, NoStoreT, VecMergeState, TT, TTI},
+    merge_state::{
+        BoolOpMergeState, InPlaceVecMergeStateRef, MergeStateMut, MutateInput, NoStoreT,
+        VecMergeState, TT, TTI,
+    },
 };
 
 use super::*;
@@ -383,6 +386,14 @@ impl TreeChildren {
         } else {
             None
         }
+    }
+
+    fn get_mut<S: BlobStore>(&mut self, store: &S) -> Result<&mut Vec<TreeNode>, S::Error> {
+        if !self.0.is_arc() {
+            self.0 = FlexRef::owned_from_arc(Arc::new(self.load(store)?.to_vec()));
+        }
+        let arc = self.0.owned_arc_ref_mut().unwrap();
+        Ok(Arc::make_mut(arc))
     }
 
     fn detach<S: BlobStore>(&mut self, store: &S) -> Result<(), S::Error> {
@@ -859,7 +870,7 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for TreeNode {
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tree<S: BlobStore = NoStore> {
     node: TreeNode,
     store: S,
@@ -969,6 +980,14 @@ impl Tree {
         unwrap_safe(self.try_outer_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 
+    pub fn outer_combine_with(
+        &mut self,
+        that: &Tree,
+        f: impl Fn(&mut TreeValue, TreeValue) + Copy,
+    ) {
+        unwrap_safe(self.try_outer_combine_with::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
+    }
+
     pub fn inner_combine(
         &self,
         that: &Tree,
@@ -1069,6 +1088,23 @@ impl<S: BlobStore> Tree<S> {
             node,
             store: NoStore,
         })
+    }
+
+    pub fn try_outer_combine_with<S2, E, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), E>
+    where
+        S2: BlobStore,
+        E: From<S::Error>,
+        E: From<S2::Error>,
+        F: Fn(&mut TreeValue, TreeValue) -> Result<(), E> + Copy,
+    {
+        outer_combine_with(
+            TTI::<S, S2, E>::default(),
+            &mut self.node,
+            &self.store,
+            &that.node,
+            &that.store,
+            f,
+        )
     }
 
     pub fn try_inner_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
@@ -1320,6 +1356,67 @@ fn outer_combine<T: TT>(
     };
     res.unsplit(ab)?;
     Ok(res)
+}
+
+/// Outer combine two trees with a function f
+fn outer_combine_with<T: TT>(
+    _t: T,
+    a: &mut TreeNode,
+    ab: &T::AB,
+    b: &TreeNode,
+    bb: &T::BB,
+    f: impl Fn(&mut TreeValue, TreeValue) -> Result<(), T::E> + Copy,
+) -> Result<(), T::E> {
+    let ap = a.prefix.load(ab)?;
+    let bp = b.prefix.load(bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    let bv = || b.value.detached(bb);
+    if n == ap.len() && n == bp.len() {
+        // prefixes are identical
+        if b.value.is_some() {
+            if a.value.is_some() {
+                a.value.detach(ab)?;
+                f(&mut a.value, bv()?)?;
+            } else {
+                a.value = b.value.detached(bb)?;
+            }
+        }
+        let ac = a.children.get_mut(ab)?;
+        let bc = b.children.load(bb)?;
+        let bc = bc.as_ref();
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &OuterCombineOp { f })?;
+    } else if n == ap.len() {
+        // a is a prefix of b
+        // value is value of a
+        let ac = a.children.get_mut(ab)?;
+        let bc = [b.clone_shortened(bb, n)?];
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &OuterCombineOp { f })?;
+    } else if n == bp.len() {
+        // b is a prefix of a
+        // value is value of b
+        a.split(ab, n)?;
+        // prefixes are identical
+        if b.value.is_some() {
+            if a.value.is_some() {
+                a.value.detach(ab)?;
+                f(&mut a.value, bv()?)?;
+            } else {
+                a.value = b.value.detached(bb)?;
+            }
+        }
+        let ac = a.children.get_mut(ab)?;
+        let bc = b.children.load(bb)?;
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &OuterCombineOp { f })?;
+    } else {
+        // the two nodes are disjoint
+        a.split(ab, n)?;
+        let ac = a.children.get_mut(ab)?;
+        ac.push(b.clone_shortened(bb, n)?);
+        ac.sort_by_key(|x| x.prefix.first_opt());
+    }
+
+    a.unsplit(ab)?;
+    Ok(())
 }
 
 /// Inner combine two trees with a function f
@@ -1864,6 +1961,37 @@ where
     }
 }
 
+impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for OuterCombineOp<F>
+where
+    F: Fn(&mut TreeValue, TreeValue) -> Result<(), T::E> + Copy,
+    T: TT,
+{
+    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+        a.prefix.first_opt().cmp(&b.prefix.first_opt())
+    }
+    fn from_a(&self, m: &mut InPlaceVecMergeStateRef<'a, T>, n: usize) -> bool {
+        m.advance_a(n, true)
+    }
+    fn from_b(&self, m: &mut InPlaceVecMergeStateRef<'a, T>, n: usize) -> bool {
+        m.advance_b(n, true)
+    }
+    fn collision(&self, m: &mut InPlaceVecMergeStateRef<'a, T>) -> bool {
+        let (a, b) = (m.a.source_slice_mut(), m.b.as_slice());
+        let a = &mut a[0];
+        let b = &b[0];
+        let res = outer_combine_with(T::default(), a, m.ab, b, m.bb, self.f);
+        if let Err(cause) = res {
+            m.err = Some(cause);
+            false
+        } else {
+            // we have modified av in place. We are only going to take it over if it
+            // is non-empty, otherwise we skip it.
+            let take = !a.is_empty();
+            m.advance_a(1, take) && m.advance_b(1, false)
+        }
+    }
+}
+
 struct InnerCombineOp<F> {
     f: F,
 }
@@ -2240,6 +2368,30 @@ mod tests {
         }
 
         #[test]
+        fn biased_union_with(a in arb_tree_contents(), b in arb_tree_contents()) {
+            let at = mk_owned_tree(&a);
+            let bt = mk_owned_tree(&b);
+            // check right biased union
+            let mut rt = at.clone();
+            rt.outer_combine_with(&bt, |a, b| { *a = b });
+            let rbu = to_btree_map(&rt);
+            let mut rbu_reference = a.clone();
+            for (k, v) in b.clone() {
+                rbu_reference.insert(k, v);
+            }
+            prop_assert_eq!(rbu, rbu_reference);
+            // check left biased union
+            let mut rt = at.clone();
+            rt.outer_combine_with(&bt, |_, _| {});
+            let rbu = to_btree_map(&rt);
+            let mut rbu_reference = b.clone();
+            for (k, v) in a.clone() {
+                rbu_reference.insert(k, v);
+            }
+            prop_assert_eq!(rbu, rbu_reference);
+        }
+
+        #[test]
         fn biased_intersection(a in arb_tree_contents(), b in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
@@ -2321,6 +2473,51 @@ mod tests {
             }
             prop_assert_eq!(a, leafs);
         }
+    }
+
+    #[test]
+    fn union_with1() {
+        let a = btreemap! { vec![1] => vec![], vec![2] => vec![] };
+        let b = btreemap! { vec![1, 2] => vec![], vec![2] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.outer_combine_with(&bt, |a, b| *a = b);
+        let rbu = to_btree_map(&at);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            rbu_reference.insert(k, v);
+        }
+        assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
+    fn union_with2() {
+        let a = btreemap! { vec![] => vec![] };
+        let b = btreemap! { vec![] => vec![0] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.outer_combine_with(&bt, |a, b| *a = b);
+        let rbu = to_btree_map(&at);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            rbu_reference.insert(k, v);
+        }
+        assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
+    fn union_with3() {
+        let a = btreemap! { vec![] => vec![] };
+        let b = btreemap! { vec![] => vec![], vec![1] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.outer_combine_with(&bt, |a, b| *a = b);
+        let rbu = to_btree_map(&at);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            rbu_reference.insert(k, v);
+        }
+        assert_eq!(rbu, rbu_reference);
     }
 
     #[test]

@@ -383,7 +383,7 @@ mod tests {
 
         #[test]
         fn paged_store_test(blocks in test_blocks()) {
-            let mut store = PagedMemStore::<TEST_SIZE>::new();
+            let store = PagedMemStore::<TEST_SIZE>::new();
             let res =
                 blocks
                     .into_iter()

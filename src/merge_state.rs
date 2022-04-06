@@ -23,35 +23,38 @@ pub(crate) trait MutateInput: MergeStateMut {
 }
 
 /// An in place merge state where the rhs is a reference
-pub(crate) struct InPlaceVecMergeStateRef<'a, R> {
-    pub(crate) a: InPlaceVecBuilder<'a, R>,
-    pub(crate) b: SliceIterator<'a, R>,
+pub(crate) struct InPlaceVecMergeStateRef<'a, T: TT> {
+    pub a: InPlaceVecBuilder<'a, TreeNode>,
+    pub ab: &'a T::AB,
+    pub b: SliceIterator<'a, TreeNode>,
+    pub bb: &'a T::BB,
+    pub err: Option<T::E>,
 }
 
-impl<'a, R> InPlaceVecMergeStateRef<'a, R> {
-    pub fn new(a: &'a mut Vec<R>, b: &'a impl AsRef<[R]>) -> Self {
+impl<'a, T: TT> InPlaceVecMergeStateRef<'a, T> {
+    pub fn new(a: &'a mut Vec<TreeNode>, ab: &'a T::AB, b: &'a [TreeNode], bb: &'a T::BB) -> Self {
         Self {
             a: a.into(),
+            ab,
             b: SliceIterator(b.as_ref()),
+            bb,
+            err: None,
         }
     }
 }
 
-impl<'a, R> MergeState for InPlaceVecMergeStateRef<'a, R> {
-    type A = R;
-    type B = R;
-    fn a_slice(&self) -> &[R] {
+impl<'a, T: TT> MergeState for InPlaceVecMergeStateRef<'a, T> {
+    type A = TreeNode;
+    type B = TreeNode;
+    fn a_slice(&self) -> &[TreeNode] {
         self.a.source_slice()
     }
-    fn b_slice(&self) -> &[R] {
+    fn b_slice(&self) -> &[TreeNode] {
         self.b.as_slice()
     }
 }
 
-impl<'a, R> MergeStateMut for InPlaceVecMergeStateRef<'a, R>
-where
-    R: Clone,
-{
+impl<'a, T: TT> MergeStateMut for InPlaceVecMergeStateRef<'a, T> {
     fn advance_a(&mut self, n: usize, take: bool) -> bool {
         self.a.consume(n, take);
         true
@@ -68,19 +71,27 @@ where
     }
 }
 
-impl<'a, R> MutateInput for InPlaceVecMergeStateRef<'a, R>
-where
-    R: Clone,
-{
+impl<'a, T: TT> MutateInput for InPlaceVecMergeStateRef<'a, T> {
     fn source_slices_mut(&mut self) -> (&mut [Self::A], &[Self::B]) {
         (self.a.source_slice_mut(), self.b.as_slice())
     }
 }
 
-impl<'a, R> InPlaceVecMergeStateRef<'a, R> {
-    pub fn merge<O: MergeOperation<Self>>(a: &'a mut Vec<R>, b: &'a impl AsRef<[R]>, o: O) {
-        let mut state = Self::new(a, b);
+impl<'a, T: TT> InPlaceVecMergeStateRef<'a, T> {
+    pub fn merge<O: MergeOperation<Self>>(
+        a: &'a mut Vec<TreeNode>,
+        ab: &'a T::AB,
+        b: &'a [TreeNode],
+        bb: &'a T::BB,
+        o: &O,
+    ) -> Result<(), T::E> {
+        let mut state = Self::new(a, ab, b, bb);
         o.merge(&mut state);
+        if let Some(err) = state.err {
+            Err(err)
+        } else {
+            Ok(())
+        }
     }
 }
 
