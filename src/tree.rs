@@ -1020,6 +1020,10 @@ impl Tree {
         unwrap_safe(self.try_left_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 
+    pub fn left_combine_with(&mut self, that: &Tree, f: impl Fn(&mut TreeValue, TreeValue) + Copy) {
+        unwrap_safe(self.try_left_combine_with::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
+    }
+
     pub fn left_combine_pred(
         &self,
         that: &Tree,
@@ -1189,6 +1193,23 @@ impl<S: BlobStore> Tree<S> {
             node,
             store: NoStore,
         })
+    }
+
+    pub fn try_left_combine_with<S2, E, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), E>
+    where
+        S2: BlobStore,
+        E: From<S::Error>,
+        E: From<S2::Error>,
+        F: Fn(&mut TreeValue, TreeValue) -> Result<(), E> + Copy,
+    {
+        left_combine_with(
+            TTI::<S, S2, E>::default(),
+            &mut self.node,
+            &self.store,
+            &that.node,
+            &that.store,
+            f,
+        )
     }
 
     pub fn try_left_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
@@ -1670,6 +1691,50 @@ pub fn left_combine<T: TT>(
     };
     res.unsplit(ab)?;
     Ok(res)
+}
+
+/// Inner combine two trees with a function f
+fn left_combine_with<T: TT>(
+    _t: T,
+    a: &mut TreeNode,
+    ab: &T::AB,
+    b: &TreeNode,
+    bb: &T::BB,
+    f: impl Fn(&mut TreeValue, TreeValue) -> Result<(), T::E> + Copy,
+) -> Result<(), T::E> {
+    let ap = a.prefix.load(ab)?;
+    let bp = b.prefix.load(bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    let bv = || b.value.detached(bb);
+    if n == ap.len() && n == bp.len() {
+        // prefixes are identical
+        if b.value.is_some() && a.value.is_some() {
+            a.value.detach(ab)?;
+            f(&mut a.value, bv()?)?;
+        }
+        let ac = a.children.get_mut(ab)?;
+        let bc = b.children.load(bb)?;
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &LeftCombineOp { f })?;
+    } else if n == ap.len() {
+        // a is a prefix of b
+        // value is value of a
+        a.value = TreeValue::none();
+        let ac = a.children.get_mut(ab)?;
+        let bc = [b.clone_shortened(bb, n)?];
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &LeftCombineOp { f })?;
+    } else if n == bp.len() {
+        // b is a prefix of a
+        // value is value of b
+        a.split(ab, n)?;
+        let ac = a.children.get_mut(ab)?;
+        let bc = b.children.load(bb)?;
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &LeftCombineOp { f })?;
+    } else {
+        // the two nodes are disjoint
+    }
+
+    a.unsplit(ab)?;
+    Ok(())
 }
 
 /// Left combine two trees with a predicate f
@@ -2190,6 +2255,37 @@ where
                 m.err = Some(cause);
                 false
             }
+        }
+    }
+}
+
+impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for LeftCombineOp<F>
+where
+    F: Fn(&mut TreeValue, TreeValue) -> Result<(), T::E> + Copy,
+    T: TT,
+{
+    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+        a.prefix.first_opt().cmp(&b.prefix.first_opt())
+    }
+    fn from_a(&self, m: &mut InPlaceVecMergeStateRef<'a, T>, n: usize) -> bool {
+        m.advance_a(n, true)
+    }
+    fn from_b(&self, m: &mut InPlaceVecMergeStateRef<'a, T>, n: usize) -> bool {
+        m.advance_b(n, false)
+    }
+    fn collision(&self, m: &mut InPlaceVecMergeStateRef<'a, T>) -> bool {
+        let (a, b) = (m.a.source_slice_mut(), m.b.as_slice());
+        let a = &mut a[0];
+        let b = &b[0];
+        let res = left_combine_with(T::default(), a, m.ab, b, m.bb, self.f);
+        if let Err(cause) = res {
+            m.err = Some(cause);
+            false
+        } else {
+            // we have modified av in place. We are only going to take it over if it
+            // is non-empty, otherwise we skip it.
+            let take = !a.is_empty();
+            m.advance_a(1, take) && m.advance_b(1, false)
         }
     }
 }
