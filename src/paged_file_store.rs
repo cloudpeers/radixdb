@@ -283,7 +283,7 @@ mod tests {
         info!("traversing unattached tree...");
         let t0 = Instant::now();
         let mut n = 0;
-        for _ in tree.try_iter(&store)? {
+        for _ in tree.iter(&store)? {
             n += 1;
         }
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
@@ -295,7 +295,7 @@ mod tests {
         info!("traversing attached tree values...");
         let t0 = Instant::now();
         let mut n = 0;
-        for item in tree.try_values(&store) {
+        for item in tree.values(&store) {
             if item.is_err() {
                 info!("{:?}", item);
             }
@@ -305,7 +305,7 @@ mod tests {
         info!("traversing attached tree...");
         let t0 = Instant::now();
         let mut n = 0;
-        for _ in tree.try_iter(&store)? {
+        for _ in tree.iter(&store)? {
             n += 1;
         }
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
@@ -316,7 +316,7 @@ mod tests {
         info!("traversing unattached tree...");
         let t0 = Instant::now();
         let mut n = 0;
-        for _ in tree.try_iter(&store)? {
+        for _ in tree.iter(&store)? {
             n += 1;
         }
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());

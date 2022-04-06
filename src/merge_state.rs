@@ -3,12 +3,12 @@ use crate::{
     blob_store::{NoError, NoStore},
     iterators::SliceIterator,
     tree::TreeNode,
-    BlobStore, DynBlobStore,
+    BlobStore,
 };
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
 use inplace_vec_builder::InPlaceVecBuilder;
-use std::{convert::Infallible, marker::PhantomData};
+use std::marker::PhantomData;
 
 /// A typical write part for the merge state
 pub(crate) trait MergeStateMut: MergeState {
@@ -85,13 +85,16 @@ impl<'a, R> InPlaceVecMergeStateRef<'a, R> {
 }
 
 /// A merge state where we only track if elements have been produced, and abort as soon as the first element is produced
-pub(crate) struct BoolOpMergeState<'a, A, B> {
-    a: SliceIterator<'a, A>,
-    b: SliceIterator<'a, B>,
-    r: bool,
+pub(crate) struct BoolOpMergeState<'a, T: TT> {
+    pub a: SliceIterator<'a, TreeNode>,
+    pub ab: &'a T::AB,
+    pub b: SliceIterator<'a, TreeNode>,
+    pub bb: &'a T::BB,
+    pub r: bool,
+    pub err: Option<T::E>,
 }
 
-impl<'a, A: Debug, B: Debug> Debug for BoolOpMergeState<'a, A, B> {
+impl<'a, T: TT> Debug for BoolOpMergeState<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -103,36 +106,47 @@ impl<'a, A: Debug, B: Debug> Debug for BoolOpMergeState<'a, A, B> {
     }
 }
 
-impl<'a, A, B> BoolOpMergeState<'a, A, B> {
-    fn new(a: &'a [A], b: &'a [B]) -> Self {
+impl<'a, T: TT> BoolOpMergeState<'a, T> {
+    fn new(a: &'a [TreeNode], ab: &'a T::AB, b: &'a [TreeNode], bb: &'a T::BB) -> Self {
         Self {
             a: SliceIterator(a),
+            ab,
             b: SliceIterator(b),
+            bb,
+            err: None,
             r: false,
+        }
+    }
+
+    pub fn merge<O: MergeOperation<Self>>(
+        a: &'a [TreeNode],
+        ab: &'a T::AB,
+        b: &'a [TreeNode],
+        bb: &'a T::BB,
+        o: &O,
+    ) -> Result<bool, T::E> {
+        let mut state = Self::new(a, ab, b, bb);
+        o.merge(&mut state);
+        if let Some(err) = state.err {
+            Err(err)
+        } else {
+            Ok(state.r)
         }
     }
 }
 
-impl<'a, A, B> BoolOpMergeState<'a, A, B> {
-    pub fn merge<O: MergeOperation<Self>>(a: &'a [A], b: &'a [B], o: O) -> bool {
-        let mut state = Self::new(a, b);
-        o.merge(&mut state);
-        state.r
-    }
-}
-
-impl<'a, A, B> MergeState for BoolOpMergeState<'a, A, B> {
-    type A = A;
-    type B = B;
-    fn a_slice(&self) -> &[A] {
+impl<'a, T: TT> MergeState for BoolOpMergeState<'a, T> {
+    type A = TreeNode;
+    type B = TreeNode;
+    fn a_slice(&self) -> &[TreeNode] {
         self.a.as_slice()
     }
-    fn b_slice(&self) -> &[B] {
+    fn b_slice(&self) -> &[TreeNode] {
         self.b.as_slice()
     }
 }
 
-impl<'a, A, B> MergeStateMut for BoolOpMergeState<'a, A, B> {
+impl<'a, T: TT> MergeStateMut for BoolOpMergeState<'a, T> {
     fn advance_a(&mut self, n: usize, take: bool) -> bool {
         if take {
             self.r = true;
@@ -180,17 +194,6 @@ impl<AB, BB, E> TTI<AB, BB, E> {
     pub fn new() -> Self {
         Self(PhantomData)
     }
-}
-
-#[derive(Default)]
-pub struct DynT;
-
-impl TT for DynT {
-    type AB = DynBlobStore;
-
-    type BB = DynBlobStore;
-
-    type E = anyhow::Error;
 }
 
 #[derive(Default)]

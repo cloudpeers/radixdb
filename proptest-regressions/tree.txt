@@ -8,3 +8,4 @@ cc 2d3f00de91ec21f511cd7c77f15607a0a01ce1c9b9469ef02ec2a73818d8948b # shrinks to
 cc 1c38532e880747e646a5ac2ec68aeda3450061aff1fe2020474963ca66e0ef6b # shrinks to a = {[49]: [], [49, 48]: []}, n = 0
 cc 0614292e1d29eca80879a8e00315523fecbf9f3a5fcd0554948346a2542cf33e # shrinks to a = Map({"a": Map({})})
 cc b1ca3a59be3fab087828548d82b88b2ba6961130cc3733b3627726bdd991cb21 # shrinks to x = {[54, 48]: []}, prefix = [54]
+cc fd15e82f36b49e764025ff004ef4b6825d2924291f6562ca15bd70640a5c96c2 # shrinks to a = {[51]: [], [52]: []}, b = {[51, 48]: [], [52]: []}

@@ -16,6 +16,10 @@ pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStoreDyn, PagedMemStor
 pub use paged_file_store::PagedFileStore;
 pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};
 
+#[cfg(test)]
+#[macro_use]
+extern crate maplit;
+
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///
 /// On a 32 bit system, either the lower or the higher half will be 0 depending on endianness
