@@ -996,6 +996,14 @@ impl Tree {
         unwrap_safe(self.try_inner_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 
+    pub fn inner_combine_with(
+        &mut self,
+        that: &Tree,
+        f: impl Fn(&mut TreeValue, TreeValue) + Copy,
+    ) {
+        unwrap_safe(self.try_inner_combine_with::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
+    }
+
     pub fn inner_combine_pred(
         &self,
         that: &Tree,
@@ -1126,6 +1134,23 @@ impl<S: BlobStore> Tree<S> {
             node,
             store: NoStore,
         })
+    }
+
+    pub fn try_inner_combine_with<S2, E, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), E>
+    where
+        S2: BlobStore,
+        E: From<S::Error>,
+        E: From<S2::Error>,
+        F: Fn(&mut TreeValue, TreeValue) -> Result<(), E> + Copy,
+    {
+        inner_combine_with(
+            TTI::<S, S2, E>::default(),
+            &mut self.node,
+            &self.store,
+            &that.node,
+            &that.store,
+            f,
+        )
     }
 
     pub fn try_inner_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
@@ -1383,7 +1408,6 @@ fn outer_combine_with<T: TT>(
         }
         let ac = a.children.get_mut(ab)?;
         let bc = b.children.load(bb)?;
-        let bc = bc.as_ref();
         InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &OuterCombineOp { f })?;
     } else if n == ap.len() {
         // a is a prefix of b
@@ -1493,6 +1517,54 @@ fn inner_combine<T: TT>(
     };
     res.unsplit(ab)?;
     Ok(res)
+}
+
+/// Inner combine two trees with a function f
+fn inner_combine_with<T: TT>(
+    _t: T,
+    a: &mut TreeNode,
+    ab: &T::AB,
+    b: &TreeNode,
+    bb: &T::BB,
+    f: impl Fn(&mut TreeValue, TreeValue) -> Result<(), T::E> + Copy,
+) -> Result<(), T::E> {
+    let ap = a.prefix.load(ab)?;
+    let bp = b.prefix.load(bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    let bv = || b.value.detached(bb);
+    if n == ap.len() && n == bp.len() {
+        // prefixes are identical
+        if b.value.is_some() && a.value.is_some() {
+            a.value.detach(ab)?;
+            f(&mut a.value, bv()?)?;
+        } else {
+            a.value = TreeValue::none();
+        }
+        let ac = a.children.get_mut(ab)?;
+        let bc = b.children.load(bb)?;
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &InnerCombineOp { f })?;
+    } else if n == ap.len() {
+        // a is a prefix of b
+        // value is value of a
+        a.value = TreeValue::none();
+        let ac = a.children.get_mut(ab)?;
+        let bc = [b.clone_shortened(bb, n)?];
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &InnerCombineOp { f })?;
+    } else if n == bp.len() {
+        // b is a prefix of a
+        // value is value of b
+        a.split(ab, n)?;
+        let ac = a.children.get_mut(ab)?;
+        let bc = b.children.load(bb)?;
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &InnerCombineOp { f })?;
+    } else {
+        // the two nodes are disjoint
+        a.value = TreeValue::none();
+        a.children = TreeChildren::empty();
+    }
+
+    a.unsplit(ab)?;
+    Ok(())
 }
 
 /// Inner combine two trees with a predicate f
@@ -2026,6 +2098,37 @@ where
     }
 }
 
+impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for InnerCombineOp<F>
+where
+    F: Fn(&mut TreeValue, TreeValue) -> Result<(), T::E> + Copy,
+    T: TT,
+{
+    fn cmp(&self, a: &TreeNode, b: &TreeNode) -> Ordering {
+        a.prefix.first_opt().cmp(&b.prefix.first_opt())
+    }
+    fn from_a(&self, m: &mut InPlaceVecMergeStateRef<'a, T>, n: usize) -> bool {
+        m.advance_a(n, false)
+    }
+    fn from_b(&self, m: &mut InPlaceVecMergeStateRef<'a, T>, n: usize) -> bool {
+        m.advance_b(n, false)
+    }
+    fn collision(&self, m: &mut InPlaceVecMergeStateRef<'a, T>) -> bool {
+        let (a, b) = (m.a.source_slice_mut(), m.b.as_slice());
+        let a = &mut a[0];
+        let b = &b[0];
+        let res = inner_combine_with(T::default(), a, m.ab, b, m.bb, self.f);
+        if let Err(cause) = res {
+            m.err = Some(cause);
+            false
+        } else {
+            // we have modified av in place. We are only going to take it over if it
+            // is non-empty, otherwise we skip it.
+            let take = !a.is_empty();
+            m.advance_a(1, take) && m.advance_b(1, false)
+        }
+    }
+}
+
 impl<'a, T, F> MergeOperation<BoolOpMergeState<'a, T>> for InnerCombineOp<F>
 where
     T: TT,
@@ -2410,6 +2513,26 @@ mod tests {
         }
 
         #[test]
+        fn biased_intersection_with(a in arb_tree_contents(), b in arb_tree_contents()) {
+            let at = mk_owned_tree(&a);
+            let bt = mk_owned_tree(&b);
+            // check right biased intersection
+            let mut rt = at.clone();
+            rt.inner_combine_with(&bt, |a, b| { *a = b});
+            let rbu = to_btree_map(&rt);
+            let mut rbu_reference = b.clone();
+            rbu_reference.retain(|k, _| a.contains_key(k));
+            prop_assert_eq!(rbu, rbu_reference);
+            // check left biased intersection
+            let mut rt = at.clone();
+            rt.inner_combine_with(&bt, |_, _| {});
+            let lbu = to_btree_map(&rt);
+            let mut lbu_reference = a.clone();
+            lbu_reference.retain(|k, _| b.contains_key(k));
+            prop_assert_eq!(lbu, lbu_reference);
+        }
+
+        #[test]
         fn intersects(a in arb_tree_contents(), b in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
@@ -2518,6 +2641,19 @@ mod tests {
             rbu_reference.insert(k, v);
         }
         assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
+    fn intersection_with1() {
+        let a = btreemap! { vec![] => vec![] };
+        let b = btreemap! { vec![1] => vec![], vec![2] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.inner_combine_with(&bt, |a, b| *a = b);
+        let lbi = to_btree_map(&at);
+        let mut lbi_reference = a.clone();
+        lbi_reference.retain(|k, _| b.contains_key(k));
+        assert_eq!(lbi, lbi_reference);
     }
 
     #[test]
