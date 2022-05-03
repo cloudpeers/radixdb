@@ -13,3 +13,4 @@ cc 26e1c373b6663e39bb9555b9f2f678c3d7a637923d867ca8e9415477a2b7df09 # shrinks to
 cc 2f803e13c53597130001a2a3d3276289a1a9d9f73102b8265bbdd172662bb1c4 # shrinks to a = {[48, 48, 48]: [], [48, 49]: []}, b = {}
 cc 3634aae0b6ceac68e1610c672b6e8a683362587c07197f5275b9e45691580efb # shrinks to a = {[48, 48]: [], [48, 49]: []}, b = {}
 cc d515df49121a8498a58897eae67fa8a90839f07065a87eaea496a571a69ea464 # shrinks to a = {[55]: []}, b = {[]: [], [55]: []}
+cc 447b5c51c6f2e4fc546052546acf4b591a3145959d5a837bc593cb2d82f658b7 # shrinks to a = {[50]: [], [50, 50]: []}, b = {[50, 50]: []}
