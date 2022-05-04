@@ -1673,7 +1673,7 @@ fn inner_combine_pred<T: TT>(
 
 /// Left combine two trees with a function f
 pub fn left_combine<T: TT>(
-    t: T,
+    _t: T,
     a: &TreeNode,
     ab: &T::AB,
     b: &TreeNode,
@@ -1692,8 +1692,12 @@ pub fn left_combine<T: TT>(
         // prefixes are identical
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = if !a.value.is_none() {
-            // call the combine fn
-            f(av()?, bv()?)?
+            if !b.value.is_none() {
+                // call the combine fn
+                f(av()?, bv()?)?
+            } else {
+                av()?
+            }
         } else {
             // any none - none
             TreeValue::none()
@@ -1707,15 +1711,13 @@ pub fn left_combine<T: TT>(
         )?;
     } else if n == ap.len() {
         // a is a prefix of b
-        // value is value of a
         prefix = TreePrefix::from_slice(&ap[..n]);
-        value = TreeValue::none();
+        value = a.value.clone();
         let b = b.clone_shortened(bb, n)?;
         children =
             VecMergeState::<T>::merge(&a.children.load(ab)?, &ab, &[b], &bb, &LeftCombineOp { f })?;
     } else if n == bp.len() {
         // b is a prefix of a
-        // value is value of b
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
         let a = a.clone_shortened(ab, n)?;
@@ -1759,14 +1761,11 @@ fn left_combine_with<T: TT>(
         InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &LeftCombineOp { f })?;
     } else if n == ap.len() {
         // a is a prefix of b
-        // value is value of a
-        a.value = TreeValue::none();
         let ac = a.children.get_mut(ab)?;
         let bc = [b.clone_shortened(bb, n)?];
         InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, &LeftCombineOp { f })?;
     } else if n == bp.len() {
         // b is a prefix of a
-        // value is value of b
         a.split(ab, n)?;
         let ac = a.children.get_mut(ab)?;
         let bc = b.children.load(bb)?;
@@ -2540,8 +2539,14 @@ where
 mod tests {
 
     use super::*;
+    use obey::{binary_element_test, binary_property_test, TestSamples};
     use proptest::prelude::*;
-    use std::{collections::BTreeMap, convert::Infallible, mem::size_of, sync::Arc};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        convert::Infallible,
+        mem::size_of,
+        sync::Arc,
+    };
 
     #[derive(Debug, PartialEq, Eq)]
     enum Jsonish {
@@ -2673,6 +2678,26 @@ mod tests {
         }
     }
 
+    impl TestSamples<Vec<u8>, Option<Vec<u8>>> for Tree {
+        fn samples(&self, res: &mut BTreeSet<Vec<u8>>) {
+            res.insert(vec![]);
+            for (k, _) in self.iter() {
+                let a = k.as_ref().to_vec();
+                let mut b = a.clone();
+                let mut c = a.clone();
+                b.push(0);
+                c.pop();
+                res.insert(a);
+                res.insert(b);
+                res.insert(c);
+            }
+        }
+
+        fn at(&self, elem: Vec<u8>) -> Option<Vec<u8>> {
+            self.get(&elem).map(|x| x.to_vec())
+        }
+    }
+
     proptest! {
         #[test]
         fn tree_dump(x in arb_owned_tree()) {
@@ -2760,7 +2785,7 @@ mod tests {
         }
 
         #[test]
-        fn biased_union(a in arb_tree_contents(), b in arb_tree_contents()) {
+        fn union(a in arb_tree_contents(), b in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
             // check right biased union
@@ -2782,31 +2807,30 @@ mod tests {
         }
 
         #[test]
-        fn biased_union_with(a in arb_tree_contents(), b in arb_tree_contents()) {
-            let at = mk_owned_tree(&a);
-            let bt = mk_owned_tree(&b);
-            // check right biased union
-            let mut rt = at.clone();
-            rt.outer_combine_with(&bt, |a, b| { *a = b });
-            let rbu = to_btree_map(&rt);
-            let mut rbu_reference = a.clone();
-            for (k, v) in b.clone() {
-                rbu_reference.insert(k, v);
-            }
-            prop_assert_eq!(rbu, rbu_reference);
-            // check left biased union
-            let mut rt = at.clone();
-            rt.outer_combine_with(&bt, |_, _| {});
-            let rbu = to_btree_map(&rt);
-            let mut rbu_reference = b.clone();
-            for (k, v) in a.clone() {
-                rbu_reference.insert(k, v);
-            }
-            prop_assert_eq!(rbu, rbu_reference);
+        fn union_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+            let r = a.outer_combine(&b, |a, _| a);
+            prop_assert!(binary_element_test(&a, &b, r, |a, b| a.or(b)));
+
+            let r = a.outer_combine(&b, |_, b| b);
+            prop_assert!(binary_element_test(&a, &b, r, |a, b| b.or(a)));
         }
 
         #[test]
-        fn biased_intersection(a in arb_tree_contents(), b in arb_tree_contents()) {
+        fn union_with(a in arb_owned_tree(), b in arb_owned_tree()) {
+            // check right biased union
+            let r1 = a.outer_combine(&b, |_, b| b);
+            let mut r2 = a.clone();
+            r2.outer_combine_with(&b, |a, b| *a = b);
+            prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+            // check left biased union
+            let r1 = a.outer_combine(&b, |a, _| a);
+            let mut r2 = a.clone();
+            r2.outer_combine_with(&b, |a, b| {});
+            prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+        }
+
+        #[test]
+        fn intersection(a in arb_tree_contents(), b in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
             // check right biased intersection
@@ -2824,23 +2848,26 @@ mod tests {
         }
 
         #[test]
-        fn biased_intersection_with(a in arb_tree_contents(), b in arb_tree_contents()) {
-            let at = mk_owned_tree(&a);
-            let bt = mk_owned_tree(&b);
-            // check right biased intersection
-            let mut rt = at.clone();
-            rt.inner_combine_with(&bt, |a, b| { *a = b});
-            let rbu = to_btree_map(&rt);
-            let mut rbu_reference = b.clone();
-            rbu_reference.retain(|k, _| a.contains_key(k));
-            prop_assert_eq!(rbu, rbu_reference);
-            // check left biased intersection
-            let mut rt = at.clone();
-            rt.inner_combine_with(&bt, |_, _| {});
-            let lbu = to_btree_map(&rt);
-            let mut lbu_reference = a.clone();
-            lbu_reference.retain(|k, _| b.contains_key(k));
-            prop_assert_eq!(lbu, lbu_reference);
+        fn intersection_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+            let r = a.inner_combine(&b, |a, _| a);
+            prop_assert!(binary_element_test(&a, &b, r, |a, b| b.and_then(|_| a)));
+
+            let r = a.inner_combine(&b, |_, b| b);
+            prop_assert!(binary_element_test(&a, &b, r, |a, b| a.and_then(|_| b)));
+        }
+
+        #[test]
+        fn intersection_with(a in arb_owned_tree(), b in arb_owned_tree()) {
+            // right biased intersection
+            let r1 = a.inner_combine(&b, |_, b| b);
+            let mut r2 = a.clone();
+            r2.inner_combine_with(&b, |a, b| *a = b);
+            prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+            // left biased intersection
+            let r1 = a.inner_combine(&b, |a, _| a);
+            let mut r2 = a.clone();
+            r2.inner_combine_with(&b, |a, _| {});
+            prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
         }
 
         #[test]
@@ -2853,12 +2880,24 @@ mod tests {
         }
 
         #[test]
+        fn intersects_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+            let keys_intersect = a.inner_combine_pred(&b, |_, _| true);
+            prop_assert!(binary_property_test(&a, &b, !keys_intersect, |a, b| !(a.is_some() & b.is_some())));
+        }
+
+        #[test]
         fn is_subset(a in arb_tree_contents(), b in arb_tree_contents()) {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
-            let at_subset_bt = !at.left_combine_pred(  &bt, |_, _| false);
+            let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
             let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
             prop_assert_eq!(at_subset_bt, at_subset_bt_ref);
+        }
+
+        #[test]
+        fn is_subset_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+            let is_not_subset = a.left_combine_pred(&b, |_, _| false);
+            prop_assert!(binary_property_test(&a, &b, !is_not_subset, |a, b| !a.is_some() | b.is_some()))
         }
 
         #[test]
@@ -2929,6 +2968,43 @@ mod tests {
             let actual = to_btree_map(&at);
             assert_eq!(expected, actual);
         }
+
+        #[test]
+        fn difference_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+            let r = a.left_combine(&b, |a, _| a);
+            prop_assert!(binary_element_test(&a, &b, r, |a, _| a));
+
+            let r = a.left_combine(&b, |_, b| b);
+            let right = |a: Option<Vec<u8>>, b: Option<Vec<u8>>| {
+                if a.is_some() && b.is_some() { b } else { a }
+            };
+            prop_assert!(binary_element_test(&a, &b, r, right));
+        }
+
+        #[test]
+        fn difference_with(a in arb_owned_tree(), b in arb_owned_tree()) {
+            let r1 = a.left_combine(&b, |a, _| a);
+            let mut r2 = a.clone();
+            r2.left_combine_with(&b, |_, _| {});
+            prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+
+            // let r1 = a.left_combine(&b, |_, b| b);
+            // let mut r2 = a.clone();
+            // r2.left_combine_with(&b, |a, b| *a = b);
+            // prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+        }
+    }
+
+    #[test]
+    fn difference_with1() {
+        let a = btreemap! { vec![1] => vec![] };
+        let b = btreemap! { vec![1, 2] => vec![] };
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let mut r = at.clone();
+        r.left_combine_with(&bt, |_, _| {});
+        let r = to_btree_map(&r);
+        assert_eq!(r, btreemap! { vec![1] => vec![] });
     }
 
     #[test]
@@ -2995,6 +3071,28 @@ mod tests {
         at.remove_prefix_with(&bt, |_| true);
         let r = to_btree_map(&at);
         assert_eq!(r, btreemap! { vec![1] => vec![] });
+    }
+
+    #[test]
+    fn difference_sample1() {
+        let a = btreemap! { vec![1] => vec![] };
+        let b = btreemap! { vec![1, 2] => vec![] };
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let rt = at.left_combine(&bt, |a, _| a);
+        let r = to_btree_map(&rt);
+        assert_eq!(r, btreemap! { vec![1] => vec![] });
+    }
+
+    #[test]
+    fn difference_sample2() {
+        let a = btreemap! { vec![] => vec![] };
+        let b = btreemap! { vec![1] => vec![], vec![2] => vec![] };
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let rt = at.left_combine(&bt, |a, b| b);
+        let r = to_btree_map(&rt);
+        assert_eq!(r, btreemap! { vec![] => vec![] });
     }
 
     #[test]
@@ -3187,7 +3285,7 @@ mod tests {
     }
 
     #[test]
-    fn union() -> anyhow::Result<()> {
+    fn union_smoke() -> anyhow::Result<()> {
         println!("disjoint");
         let a = Tree::single(b"a".as_ref(), b"1".as_ref());
         let b = Tree::single(b"b".as_ref(), b"2".as_ref());
