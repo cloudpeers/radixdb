@@ -1988,46 +1988,45 @@ impl core::ops::Deref for IterKey {
 /// This is more efficient than taking the value part of an entry iteration, because the keys
 /// do not have to be constructed.
 pub struct Values<'a, S> {
-    stack: Vec<(TreeValue, Blob<TreeNode>, usize)>,
+    stack: Vec<(Blob<TreeNode>, usize)>,
     store: &'a S,
 }
 
 impl<'a, S: BlobStore> Values<'a, S> {
     fn new(tree: TreeNode, store: &'a S) -> Result<Self, S::Error> {
         Ok(Self {
-            stack: vec![(tree.value, tree.children.load(store)?, 0)],
+            stack: vec![(Blob::from_slice(&[tree]), 0)],
             store,
         })
     }
 
-    fn tree_value(&self) -> &TreeValue {
-        &self.stack.last().unwrap().0
-    }
-
-    fn tree_children(&self) -> &[TreeNode] {
-        &self.stack.last().unwrap().1
-    }
-
-    fn inc(&mut self) -> Option<usize> {
-        let pos = &mut self.stack.last_mut().unwrap().2;
-        let res = if *pos == 0 { None } else { Some(*pos - 1) };
+    fn inc(&mut self) -> usize {
+        let pos = &mut self.stack.last_mut().unwrap().1;
+        let res = *pos;
         *pos += 1;
         res
     }
 
     fn next0(&mut self) -> Result<Option<TreeValue>, S::Error> {
         while !self.stack.is_empty() {
-            if let Some(pos) = self.inc() {
-                let children = self.tree_children();
-                if pos < children.len() {
-                    let cv = children[pos].value.clone();
-                    let cc = children[pos].children.load(self.store)?;
-                    self.stack.push((cv, cc, 0));
+            let pos = self.inc();
+            let children: &[TreeNode] = &self.stack.last().unwrap().0;
+            if pos < children.len() {
+                let cp = &children[pos];
+                let cv = cp.value.clone();
+                let cc = if cp.children.is_empty() {
+                    None
                 } else {
-                    self.stack.pop();
+                    Some(cp.children.load(self.store)?)
+                };
+                if let Some(x) = cc {
+                    self.stack.push((x, 0));
                 }
-            } else if self.tree_value().is_some() {
-                return Ok(Some(self.tree_value().clone()));
+                if cv.is_some() {
+                    return Ok(Some(cv));
+                }
+            } else {
+                self.stack.pop();
             }
         }
         Ok(None)
