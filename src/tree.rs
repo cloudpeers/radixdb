@@ -1270,6 +1270,12 @@ impl<S: BlobStore> Tree<S> {
             f,
         )
     }
+
+    pub fn detach(&self) -> Result<Tree, S::Error> {
+        let mut tree = self.node.clone();
+        tree.detach(&self.store)?;
+        Ok(Tree { node: tree, store: NoStore })
+    }
 }
 
 impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {

@@ -1,11 +1,11 @@
 use std::{fs, time::Instant};
 
 use log::info;
-use radixdb::{DynBlobStore, PagedFileStore, TreeNode};
+use radixdb::{DynBlobStore, PagedFileStore, TreeNode, Tree};
 use tempfile::tempdir;
 
 fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
-    let elems = (0..2000000).map(|i| {
+    let elems = (0..2000000u64).map(|i| {
         if i % 100000 == 0 {
             info!("{}", i);
         }
@@ -16,7 +16,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     });
     let t0 = Instant::now();
     info!("building tree");
-    let mut tree: TreeNode = elems.collect();
+    let mut tree: Tree = elems.collect();
     info!(
         "unattached tree {:?} {} s",
         tree,
@@ -25,19 +25,19 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("traversing unattached tree...");
     let t0 = Instant::now();
     let mut n = 0;
-    for _ in tree.iter(&store)? {
+    for _ in tree.iter() {
         n += 1;
     }
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
     info!("attaching tree...");
     let t0 = Instant::now();
-    tree.attach(&mut store)?;
-    store.sync()?;
+    let tree = tree.attach(store)?;
+    // store.sync()?;
     info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
     info!("traversing attached tree values...");
     let t0 = Instant::now();
     let mut n = 0;
-    for item in tree.values(&store) {
+    for item in tree.try_values() {
         if item.is_err() {
             info!("{:?}", item);
         }
@@ -47,18 +47,18 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("traversing attached tree...");
     let t0 = Instant::now();
     let mut n = 0;
-    for _ in tree.iter(&store)? {
+    for _ in tree.try_iter()? {
         n += 1;
     }
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
     info!("detaching tree...");
     let t0 = Instant::now();
-    tree.detach(&store)?;
+    let tree = tree.detach()?;
     info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
     info!("traversing unattached tree...");
     let t0 = Instant::now();
     let mut n = 0;
-    for _ in tree.iter(&store)? {
+    for _ in tree.iter() {
         n += 1;
     }
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
