@@ -1,4 +1,4 @@
-use std::{fs, time::Instant, sync::Arc};
+use std::{fs, time::Instant, sync::Arc, collections::BTreeMap};
 
 use log::info;
 use radixdb::{DynBlobStore, PagedFileStore, TreeNode, Tree};
@@ -13,10 +13,10 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
             i.to_string().as_bytes().to_vec(),
             i.to_string().as_bytes().to_vec(),
         )
-    });
+    }).collect::<BTreeMap<_, _>>();
     let t0 = Instant::now();
     info!("building tree");
-    let tree: Tree = elems.collect();
+    let tree: Tree = elems.clone().into_iter().collect();
     info!(
         "unattached tree {:?} {} s",
         tree,
@@ -30,13 +30,15 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     // }
     // info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
 
-    info!("traversing unattached tree values...");
-    let t0 = Instant::now();
-    let mut n = 0;
-    for _ in tree.values() {
-        n += 1;
+    for i in 0..100 {
+        info!("traversing unattached tree values...");
+        let t0 = Instant::now();
+        let mut n = 0;
+        for _ in tree.values() {
+            n += 1;
+        }
+        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
     }
-    info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
 
     info!("attaching tree...");
     let t0 = Instant::now();
@@ -46,7 +48,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     info!("traversing attached tree values...");
     let t0 = Instant::now();
     let mut n = 0;
-    for item in tree.try_values() {
+    for item in tree.try_values()? {
         if item.is_err() {
             info!("{:?}", item);
         }

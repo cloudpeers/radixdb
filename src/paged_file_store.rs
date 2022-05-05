@@ -263,7 +263,7 @@ mod tests {
     }
 
     fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
-        let elems = (0..2000000).map(|i| {
+        let elems = (0..2000000u64).map(|i| {
             if i % 100000 == 0 {
                 info!("{}", i);
             }
@@ -295,7 +295,7 @@ mod tests {
         info!("traversing attached tree values...");
         let t0 = Instant::now();
         let mut n = 0;
-        for item in tree.values(&store) {
+        for item in tree.values(&store)? {
             if item.is_err() {
                 info!("{:?}", item);
             }

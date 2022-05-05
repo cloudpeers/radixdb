@@ -776,7 +776,7 @@ impl TreeNode {
     }
 
     /// iterate over all values - this is cheaper than iterating over elements, since it does not have to build the keys from fragments
-    pub fn values<'a, S: BlobStore>(&self, store: &'a S) -> Values<'a, S> {
+    pub fn values<'a, S: BlobStore>(&self, store: &'a S) -> Result<Values<'a, S>, S::Error> {
         Values::new(self.clone(), store)
     }
 
@@ -920,7 +920,7 @@ impl Tree {
 
     pub fn values(&self) -> impl Iterator<Item = TreeValue> + '_ {
         // all this unwrap is safe because we have a NoStore store, which does not ever fail
-        self.try_values().map(unwrap_safe)
+        unwrap_safe(self.try_values()).map(unwrap_safe)
     }
 
     pub fn group_by<'a>(
@@ -1046,7 +1046,7 @@ impl<S: BlobStore> Tree<S> {
         self.node.is_empty()
     }
 
-    pub fn try_values(&self) -> impl Iterator<Item = Result<TreeValue, S::Error>> + '_ {
+    pub fn try_values(&self) -> Result<Values<'_, S>, S::Error> {
         self.node.values(&self.store)
     }
 
@@ -1985,24 +1985,28 @@ impl core::ops::Deref for IterKey {
 /// This is more efficient than taking the value part of an entry iteration, because the keys
 /// do not have to be constructed.
 pub struct Values<'a, S> {
-    stack: Vec<(TreeNode, usize)>,
+    stack: Vec<(TreeValue, Blob<TreeNode>, usize)>,
     store: &'a S,
 }
 
 impl<'a, S: BlobStore> Values<'a, S> {
-    fn new(tree: TreeNode, store: &'a S) -> Self {
-        Self {
-            stack: vec![(tree, 0)],
+    fn new(tree: TreeNode, store: &'a S) -> Result<Self, S::Error> {
+        Ok(Self {
+            stack: vec![(tree.value, tree.children.load(store)?, 0)],
             store,
-        }
+        })
     }
 
-    fn tree(&self) -> &TreeNode {
+    fn tree_value(&self) -> &TreeValue {
         &self.stack.last().unwrap().0
     }
 
+    fn tree_children(&self) -> &[TreeNode] {
+        &self.stack.last().unwrap().1
+    }
+
     fn inc(&mut self) -> Option<usize> {
-        let pos = &mut self.stack.last_mut().unwrap().1;
+        let pos = &mut self.stack.last_mut().unwrap().2;
         let res = if *pos == 0 { None } else { Some(*pos - 1) };
         *pos += 1;
         res
@@ -2011,14 +2015,16 @@ impl<'a, S: BlobStore> Values<'a, S> {
     fn next0(&mut self) -> Result<Option<TreeValue>, S::Error> {
         while !self.stack.is_empty() {
             if let Some(pos) = self.inc() {
-                let children = self.tree().children.load(self.store)?;
+                let children = self.tree_children();
                 if pos < children.len() {
-                    self.stack.push((children[pos].clone(), 0));
+                    let cv = children[pos].value.clone();
+                    let cc = children[pos].children.load(self.store)?;
+                    self.stack.push((cv, cc, 0));
                 } else {
                     self.stack.pop();
                 }
-            } else if self.tree().value.is_some() {
-                return Ok(Some(self.tree().value.clone()));
+            } else if self.tree_value().is_some() {
+                return Ok(Some(self.tree_value().clone()));
             }
         }
         Ok(None)
