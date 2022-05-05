@@ -2736,7 +2736,7 @@ mod tests {
         fn attach_detach_roundtrip(x in arb_tree_contents()) {
             let reference = x;
             let tree = mk_owned_tree(&reference);
-            let store: DynBlobStore = Box::new(MemStore::default());
+            let store: DynBlobStore = Arc::new(MemStore::default());
             let tree = tree.attach(store).unwrap();
             let tree = tree.try_detach().unwrap();
             let actual = to_btree_map(&tree);
@@ -3262,7 +3262,7 @@ mod tests {
 
     #[test]
     fn tree_node_attach_detach() -> anyhow::Result<()> {
-        let mut store: DynBlobStore = Box::new(MemStore::default());
+        let mut store: DynBlobStore = Arc::new(MemStore::default());
         let node = TreeNode::single(b"abcdefgh".as_ref(), b"ijklmnop".as_ref());
         let mut node = TreeNode::new(b"a".as_ref(), TreeValue::none(), [node].as_ref());
         println!("{:?}", node);
@@ -3281,7 +3281,7 @@ mod tests {
             let value = i.to_string() + "000000000";
             Tree::single(key.as_bytes(), value.as_bytes())
         });
-        let store: DynBlobStore = Box::new(MemStore::default());
+        let store: DynBlobStore = Arc::new(MemStore::default());
         let res = nodes.fold(Tree::empty(), |a, b| a.outer_combine(&b, |_, b| b));
         res.try_dump_tree()?;
         let res = res.attach(store)?;

@@ -345,7 +345,7 @@ mod tests {
             .write(true)
             .open(&path)?;
         let db = PagedFileStore::<1048576>::new(file).unwrap();
-        let store: DynBlobStore = Box::new(db);
+        let store: DynBlobStore = Arc::new(db);
         do_test(store)
     }
 

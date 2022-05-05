@@ -20,7 +20,7 @@ pub trait BlobStore: Debug + Send + Sync {
     fn sync(&self) -> std::result::Result<(), Self::Error>;
 }
 
-pub type DynBlobStore = Box<dyn BlobStore<Error = anyhow::Error>>;
+pub type DynBlobStore = Arc<dyn BlobStore<Error = anyhow::Error>>;
 
 impl BlobStore for DynBlobStore {
     type Error = anyhow::Error;
@@ -81,7 +81,7 @@ pub struct NoStoreDyn;
 
 impl NoStoreDyn {
     pub fn new() -> DynBlobStore {
-        Box::new(Self)
+        Arc::new(Self)
     }
 }
 
@@ -375,8 +375,9 @@ mod tests {
                         prop_assert!(false);
                     }
                 },
-                Err(_) => {
-                    prop_assert!(offset + 4 + block.len() > TEST_SIZE || (offset % 8) != 0);
+                Err(e) => {
+                    println!("{}", e);
+                    prop_assert!(offset + 4 + block.len() >= TEST_SIZE || (offset % 8) != 0);
                 }
             }
         }
