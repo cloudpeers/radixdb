@@ -4,7 +4,7 @@ use log::info;
 use radixdb::{DynBlobStore, PagedFileStore, TreeNode, Tree};
 use tempfile::tempdir;
 
-fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
+fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     let elems = (0..2000000u64).map(|i| {
         if i % 100000 == 0 {
             info!("{}", i);
@@ -16,19 +16,28 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     });
     let t0 = Instant::now();
     info!("building tree");
-    let mut tree: Tree = elems.collect();
+    let tree: Tree = elems.collect();
     info!(
         "unattached tree {:?} {} s",
         tree,
         t0.elapsed().as_secs_f64()
     );
-    info!("traversing unattached tree...");
+    // info!("traversing unattached tree...");
+    // let t0 = Instant::now();
+    // let mut n = 0;
+    // for _ in tree.iter() {
+    //     n += 1;
+    // }
+    // info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+
+    info!("traversing unattached tree values...");
     let t0 = Instant::now();
     let mut n = 0;
-    for _ in tree.iter() {
+    for _ in tree.values() {
         n += 1;
     }
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+
     info!("attaching tree...");
     let t0 = Instant::now();
     let tree = tree.attach(store)?;
