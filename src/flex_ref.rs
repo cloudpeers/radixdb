@@ -4,7 +4,7 @@ use super::*;
 
 #[repr(transparent)]
 #[derive(PartialEq, Eq)]
-pub(crate) struct FlexRef<T>(u64, PhantomData<T>);
+pub struct FlexRef<T>(u64, PhantomData<T>);
 
 impl<T> Debug for FlexRef<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,7 +40,7 @@ impl<T> FlexRef<T> {
 
     /// the none marker value
     pub const fn none() -> Self {
-        Self::new(NONE_ARRAY)
+        Self(NONE_ARRAY_U64, PhantomData)
     }
 
     /// try to create an id from an u64, if it fits
@@ -92,12 +92,12 @@ impl<T> FlexRef<T> {
     /// create an owned from an arc to a sized thing
     pub const fn owned_from_arc(arc: Arc<T>) -> Self {
         let addr: usize = unsafe { std::mem::transmute(arc) };
-        Self::new(from_ptr(addr))
+        Self(from_ptr(addr), PhantomData)
     }
 
     pub fn inline_as_ref(&self) -> Option<&[u8]> {
         if self.is_inline() {
-            let len = extra_byte(*self.bytes()) as usize;
+            let len = extra_byte(self.0) as usize;
             if len == 0 {
                 // special case so the empty ref is aligned
                 Some(aligned_empty_ref())
@@ -129,9 +129,9 @@ impl<T> FlexRef<T> {
     pub const fn id_extra_data(&self) -> Option<Option<u8>> {
         if !is_extra(self.0) {
             None
-        } else if type_discriminator(*self.bytes()) == DISC_ID_EXTRA {
-            Some(Some(extra_byte(*self.bytes())))
-        } else if type_discriminator(*self.bytes()) == DISC_ID_NONE {
+        } else if type_discriminator(self.0) == DISC_ID_EXTRA {
+            Some(Some(extra_byte(self.0)))
+        } else if type_discriminator(self.0) == DISC_ID_NONE {
             Some(None)
         } else {
             None
@@ -148,12 +148,12 @@ impl<T> FlexRef<T> {
     }
 
     pub const fn is_inline(&self) -> bool {
-        is_extra(self.0) && (type_discriminator(*self.bytes()) == DISC_INLINE)
+        is_extra(self.0) && (type_discriminator(self.0) == DISC_INLINE)
     }
 
     pub const fn is_id(&self) -> bool {
         is_extra(self.0) && {
-            let tpe = type_discriminator(*self.bytes());
+            let tpe = type_discriminator(self.0);
             tpe == DISC_ID_NONE || tpe == DISC_ID_EXTRA
         }
     }
@@ -223,7 +223,7 @@ impl<T> Clone for FlexRef<T> {
         if let Some(arc) = self.owned_arc_ref() {
             Self::owned_from_arc(arc.clone())
         } else {
-            Self::new(*self.bytes())
+            Self(self.0, PhantomData)
         }
     }
 }

@@ -30,14 +30,17 @@ impl From<Vec<u8>> for TreeValue {
 
 /// A tree prefix is an optional blob, that is stored either inline, on the heap, or as an id
 impl TreeValue {
+    #[inline(always)]
     fn none() -> Self {
         Self(FlexRef::none())
     }
 
+    #[inline(always)]
     fn is_none(&self) -> bool {
         self.0.is_none()
     }
 
+    #[inline(always)]
     fn is_some(&self) -> bool {
         !self.is_none()
     }
@@ -247,6 +250,7 @@ impl TreePrefix {
         Ok(())
     }
 
+    #[inline(always)]
     fn is_empty(&self) -> bool {
         if let Some(arc) = self.0.owned_arc_ref() {
             arc.as_ref().is_empty()
@@ -255,6 +259,7 @@ impl TreePrefix {
         }
     }
 
+    #[inline(always)]
     fn empty() -> Self {
         Self(FlexRef::inline_empty_array())
     }
@@ -354,10 +359,12 @@ impl TreeChildren {
         }
     }
 
+    #[inline(always)]
     fn empty() -> Self {
         Self(FlexRef::none())
     }
 
+    #[inline(always)]
     fn is_empty(&self) -> bool {
         self.0.is_none()
     }

@@ -12,6 +12,7 @@ mod paged_file_store2;
 mod tree;
 pub use blob::{Blob, BlobOwner};
 pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStoreDyn, PagedMemStore};
+pub use flex_ref::FlexRef;
 #[cfg(not(target_arch = "wasm32"))]
 pub use paged_file_store::PagedFileStore;
 pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};
@@ -43,14 +44,14 @@ const DISC_NONE: u8 = 0x3f;
 
 /// get the type of a special value. It is bit 3..8 of the first byte
 #[inline(always)]
-const fn type_discriminator(bytes: [u8; 8]) -> u8 {
-    bytes[0] >> 2
+const fn type_discriminator(bytes: u64) -> u8 {
+    (bytes as u8) >> 2
 }
 
 /// get the extra byte of a special value.
 #[inline(always)]
-const fn extra_byte(bytes: [u8; 8]) -> u8 {
-    ((bytes[0] & 2) << 6) | (bytes[7] >> 1)
+const fn extra_byte(bytes: u64) -> u8 {
+    (((bytes as u8) & 2) << 6) | ((bytes >> 57) as u8)
 }
 
 /// make a special value with discriminator and extra
@@ -116,10 +117,10 @@ fn arc_ref_mut<T>(value: &mut u64) -> &mut Arc<T> {
 
 #[inline(always)]
 /// extract a pointer from 8 bytes
-const fn from_ptr(value: usize) -> [u8; 8] {
+const fn from_ptr(value: usize) -> u64 {
     let value: u64 = value as u64;
     assert!((value & 1) == 0 && (value & 0x0100_0000_0000_0000u64 == 0));
-    unsafe { std::mem::transmute(value) }
+    value
 }
 
 /// Utility to output something as hex
@@ -205,8 +206,11 @@ fn discriminator_and_extra() {
             let bytes = mk_bytes(discriminator, extra);
             assert!(is_extra(unsafe { std::mem::transmute(bytes) }));
             assert_eq!(bytes[1..7], [0, 0, 0, 0, 0, 0u8]);
-            assert_eq!(type_discriminator(bytes), discriminator);
-            assert_eq!(extra_byte(bytes), extra);
+            assert_eq!(
+                type_discriminator(unsafe { std::mem::transmute(bytes) }),
+                discriminator
+            );
+            assert_eq!(extra_byte(unsafe { std::mem::transmute(bytes) }), extra);
         }
     }
 }
