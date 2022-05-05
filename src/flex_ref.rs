@@ -4,7 +4,7 @@ use super::*;
 
 #[repr(C, align(8))]
 #[derive(PartialEq, Eq)]
-pub(crate) struct FlexRef<T>(pub [u8; 8], PhantomData<T>);
+pub(crate) struct FlexRef<T>([u8; 8], PhantomData<T>);
 
 impl<T> Debug for FlexRef<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -26,9 +26,21 @@ impl<T> Debug for FlexRef<T> {
 }
 
 impl<T> FlexRef<T> {
+    const fn new(bytes: [u8; 8]) -> Self {
+        Self(bytes, PhantomData)
+    }
+
+    pub const fn bytes(&self) -> &[u8; 8] {
+        &self.0
+    }
+
+    pub fn bytes_mut(&mut self) -> &mut [u8; 8] {
+        &mut self.0
+    }
+
     /// the none marker value
     pub const fn none() -> Self {
-        Self(NONE_ARRAY, PhantomData)
+        Self::new(NONE_ARRAY)
     }
 
     /// try to create an id from an u64, if it fits
@@ -47,7 +59,7 @@ impl<T> FlexRef<T> {
             bytes[4] = id_bytes[5];
             bytes[5] = id_bytes[6];
             bytes[6] = id_bytes[7];
-            Some(Self(bytes, PhantomData))
+            Some(Self::new(bytes))
         } else {
             None
         }
@@ -62,7 +74,7 @@ impl<T> FlexRef<T> {
 
     /// the inline empty array
     pub const fn inline_empty_array() -> Self {
-        Self(mk_bytes(DISC_INLINE, 0), PhantomData)
+        Self::new(mk_bytes(DISC_INLINE, 0))
     }
 
     /// try to create an inline value from a slice, if it fits
@@ -71,7 +83,7 @@ impl<T> FlexRef<T> {
         if len < 7 {
             let mut res = mk_bytes(DISC_INLINE, len as u8);
             res[1..=len].copy_from_slice(value);
-            Some(Self(res, PhantomData))
+            Some(Self::new(res))
         } else {
             None
         }
@@ -80,17 +92,17 @@ impl<T> FlexRef<T> {
     /// create an owned from an arc to a sized thing
     pub const fn owned_from_arc(arc: Arc<T>) -> Self {
         let addr: usize = unsafe { std::mem::transmute(arc) };
-        Self(from_ptr(addr), PhantomData)
+        Self::new(from_ptr(addr))
     }
 
     pub fn inline_as_ref(&self) -> Option<&[u8]> {
         if self.is_inline() {
-            let len = extra_byte(self.0) as usize;
+            let len = extra_byte(*self.bytes()) as usize;
             if len == 0 {
                 // special case so the empty ref is aligned
                 Some(aligned_empty_ref())
             } else {
-                Some(&self.0[1..=len])
+                Some(&self.bytes()[1..=len])
             }
         } else {
             None
@@ -101,12 +113,13 @@ impl<T> FlexRef<T> {
         if self.is_id() {
             let mut res = [0u8; 8];
             // this is so the fn can be const
-            res[2] = self.0[1];
-            res[3] = self.0[2];
-            res[4] = self.0[3];
-            res[5] = self.0[4];
-            res[6] = self.0[5];
-            res[7] = self.0[6];
+            let b = self.bytes();
+            res[2] = b[1];
+            res[3] = b[2];
+            res[4] = b[3];
+            res[5] = b[4];
+            res[6] = b[5];
+            res[7] = b[6];
             Some(u64::from_be_bytes(res))
         } else {
             None
@@ -114,11 +127,11 @@ impl<T> FlexRef<T> {
     }
 
     pub const fn id_extra_data(&self) -> Option<Option<u8>> {
-        if !is_extra(self.0) {
+        if !is_extra(*self.bytes()) {
             None
-        } else if type_discriminator(self.0) == DISC_ID_EXTRA {
-            Some(Some(extra_byte(self.0)))
-        } else if type_discriminator(self.0) == DISC_ID_NONE {
+        } else if type_discriminator(*self.bytes()) == DISC_ID_EXTRA {
+            Some(Some(extra_byte(*self.bytes())))
+        } else if type_discriminator(*self.bytes()) == DISC_ID_NONE {
             Some(None)
         } else {
             None
@@ -126,32 +139,32 @@ impl<T> FlexRef<T> {
     }
 
     pub const fn is_arc(&self) -> bool {
-        is_pointer(self.0)
+        is_pointer(*self.bytes())
     }
 
     pub const fn is_copy(&self) -> bool {
         // for now, the only thing that is not copy is an arc
-        is_extra(self.0)
+        is_extra(*self.bytes())
     }
 
     pub const fn is_inline(&self) -> bool {
-        is_extra(self.0) && (type_discriminator(self.0) == DISC_INLINE)
+        is_extra(*self.bytes()) && (type_discriminator(*self.bytes()) == DISC_INLINE)
     }
 
     pub const fn is_id(&self) -> bool {
-        is_extra(self.0) && {
-            let tpe = type_discriminator(self.0);
+        is_extra(*self.bytes()) && {
+            let tpe = type_discriminator(*self.bytes());
             tpe == DISC_ID_NONE || tpe == DISC_ID_EXTRA
         }
     }
 
     pub const fn is_none(&self) -> bool {
-        is_none(self.0)
+        is_none(*self.bytes())
     }
 
     pub fn owned_take_arc(&mut self) -> Option<Arc<T>> {
-        if is_pointer(self.0) {
-            let res = arc(self.0);
+        if is_pointer(*self.bytes()) {
+            let res = arc(*self.bytes());
             self.0 = NONE_ARRAY;
             Some(res)
         } else {
@@ -160,8 +173,8 @@ impl<T> FlexRef<T> {
     }
 
     pub fn owned_into_arc(self) -> Option<Arc<T>> {
-        if is_pointer(self.0) {
-            let res = arc(self.0);
+        if is_pointer(*self.bytes()) {
+            let res = arc(*self.bytes());
             std::mem::forget(self);
             Some(res)
         } else {
@@ -170,16 +183,16 @@ impl<T> FlexRef<T> {
     }
 
     pub fn owned_arc_ref(&self) -> Option<&Arc<T>> {
-        if is_pointer(self.0) {
-            Some(arc_ref(&self.0))
+        if is_pointer(*self.bytes()) {
+            Some(arc_ref(self.bytes()))
         } else {
             None
         }
     }
 
     pub fn owned_arc_ref_mut(&mut self) -> Option<&mut Arc<T>> {
-        if is_pointer(self.0) {
-            Some(arc_ref_mut(&mut self.0))
+        if is_pointer(*self.bytes()) {
+            Some(arc_ref_mut(self.bytes_mut()))
         } else {
             None
         }
@@ -208,7 +221,7 @@ impl<T> Clone for FlexRef<T> {
         if let Some(arc) = self.owned_arc_ref() {
             Self::owned_from_arc(arc.clone())
         } else {
-            Self(self.0, PhantomData)
+            Self::new(*self.bytes())
         }
     }
 }

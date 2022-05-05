@@ -493,9 +493,9 @@ impl TreeNode {
             anyhow::ensure!(!node.prefix.0.is_arc());
             anyhow::ensure!(!node.value.0.is_arc());
             anyhow::ensure!(!node.children.0.is_arc());
-            res.extend_from_slice(&node.prefix.0 .0);
-            res.extend_from_slice(&node.value.0 .0);
-            res.extend_from_slice(&node.children.0 .0);
+            res.extend_from_slice(node.prefix.0.bytes());
+            res.extend_from_slice(node.value.0.bytes());
+            res.extend_from_slice(node.children.0.bytes());
         }
         Ok(res)
     }
@@ -1274,7 +1274,10 @@ impl<S: BlobStore> Tree<S> {
     pub fn detach(&self) -> Result<Tree, S::Error> {
         let mut tree = self.node.clone();
         tree.detach(&self.store)?;
-        Ok(Tree { node: tree, store: NoStore })
+        Ok(Tree {
+            node: tree,
+            store: NoStore,
+        })
     }
 }
 

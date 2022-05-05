@@ -1,19 +1,21 @@
-use std::{fs, time::Instant, sync::Arc, collections::BTreeMap};
+use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
 
 use log::info;
-use radixdb::{DynBlobStore, PagedFileStore, TreeNode, Tree};
+use radixdb::{DynBlobStore, PagedFileStore, Tree, TreeNode};
 use tempfile::tempdir;
 
 fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
-    let elems = (0..2000000u64).map(|i| {
-        if i % 100000 == 0 {
-            info!("{}", i);
-        }
-        (
-            i.to_string().as_bytes().to_vec(),
-            i.to_string().as_bytes().to_vec(),
-        )
-    }).collect::<BTreeMap<_, _>>();
+    let elems = (0..2000000u64)
+        .map(|i| {
+            if i % 100000 == 0 {
+                info!("{}", i);
+            }
+            (
+                i.to_string().as_bytes().to_vec(),
+                i.to_string().as_bytes().to_vec(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let t0 = Instant::now();
     info!("building tree");
     let tree: Tree = elems.clone().into_iter().collect();
