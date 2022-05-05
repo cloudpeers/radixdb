@@ -2,9 +2,9 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use super::*;
 
-#[repr(C, align(8))]
+#[repr(transparent)]
 #[derive(PartialEq, Eq)]
-pub(crate) struct FlexRef<T>([u8; 8], PhantomData<T>);
+pub(crate) struct FlexRef<T>(u64, PhantomData<T>);
 
 impl<T> Debug for FlexRef<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -27,15 +27,15 @@ impl<T> Debug for FlexRef<T> {
 
 impl<T> FlexRef<T> {
     const fn new(bytes: [u8; 8]) -> Self {
-        Self(bytes, PhantomData)
+        Self(unsafe { std::mem::transmute(bytes) }, PhantomData)
     }
 
     pub const fn bytes(&self) -> &[u8; 8] {
-        &self.0
+        unsafe { std::mem::transmute(&self.0) }
     }
 
     pub fn bytes_mut(&mut self) -> &mut [u8; 8] {
-        &mut self.0
+        unsafe { std::mem::transmute(&mut self.0) }
     }
 
     /// the none marker value
@@ -165,7 +165,7 @@ impl<T> FlexRef<T> {
     pub fn owned_take_arc(&mut self) -> Option<Arc<T>> {
         if is_pointer(*self.bytes()) {
             let res = arc(*self.bytes());
-            self.0 = NONE_ARRAY;
+            self.0 = NONE_ARRAY_U64;
             Some(res)
         } else {
             None
