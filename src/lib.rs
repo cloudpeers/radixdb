@@ -42,67 +42,80 @@ const DISC_ID_NONE: u8 = 2;
 const DISC_NONE: u8 = 0x3f;
 
 /// get the type of a special value. It is bit 3..8 of the first byte
+#[inline(always)]
 const fn type_discriminator(bytes: [u8; 8]) -> u8 {
     bytes[0] >> 2
 }
 
 /// get the extra byte of a special value.
+#[inline(always)]
 const fn extra_byte(bytes: [u8; 8]) -> u8 {
     ((bytes[0] & 2) << 6) | (bytes[7] >> 1)
 }
 
 /// make a special value with discriminator and extra
+#[inline(always)]
 const fn mk_bytes(discriminator: u8, extra: u8) -> [u8; 8] {
     let b0 = (discriminator << 2) | ((extra & 0x80) >> 6) | 1;
     let b7 = (extra << 1) | 1;
     [b0, 0, 0, 0, 0, 0, 0, b7]
 }
 
+#[inline(always)]
 const fn from_native_bytes(bytes: [u8; 8]) -> u64 {
     unsafe { std::mem::transmute(bytes) }
 }
 
+#[inline(always)]
 const fn is_pointer(bytes: [u8; 8]) -> bool {
     (from_native_bytes(bytes) & SPECIAL_MASK_U64) == 0
 }
 
+#[inline(always)]
 const fn is_extra(bytes: [u8; 8]) -> bool {
     (from_native_bytes(bytes) & SPECIAL_MASK_U64) == SPECIAL_MASK_U64
 }
 
+#[inline(always)]
 const fn is_none(bytes: [u8; 8]) -> bool {
     from_native_bytes(bytes) == NONE_ARRAY_U64
 }
 
+#[inline(always)]
 /// extract a pointer from 8 bytes
 const fn ptr(value: [u8; 8]) -> usize {
     let value: u64 = from_native_bytes(value);
-    assert!(
+    debug_assert!(
         value <= (usize::MAX as u64),
         "got 64 bit pointer on a 32 bit system"
     );
     value as usize
 }
 
+#[inline(always)]
 const fn arc<T>(value: [u8; 8]) -> Arc<T> {
     unsafe { std::mem::transmute(ptr(value)) }
 }
 
+#[inline(always)]
 const fn arc_ref<T>(value: &[u8; 8]) -> &Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }
 
+#[inline(always)]
 const fn aligned_empty_ref() -> &'static [u8] {
     let t: &'static [u128] = &[];
     unsafe { std::mem::transmute::<&[u128], &[u8]>(t) }
 }
 
+#[inline(always)]
 fn arc_ref_mut<T>(value: &mut [u8; 8]) -> &mut Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }
 
+#[inline(always)]
 /// extract a pointer from 8 bytes
 const fn from_ptr(value: usize) -> [u8; 8] {
     let value: u64 = value as u64;
@@ -110,6 +123,7 @@ const fn from_ptr(value: usize) -> [u8; 8] {
     unsafe { std::mem::transmute(value) }
 }
 
+#[inline(always)]
 const fn from_arc<T>(arc: Arc<T>) -> [u8; 8] {
     from_ptr(unsafe { std::mem::transmute(arc) })
 }

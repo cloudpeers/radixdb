@@ -375,8 +375,7 @@ mod tests {
                         prop_assert!(false);
                     }
                 },
-                Err(e) => {
-                    println!("{}", e);
+                Err(_) => {
                     prop_assert!(offset + 4 + block.len() >= TEST_SIZE || (offset % 8) != 0);
                 }
             }
