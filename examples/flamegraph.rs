@@ -32,6 +32,14 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     // }
     // info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
 
+    info!("traversing elements...");
+    let t0 = Instant::now();
+    let mut n = 0;
+    for _ in elems.iter() {
+        n += 1;
+    }
+    info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+
     for i in 0..100 {
         info!("traversing unattached tree values...");
         let t0 = Instant::now();
@@ -41,6 +49,8 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
         }
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
     }
+
+    return Ok(());
 
     info!("attaching tree...");
     let t0 = Instant::now();

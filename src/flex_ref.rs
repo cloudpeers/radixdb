@@ -127,7 +127,7 @@ impl<T> FlexRef<T> {
     }
 
     pub const fn id_extra_data(&self) -> Option<Option<u8>> {
-        if !is_extra(*self.bytes()) {
+        if !is_extra(self.0) {
             None
         } else if type_discriminator(*self.bytes()) == DISC_ID_EXTRA {
             Some(Some(extra_byte(*self.bytes())))
@@ -139,32 +139,32 @@ impl<T> FlexRef<T> {
     }
 
     pub const fn is_arc(&self) -> bool {
-        is_pointer(*self.bytes())
+        is_pointer(self.0)
     }
 
     pub const fn is_copy(&self) -> bool {
         // for now, the only thing that is not copy is an arc
-        is_extra(*self.bytes())
+        is_extra(self.0)
     }
 
     pub const fn is_inline(&self) -> bool {
-        is_extra(*self.bytes()) && (type_discriminator(*self.bytes()) == DISC_INLINE)
+        is_extra(self.0) && (type_discriminator(*self.bytes()) == DISC_INLINE)
     }
 
     pub const fn is_id(&self) -> bool {
-        is_extra(*self.bytes()) && {
+        is_extra(self.0) && {
             let tpe = type_discriminator(*self.bytes());
             tpe == DISC_ID_NONE || tpe == DISC_ID_EXTRA
         }
     }
 
     pub const fn is_none(&self) -> bool {
-        is_none(*self.bytes())
+        is_none(self.0)
     }
 
     pub fn owned_take_arc(&mut self) -> Option<Arc<T>> {
-        if is_pointer(*self.bytes()) {
-            let res = arc(*self.bytes());
+        if is_pointer(self.0) {
+            let res = arc(self.0);
             self.0 = NONE_ARRAY_U64;
             Some(res)
         } else {
@@ -173,8 +173,8 @@ impl<T> FlexRef<T> {
     }
 
     pub fn owned_into_arc(self) -> Option<Arc<T>> {
-        if is_pointer(*self.bytes()) {
-            let res = arc(*self.bytes());
+        if is_pointer(self.0) {
+            let res = arc(self.0);
             std::mem::forget(self);
             Some(res)
         } else {
@@ -182,17 +182,19 @@ impl<T> FlexRef<T> {
         }
     }
 
-    pub fn owned_arc_ref(&self) -> Option<&Arc<T>> {
-        if is_pointer(*self.bytes()) {
-            Some(arc_ref(self.bytes()))
+    #[inline(always)]
+    pub const fn owned_arc_ref(&self) -> Option<&Arc<T>> {
+        if is_pointer(self.0) {
+            Some(arc_ref(&self.0))
         } else {
             None
         }
     }
 
+    #[inline(always)]
     pub fn owned_arc_ref_mut(&mut self) -> Option<&mut Arc<T>> {
-        if is_pointer(*self.bytes()) {
-            Some(arc_ref_mut(self.bytes_mut()))
+        if is_pointer(self.0) {
+            Some(arc_ref_mut(&mut self.0))
         } else {
             None
         }

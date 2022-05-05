@@ -67,24 +67,23 @@ const fn from_native_bytes(bytes: [u8; 8]) -> u64 {
 }
 
 #[inline(always)]
-const fn is_pointer(bytes: [u8; 8]) -> bool {
-    (from_native_bytes(bytes) & SPECIAL_MASK_U64) == 0
+const fn is_pointer(bytes: u64) -> bool {
+    (bytes & SPECIAL_MASK_U64) == 0
 }
 
 #[inline(always)]
-const fn is_extra(bytes: [u8; 8]) -> bool {
-    (from_native_bytes(bytes) & SPECIAL_MASK_U64) == SPECIAL_MASK_U64
+const fn is_extra(bytes: u64) -> bool {
+    (bytes & SPECIAL_MASK_U64) == SPECIAL_MASK_U64
 }
 
 #[inline(always)]
-const fn is_none(bytes: [u8; 8]) -> bool {
-    from_native_bytes(bytes) == NONE_ARRAY_U64
+const fn is_none(bytes: u64) -> bool {
+    bytes == NONE_ARRAY_U64
 }
 
 #[inline(always)]
 /// extract a pointer from 8 bytes
-const fn ptr(value: [u8; 8]) -> usize {
-    let value: u64 = from_native_bytes(value);
+const fn ptr(value: u64) -> usize {
     debug_assert!(
         value <= (usize::MAX as u64),
         "got 64 bit pointer on a 32 bit system"
@@ -93,12 +92,12 @@ const fn ptr(value: [u8; 8]) -> usize {
 }
 
 #[inline(always)]
-const fn arc<T>(value: [u8; 8]) -> Arc<T> {
+const fn arc<T>(value: u64) -> Arc<T> {
     unsafe { std::mem::transmute(ptr(value)) }
 }
 
 #[inline(always)]
-const fn arc_ref<T>(value: &[u8; 8]) -> &Arc<T> {
+const fn arc_ref<T>(value: &u64) -> &Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }
@@ -110,7 +109,7 @@ const fn aligned_empty_ref() -> &'static [u8] {
 }
 
 #[inline(always)]
-fn arc_ref_mut<T>(value: &mut [u8; 8]) -> &mut Arc<T> {
+fn arc_ref_mut<T>(value: &mut u64) -> &mut Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }
@@ -121,11 +120,6 @@ const fn from_ptr(value: usize) -> [u8; 8] {
     let value: u64 = value as u64;
     assert!((value & 1) == 0 && (value & 0x0100_0000_0000_0000u64 == 0));
     unsafe { std::mem::transmute(value) }
-}
-
-#[inline(always)]
-const fn from_arc<T>(arc: Arc<T>) -> [u8; 8] {
-    from_ptr(unsafe { std::mem::transmute(arc) })
 }
 
 /// Utility to output something as hex
@@ -209,7 +203,7 @@ fn discriminator_and_extra() {
     for extra in 0..255u8 {
         for discriminator in 0..63u8 {
             let bytes = mk_bytes(discriminator, extra);
-            assert!(is_extra(bytes));
+            assert!(is_extra(unsafe { std::mem::transmute(bytes) }));
             assert_eq!(bytes[1..7], [0, 0, 0, 0, 0, 0u8]);
             assert_eq!(type_discriminator(bytes), discriminator);
             assert_eq!(extra_byte(bytes), extra);

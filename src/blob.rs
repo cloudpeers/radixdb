@@ -79,6 +79,14 @@ impl Blob<u8> {
 }
 
 impl<T> Blob<T> {
+    pub const fn empty() -> Self {
+        Blob::Inline {
+            data: [0u8; 16],
+            len: 0,
+            p: PhantomData,
+        }
+    }
+
     pub fn cast<U>(&self) -> anyhow::Result<Blob<U>> {
         match self {
             Self::ArcVecU8 { arc, .. } => {

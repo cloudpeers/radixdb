@@ -369,7 +369,7 @@ impl TreeChildren {
             let blob = store.read(id)?;
             Ok(blob.cast::<TreeNode>()?)
         } else if self.0.is_none() {
-            Ok(Blob::inline(&[]).unwrap())
+            Ok(Blob::empty())
         } else {
             unreachable!("invalid state of a TreePrefix");
         }
