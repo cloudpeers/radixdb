@@ -30,17 +30,17 @@ impl From<Vec<u8>> for TreeValue {
 
 /// A tree prefix is an optional blob, that is stored either inline, on the heap, or as an id
 impl TreeValue {
-    #[inline(always)]
+    #[inline]
     fn none() -> Self {
         Self(FlexRef::none())
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_none(&self) -> bool {
         self.0.is_none()
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_some(&self) -> bool {
         !self.is_none()
     }
@@ -56,8 +56,8 @@ impl TreeValue {
     pub fn load<S: BlobStore>(&self, store: &S) -> Result<Option<Blob<u8>>, S::Error> {
         if let Some(arc) = self.0.owned_arc_ref() {
             Ok(Some(Blob::arc_vec_t(arc.clone())))
-        } else if let Some(data) = self.0.inline_as_ref() {
-            Ok(Some(Blob::inline(data).unwrap()))
+        } else if let Some(blob) = self.0.inline_as_ref() {
+            Ok(Some(Blob::inline(blob).unwrap()))
         } else if let Some(id) = self.0.id_u64() {
             store.read(id).map(Some)
         } else if self.0.is_none() {
@@ -201,10 +201,10 @@ impl TreePrefix {
     }
 
     pub fn load<S: BlobStore>(&self, store: &S) -> Result<Blob<u8>, S::Error> {
-        if let Some(arc) = self.0.owned_arc_ref() {
-            Ok(Blob::arc_vec_t(arc.clone()))
-        } else if let Some(slice) = self.0.inline_as_ref() {
+        if let Some(slice) = self.0.inline_as_ref() {
             Ok(Blob::inline(slice).unwrap())
+        } else if let Some(arc) = self.0.owned_arc_ref() {
+            Ok(Blob::arc_vec_t(arc.clone()))
         } else if let Some(id) = self.0.id_u64() {
             store.read(id).map(|x| x)
         } else {
@@ -212,13 +212,19 @@ impl TreePrefix {
         }
     }
 
-    fn slice_opt(&self) -> Option<&[u8]> {
-        if let Some(data) = self.0.inline_as_ref() {
-            Some(data)
-        } else if let Some(arc) = self.0.owned_arc_ref() {
-            Some(arc.as_ref())
+    pub fn peek<S: BlobStore, T>(
+        &self,
+        store: &S,
+        f: impl Fn(&[u8]) -> Result<T, S::Error>,
+    ) -> Result<T, S::Error> {
+        if let Some(arc) = self.0.owned_arc_ref() {
+            f(arc.as_ref())
+        } else if let Some(slice) = self.0.inline_as_ref() {
+            f(slice)
+        } else if let Some(id) = self.0.id_u64() {
+            store.read(id).and_then(|x| f(x.as_ref()))
         } else {
-            None
+            unreachable!("invalid state of a TreePrefix");
         }
     }
 
@@ -250,7 +256,7 @@ impl TreePrefix {
         Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_empty(&self) -> bool {
         if let Some(arc) = self.0.owned_arc_ref() {
             arc.as_ref().is_empty()
@@ -259,7 +265,7 @@ impl TreePrefix {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn empty() -> Self {
         Self(FlexRef::inline_empty_array())
     }
@@ -359,12 +365,12 @@ impl TreeChildren {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn empty() -> Self {
         Self(FlexRef::none())
     }
 
-    #[inline(always)]
+    #[inline]
     fn is_empty(&self) -> bool {
         self.0.is_none()
     }
@@ -544,17 +550,21 @@ impl TreeNode {
 
     /// Return the subtree with the given prefix. Will return an empty tree in case there is no match.
     pub fn filter_prefix<S: BlobStore>(&self, store: &S, prefix: &[u8]) -> Result<Self, S::Error> {
-        Ok(match find(store, self, prefix)? {
-            FindResult::Found(mut res) => {
-                res.prefix = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
-                res
-            }
-            FindResult::Prefix { tree: mut res, rt } => {
-                let rp = res.prefix.load(store)?;
-                res.prefix = TreePrefix::join(prefix, &rp[rp.len() - rt..]);
-                res
-            }
-            FindResult::NotFound { .. } => Self::default(),
+        find(store, self, prefix, |x| {
+            Ok(match x {
+                FindResult::Found(res) => {
+                    let mut res = res.clone();
+                    res.prefix = TreePrefix(FlexRef::inline_or_owned_from_slice(prefix));
+                    res
+                }
+                FindResult::Prefix { tree: res, rt } => {
+                    let mut res = res.clone();
+                    let rp = res.prefix.load(store)?;
+                    res.prefix = TreePrefix::join(prefix, &rp[rp.len() - rt..]);
+                    res
+                }
+                FindResult::NotFound { .. } => Self::default(),
+            })
         })
     }
 
@@ -573,20 +583,24 @@ impl TreeNode {
     /// True if key is contained in this set
     pub fn contains_key<S: BlobStore>(&self, store: &S, key: &[u8]) -> Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        Ok(if let FindResult::Found(tree) = find(store, self, key)? {
-            tree.value.is_some()
-        } else {
-            false
+        find(store, self, key, |r| {
+            Ok(if let FindResult::Found(tree) = r {
+                tree.value.is_some()
+            } else {
+                false
+            })
         })
     }
 
     /// Get the value for a given key
     pub fn get<S: BlobStore>(&self, store: &S, key: &[u8]) -> Result<Option<Blob<u8>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        Ok(if let FindResult::Found(tree) = find(store, self, key)? {
-            tree.value.load(store)?
-        } else {
-            None
+        find(store, self, key, |r| {
+            Ok(if let FindResult::Found(tree) = r {
+                tree.value.load(store)?
+            } else {
+                None
+            })
         })
     }
 
@@ -625,19 +639,21 @@ impl TreeNode {
         store: &'a S,
         prefix: &[u8],
     ) -> Result<Iter<'a, S>, S::Error> {
-        Ok(match find(store, self, prefix)? {
-            FindResult::Found(tree) => {
-                let prefix = IterKey::new(prefix);
-                Iter::new(tree, store, prefix)
-            }
-            FindResult::Prefix { tree, rt } => {
-                let tree_prefix = tree.prefix.load(store)?;
-                let mut prefix = IterKey::new(prefix);
-                let remaining = &tree_prefix.as_ref()[tree_prefix.len() - rt..];
-                prefix.append(remaining);
-                Iter::new(tree, store, prefix)
-            }
-            FindResult::NotFound { .. } => Iter::empty(store),
+        find(store, self, prefix, |r| {
+            Ok(match r {
+                FindResult::Found(tree) => {
+                    let prefix = IterKey::new(prefix);
+                    Iter::new(tree.clone(), store, prefix)
+                }
+                FindResult::Prefix { tree, rt } => {
+                    let tree_prefix = tree.prefix.load(store)?;
+                    let mut prefix = IterKey::new(prefix);
+                    let remaining = &tree_prefix.as_ref()[tree_prefix.len() - rt..];
+                    prefix.append(remaining);
+                    Iter::new(tree.clone(), store, prefix)
+                }
+                FindResult::NotFound { .. } => Iter::empty(store),
+            })
         })
     }
 
@@ -1324,26 +1340,26 @@ enum FindResult<T> {
 /// - Found(tree) if we found the tree exactly,
 /// - Prefix if we found a tree of which prefix is a prefix
 /// - NotFound if there is no tree
-fn find<S: BlobStore>(
+fn find<S: BlobStore, T>(
     store: &S,
     tree: &TreeNode,
     prefix: &[u8],
-) -> Result<FindResult<TreeNode>, S::Error> {
-    let tree_prefix = tree.prefix.load(store)?;
-    let n = common_prefix(tree_prefix.as_ref(), prefix);
+    f: impl Fn(FindResult<&TreeNode>) -> Result<T, S::Error>,
+) -> Result<T, S::Error> {
+    let (n, rt) = tree.prefix.peek(store, |tree_prefix| {
+        let n = common_prefix(tree_prefix, prefix);
+        // remaining in tree prefix
+        let rt = tree_prefix.len() - n;
+        Ok((n, rt))
+    })?;
     // remaining in prefix
     let rp = prefix.len() - n;
-    // remaining in tree prefix
-    let rt = tree_prefix.len() - n;
-    Ok(if rp == 0 && rt == 0 {
+    let fr = if rp == 0 && rt == 0 {
         // direct hit
-        FindResult::Found(tree.clone())
+        FindResult::Found(tree)
     } else if rp == 0 {
         // tree is a subtree of prefix
-        FindResult::Prefix {
-            tree: tree.clone(),
-            rt,
-        }
+        FindResult::Prefix { tree: tree, rt }
     } else if rt == 0 {
         // prefix is a subtree of tree
         let c = &prefix[n];
@@ -1356,10 +1372,10 @@ fn find<S: BlobStore>(
         };
         if let Ok(index) = index {
             let child = &tree_children[index];
-            find(store, child, &prefix[n..])?
+            return find(store, child, &prefix[n..], f);
         } else {
             FindResult::NotFound {
-                closest: tree.clone(),
+                closest: tree,
                 rp,
                 rt,
             }
@@ -1367,11 +1383,12 @@ fn find<S: BlobStore>(
     } else {
         // disjoint, but we still need to store how far we matched
         FindResult::NotFound {
-            closest: tree.clone(),
+            closest: tree,
             rp,
             rt,
         }
-    })
+    };
+    f(fr)
 }
 
 /// Outer combine two trees with a function f
