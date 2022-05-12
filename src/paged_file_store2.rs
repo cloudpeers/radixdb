@@ -72,8 +72,8 @@ impl<const SIZE: usize> Page<SIZE> {
     }
 
     /// try to get the bytes at the given offset
-    fn bytes(&self, offset: usize) -> anyhow::Result<Blob<u8>> {
-        Blob::<u8>::custom(self.0.clone(), offset)
+    fn bytes(&self, offset: usize) -> anyhow::Result<Blob> {
+        Blob::new(self.0.clone(), offset)
     }
 }
 
@@ -206,7 +206,7 @@ impl<const PAGE_SIZE: usize> Inner<PAGE_SIZE> {
         Ok(())
     }
 
-    fn bytes(&mut self, offset: u64) -> anyhow::Result<Blob<u8>> {
+    fn bytes(&mut self, offset: u64) -> anyhow::Result<Blob> {
         let page = Self::page(offset);
         let page_offset = Self::offset_within_page(offset);
         if let Some(page) = self.pages.get(&page) {
@@ -282,7 +282,7 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
 impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob> {
         self.0.lock().bytes(id)
     }
 

@@ -1,4 +1,4 @@
-use crate::{blob::BlobOwner, Blob};
+use crate::blob::{Blob, BlobOwner};
 
 use super::Hex;
 use anyhow::Context;
@@ -13,7 +13,7 @@ impl<T: From<anyhow::Error> + From<NoError>> BlobStoreError for T {}
 pub trait BlobStore: Debug + Send + Sync {
     type Error: From<NoError> + From<anyhow::Error>;
 
-    fn read(&self, id: u64) -> std::result::Result<Blob<u8>, Self::Error>;
+    fn read(&self, id: u64) -> std::result::Result<Blob, Self::Error>;
 
     fn write(&self, data: &[u8]) -> std::result::Result<u64, Self::Error>;
 
@@ -25,7 +25,7 @@ pub type DynBlobStore = Arc<dyn BlobStore<Error = anyhow::Error>>;
 impl BlobStore for DynBlobStore {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob> {
         self.as_ref().read(id)
     }
 
@@ -63,7 +63,7 @@ pub fn unwrap_safe<T>(x: Result<T, NoError>) -> T {
 impl BlobStore for NoStore {
     type Error = NoError;
 
-    fn read(&self, _: u64) -> std::result::Result<Blob<u8>, Self::Error> {
+    fn read(&self, _: u64) -> std::result::Result<Blob, Self::Error> {
         panic!("no store");
     }
 
@@ -88,7 +88,7 @@ impl NoStoreDyn {
 impl BlobStore for NoStoreDyn {
     type Error = anyhow::Error;
 
-    fn read(&self, _: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, _: u64) -> anyhow::Result<Blob> {
         anyhow::bail!("no store");
     }
 
@@ -103,7 +103,7 @@ impl BlobStore for NoStoreDyn {
 
 #[derive(Default, Clone)]
 pub struct MemStore {
-    data: Arc<Mutex<BTreeMap<u64, Blob<u8>>>>,
+    data: Arc<Mutex<BTreeMap<u64, Blob>>>,
 }
 
 impl Debug for MemStore {
@@ -120,7 +120,7 @@ impl Debug for MemStore {
 impl BlobStore for MemStore {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob> {
         let data = self.data.lock();
         data.get(&id).cloned().context("value not found")
     }
@@ -129,7 +129,7 @@ impl BlobStore for MemStore {
         let mut data = self.data.lock();
         let max = data.keys().next_back().cloned().unwrap_or(0);
         let id = max + 1;
-        let blob = Blob::arc_from_byte_slice(sluce);
+        let blob = Blob::from_slice(sluce);
         data.insert(id, blob);
         Ok(id)
     }
@@ -142,7 +142,7 @@ impl BlobStore for MemStore {
 #[derive(Default)]
 struct Inner<const SIZE: usize> {
     pages: FnvHashMap<u64, Page<SIZE>>,
-    recent: FnvHashMap<u64, Blob<u8>>,
+    recent: FnvHashMap<u64, Blob>,
     offset: u64,
 }
 
@@ -223,8 +223,8 @@ impl<const SIZE: usize> PageBuilder<SIZE> {
 
 impl<const SIZE: usize> Page<SIZE> {
     /// try to get the bytes at the given offset
-    fn bytes(&self, offset: usize) -> anyhow::Result<Blob<u8>> {
-        Blob::<u8>::custom(self.0.clone(), offset)
+    fn bytes(&self, offset: usize) -> anyhow::Result<Blob> {
+        Blob::new(self.0.clone(), offset)
     }
 }
 
@@ -276,7 +276,7 @@ impl<const SIZE: usize> Inner<SIZE> {
             .retain(|offset, _| Self::page(*offset) != current_page);
     }
 
-    fn bytes(&self, offset: u64) -> anyhow::Result<Blob<u8>> {
+    fn bytes(&self, offset: u64) -> anyhow::Result<Blob> {
         let page = Self::page(offset);
         let page_offset = Self::offset_within_page(offset);
         // first try pages, then recent
@@ -303,7 +303,7 @@ impl<const SIZE: usize> Inner<SIZE> {
             end = self.offset.checked_add(len).context("out of offsets")?;
         }
         let id = self.offset;
-        self.recent.insert(id, Blob::arc_from_byte_slice(data));
+        self.recent.insert(id, Blob::from_slice(data));
         // make sure the new offset is also aligned
         while (end % (ALIGN as u64)) != 0 {
             end += 1;
@@ -323,7 +323,7 @@ impl<const SIZE: usize> PagedMemStore<SIZE> {
 impl<const SIZE: usize> BlobStore for PagedMemStore<SIZE> {
     type Error = anyhow::Error;
 
-    fn read(&self, offset: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, offset: u64) -> anyhow::Result<Blob> {
         self.0.lock().bytes(offset)
     }
 

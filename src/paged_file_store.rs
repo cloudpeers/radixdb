@@ -33,7 +33,7 @@ impl<const SIZE: usize> Debug for PagedFileStore<SIZE> {
 struct Inner<const SIZE: usize> {
     file: File,
     pages: FnvHashMap<u64, Page<SIZE>>,
-    recent: FnvHashMap<u64, Blob<u8>>,
+    recent: FnvHashMap<u64, Blob>,
 }
 
 const ALIGN: usize = 8;
@@ -86,8 +86,8 @@ impl<const SIZE: usize> Page<SIZE> {
     }
 
     /// try to get the bytes at the given offset
-    fn bytes(&self, offset: usize) -> anyhow::Result<Blob<u8>> {
-        Blob::<u8>::custom(self.0.clone(), offset)
+    fn bytes(&self, offset: usize) -> anyhow::Result<Blob> {
+        Blob::new(self.0.clone(), offset)
     }
 }
 
@@ -146,7 +146,7 @@ impl<const SIZE: usize> Inner<SIZE> {
         Ok(())
     }
 
-    fn bytes(&self, offset: u64) -> anyhow::Result<Blob<u8>> {
+    fn bytes(&self, offset: u64) -> anyhow::Result<Blob> {
         let page = Self::page(offset);
         let page_offset = Self::offset_within_page(offset);
         // first try pages, then recent
@@ -181,7 +181,7 @@ impl<const SIZE: usize> Inner<SIZE> {
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         self.file.write_all(data)?;
         self.file.flush()?;
-        self.recent.insert(id, Blob::arc_from_byte_slice(data));
+        self.recent.insert(id, Blob::from_slice(data));
         Ok(id)
     }
 }
@@ -203,7 +203,7 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
 impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob> {
         self.0.lock().bytes(id)
     }
 

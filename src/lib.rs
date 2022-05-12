@@ -5,6 +5,7 @@ mod blob_store;
 mod flex_ref;
 mod iterators;
 mod merge_state;
+mod owned_slice;
 #[cfg(not(target_arch = "wasm32"))]
 mod paged_file_store;
 #[cfg(not(target_arch = "wasm32"))]
@@ -13,6 +14,7 @@ mod tree;
 pub use blob::{Blob, BlobOwner};
 pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStoreDyn, PagedMemStore};
 pub use flex_ref::FlexRef;
+pub use owned_slice::OwnedSlice;
 #[cfg(not(target_arch = "wasm32"))]
 pub use paged_file_store::PagedFileStore;
 pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};

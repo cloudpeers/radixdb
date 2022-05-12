@@ -8,6 +8,7 @@ use crate::{
         BoolOpMergeState, InPlaceVecMergeStateRef, MergeStateMut, MutateInput, NoStoreT,
         VecMergeState, TT, TTI,
     },
+    Blob, OwnedSlice,
 };
 
 use super::*;
@@ -53,13 +54,11 @@ impl TreeValue {
         Self(FlexRef::inline_or_owned_from_slice(data))
     }
 
-    pub fn load<S: BlobStore>(&self, store: &S) -> Result<Option<Blob<u8>>, S::Error> {
-        if let Some(arc) = self.0.owned_arc_ref() {
-            Ok(Some(Blob::arc_vec_t(arc.clone())))
-        } else if let Some(blob) = self.0.inline_as_ref() {
-            Ok(Some(Blob::inline(blob).unwrap()))
+    pub fn load<S: BlobStore>(&self, store: &S) -> Result<Option<OwnedSlice<u8>>, S::Error> {
+        if self.0.is_arc() || self.0.is_inline() {
+            Ok(Some(OwnedSlice::flex(self.0.clone())))
         } else if let Some(id) = self.0.id_u64() {
-            store.read(id).map(Some)
+            store.read(id).map(|x| Some(OwnedSlice::blob(x)))
         } else if self.0.is_none() {
             Ok(None)
         } else {
@@ -200,13 +199,11 @@ impl TreePrefix {
         Ok(())
     }
 
-    pub fn load<S: BlobStore>(&self, store: &S) -> Result<Blob<u8>, S::Error> {
-        if let Some(slice) = self.0.inline_as_ref() {
-            Ok(Blob::inline(slice).unwrap())
-        } else if let Some(arc) = self.0.owned_arc_ref() {
-            Ok(Blob::arc_vec_t(arc.clone()))
+    pub fn load<S: BlobStore>(&self, store: &S) -> Result<OwnedSlice<u8>, S::Error> {
+        if self.0.is_inline() || self.0.is_arc() {
+            Ok(OwnedSlice::flex(self.0.clone()))
         } else if let Some(id) = self.0.id_u64() {
-            store.read(id).map(|x| x)
+            store.read(id).map(|x| OwnedSlice::blob(x))
         } else {
             unreachable!("invalid state of a TreePrefix");
         }
@@ -375,14 +372,14 @@ impl TreeChildren {
         self.0.is_none()
     }
 
-    fn load<S: BlobStore>(&self, store: &S) -> Result<Blob<TreeNode>, S::Error> {
-        if let Some(arc) = self.0.owned_arc_ref() {
-            Ok(Blob::arc_vec_t(arc.clone()))
+    fn load<S: BlobStore>(&self, store: &S) -> Result<OwnedSlice<TreeNode>, S::Error> {
+        if self.0.is_inline() || self.0.is_arc() {
+            Ok(OwnedSlice::flex(self.0.clone()))
         } else if let Some(id) = self.0.id_u64() {
-            let blob = store.read(id)?;
+            let blob = store.read(id).map(|x| OwnedSlice::<TreeNode>::blob(x))?;
             Ok(blob.cast::<TreeNode>()?)
         } else if self.0.is_none() {
-            Ok(Blob::empty())
+            Ok(OwnedSlice::empty())
         } else {
             unreachable!("invalid state of a TreePrefix");
         }
@@ -593,7 +590,11 @@ impl TreeNode {
     }
 
     /// Get the value for a given key
-    pub fn get<S: BlobStore>(&self, store: &S, key: &[u8]) -> Result<Option<Blob<u8>>, S::Error> {
+    pub fn get<S: BlobStore>(
+        &self,
+        store: &S,
+        key: &[u8],
+    ) -> Result<Option<OwnedSlice<u8>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(store, self, key, |r| {
             Ok(if let FindResult::Found(tree) = r {
@@ -991,7 +992,7 @@ impl Tree {
         unwrap_safe(self.node.contains_key(&self.store, key))
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<Blob<u8>> {
+    pub fn get(&self, key: &[u8]) -> Option<OwnedSlice<u8>> {
         unwrap_safe(self.node.get(&self.store, key))
     }
 
@@ -1306,12 +1307,11 @@ impl<S: BlobStore> Tree<S> {
 
 impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-        let store = NoStore;
-        let tree = iter.into_iter().fold(TreeNode::empty(), |a, (key, value)| {
-            let b = TreeNode::single(key, value);
-            outer_combine(NoStoreT, &a, &store, &b, &store, |_, b| Ok(b)).unwrap()
-        });
-        Self { node: tree, store }
+        let mut tree = Tree::empty();
+        for (k, v) in iter.into_iter() {
+            tree.outer_combine_with(&Tree::single(k, v), |a, b| *a = b);
+        }
+        tree
     }
 }
 
@@ -2012,14 +2012,14 @@ impl core::ops::Deref for IterKey {
 /// This is more efficient than taking the value part of an entry iteration, because the keys
 /// do not have to be constructed.
 pub struct Values<'a, S> {
-    stack: Vec<(Blob<TreeNode>, usize)>,
+    stack: Vec<(OwnedSlice<TreeNode>, usize)>,
     store: &'a S,
 }
 
 impl<'a, S: BlobStore> Values<'a, S> {
     fn new(tree: TreeNode, store: &'a S) -> Result<Self, S::Error> {
         Ok(Self {
-            stack: vec![(Blob::from_slice(&[tree]), 0)],
+            stack: vec![(OwnedSlice::from_slice(&[tree]), 0)],
             store,
         })
     }
@@ -2791,7 +2791,7 @@ mod tests {
             let tree = mk_owned_tree(&reference);
             for (k, v) in reference {
                 prop_assert!(tree.contains_key(&k));
-                prop_assert_eq!(tree.get(&k), Some(Blob::from_slice(&v)));
+                prop_assert_eq!(tree.get(&k), Some(OwnedSlice::from_slice(&v)));
             }
         }
 
@@ -3276,8 +3276,8 @@ mod tests {
     fn tree_node_create() -> anyhow::Result<()> {
         let store = NoStore;
         let node = TreeNode::leaf(b"abcd".as_ref());
-        assert!(node.prefix.load(&store)? == Blob::<u8>::from_slice(&[]));
-        assert!(node.value.load(&store)? == Some(Blob::<u8>::from_slice(b"abcd")));
+        assert!(node.prefix.load(&store)? == OwnedSlice::<u8>::from_slice(&[]));
+        assert!(node.value.load(&store)? == Some(OwnedSlice::<u8>::from_slice(b"abcd")));
         assert!(node.children.load(&store)?.is_empty());
         println!("{:?}", node);
         let node = TreeNode::leaf(b"abcdefgh".as_ref());
