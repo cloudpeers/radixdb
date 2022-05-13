@@ -1,10 +1,6 @@
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
-use crate::{
-    arc, arc_ref, arc_ref_mut, extra_byte, from_ptr, is_extra, is_none, is_pointer, mk_bytes,
-    type_discriminator, Hex, ALIGNED_EMPTY_REF, DISC_ID_EXTRA, DISC_ID_NONE, DISC_INLINE,
-    NONE_ARRAY_U64,
-};
+use crate::Hex;
 
 #[repr(transparent)]
 #[derive(PartialEq, Eq)]
@@ -228,6 +224,106 @@ impl<T> Drop for FlexRef<T> {
     }
 }
 
+
+/// Mask for "special" values. No pointer will ever have these bits set at the same time.
+///
+/// On a 32 bit system, either the lower or the higher half will be 0 depending on endianness
+/// On a 64 bit system, the upper 2 bytes are typically not used, and pointers are aligned
+///
+/// 32 bit, be [x, x, x, x, 0, 0, 0, 0]
+/// 32 bit, le [0, 0, 0, 0, x, x, x, x]
+/// 64 bit, be [0, 0, x, x, x, x, x, e]
+/// 64 bit, le [e, x, x, x, x, x, 0, 0]
+const SPECIAL_MASK: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 1];
+const SPECIAL_MASK_U64: u64 = u64::from_be_bytes(SPECIAL_MASK);
+const NONE_ARRAY: [u8; 8] = [255, 255, 255, 255, 255, 255, 255, 255];
+const NONE_ARRAY_U64: u64 = u64::from_be_bytes(NONE_ARRAY);
+
+const DISC_INLINE: u8 = 0;
+const DISC_ID_EXTRA: u8 = 1;
+const DISC_ID_NONE: u8 = 2;
+const DISC_NONE: u8 = 0x3f;
+
+/// get the type of a special value. It is bit 3..8 of the first byte
+#[inline]
+const fn type_discriminator(bytes: u64) -> u8 {
+    (bytes as u8) >> 2
+}
+
+/// get the extra byte of a special value.
+#[inline]
+const fn extra_byte(bytes: u64) -> u8 {
+    (((bytes as u8) & 2) << 6) | ((bytes >> 57) as u8)
+}
+
+/// make a special value with discriminator and extra
+#[inline]
+const fn mk_bytes(discriminator: u8, extra: u8) -> [u8; 8] {
+    let b0 = (discriminator << 2) | ((extra & 0x80) >> 6) | 1;
+    let b7 = (extra << 1) | 1;
+    [b0, 0, 0, 0, 0, 0, 0, b7]
+}
+
+#[inline]
+const fn from_native_bytes(bytes: [u8; 8]) -> u64 {
+    unsafe { std::mem::transmute(bytes) }
+}
+
+#[inline]
+const fn is_pointer(bytes: u64) -> bool {
+    (bytes & SPECIAL_MASK_U64) == 0
+}
+
+#[inline]
+const fn is_extra(bytes: u64) -> bool {
+    (bytes & SPECIAL_MASK_U64) == SPECIAL_MASK_U64
+}
+
+#[inline]
+const fn is_none(bytes: u64) -> bool {
+    bytes == NONE_ARRAY_U64
+}
+
+#[inline]
+/// extract a pointer from 8 bytes
+const fn ptr(value: u64) -> usize {
+    debug_assert!(
+        value <= (usize::MAX as u64),
+        "got 64 bit pointer on a 32 bit system"
+    );
+    value as usize
+}
+
+#[inline]
+const fn arc<T>(value: u64) -> Arc<T> {
+    unsafe { std::mem::transmute(ptr(value)) }
+}
+
+#[inline]
+const fn arc_ref<T>(value: &u64) -> &Arc<T> {
+    // todo: pretty sure this is broken on 32 bit!
+    unsafe { std::mem::transmute(value) }
+}
+
+const ALIGNED_EMPTY_REF: &'static [u8] = {
+    let t: &'static [u128] = &[];
+    unsafe { std::mem::transmute::<&[u128], &[u8]>(t) }
+};
+
+#[inline]
+fn arc_ref_mut<T>(value: &mut u64) -> &mut Arc<T> {
+    // todo: pretty sure this is broken on 32 bit!
+    unsafe { std::mem::transmute(value) }
+}
+
+#[inline]
+/// extract a pointer from 8 bytes
+const fn from_ptr(value: usize) -> u64 {
+    let value: u64 = value as u64;
+    assert!((value & 1) == 0 && (value & 0x0100_0000_0000_0000u64 == 0));
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +368,22 @@ mod tests {
             let f = FlexRef::<u8>::inline_from_slice(&inline).unwrap();
             info!("{:x?} {:?}", inline, f);
             prop_assert_eq!(Some(inline.as_slice()), f.inline_as_ref());
+        }
+    }
+
+    #[test]
+    fn discriminator_and_extra() {
+        for extra in 0..255u8 {
+            for discriminator in 0..63u8 {
+                let bytes = mk_bytes(discriminator, extra);
+                assert!(is_extra(unsafe { std::mem::transmute(bytes) }));
+                assert_eq!(bytes[1..7], [0, 0, 0, 0, 0, 0u8]);
+                assert_eq!(
+                    type_discriminator(unsafe { std::mem::transmute(bytes) }),
+                    discriminator
+                );
+                assert_eq!(extra_byte(unsafe { std::mem::transmute(bytes) }), extra);
+            }
         }
     }
 }

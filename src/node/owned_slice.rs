@@ -2,7 +2,9 @@ use std::{borrow::Borrow, marker::PhantomData, sync::Arc};
 
 use std::ops::Deref;
 
-use crate::{node::FlexRef, slice_cast, store::Blob};
+use crate::{node::FlexRef, store::Blob};
+
+use super::slice_cast;
 
 #[derive(Debug, Clone)]
 pub enum OwnedSlice<T> {
@@ -114,9 +116,9 @@ impl<T: PartialEq> PartialEq for OwnedSlice<T> {
 mod tests {
     use std::{borrow::Borrow, ops::Deref};
 
+    use super::OwnedSlice;
+    use crate::{node::FlexRef, store::Blob};
     use proptest::prelude::*;
-
-    use crate::{node::FlexRef, store::Blob, OwnedSlice};
 
     #[test]
     fn size() {

@@ -7,7 +7,7 @@ use crate::{
     },
     node::FlexRef,
     store::{unwrap_safe, BlobStore, NoError, NoStore},
-    OwnedSlice,
+    Hex,
 };
 
 use super::*;
@@ -878,7 +878,6 @@ impl TreeNode {
 }
 
 /// A tuple of a tree and its store. This is the entry point into the library.
-#[repr(C)]
 #[derive(Debug, Clone, Default)]
 pub struct Tree<S: BlobStore = NoStore> {
     node: TreeNode,
@@ -886,13 +885,20 @@ pub struct Tree<S: BlobStore = NoStore> {
 }
 
 impl Tree {
-    pub fn new(
+    pub(crate) fn new(
         key: impl Into<TreePrefix>,
         value: impl Into<TreeValue>,
         children: impl Into<TreeChildren>,
     ) -> Self {
         Self {
             node: TreeNode::new(key, value, children),
+            store: NoStore,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            node: TreeNode::empty(),
             store: NoStore,
         }
     }
@@ -911,15 +917,16 @@ impl Tree {
         }
     }
 
-    pub fn empty() -> Self {
-        Self {
-            node: TreeNode::empty(),
-            store: NoStore,
-        }
-    }
-
     pub fn prepend(&mut self, prefix: impl Into<TreePrefix>) {
         unwrap_safe(self.try_prepend(prefix));
+    }
+
+    pub fn contains_key(&self, key: &[u8]) -> bool {
+        unwrap_safe(self.node.contains_key(&self.store, key))
+    }
+
+    pub fn get(&self, key: &[u8]) -> Option<OwnedSlice<u8>> {
+        unwrap_safe(self.node.get(&self.store, key))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
@@ -971,14 +978,6 @@ impl Tree {
         let mut tree = self.node.clone();
         tree.attach(&mut store)?;
         Ok(Tree { node: tree, store })
-    }
-
-    pub fn contains_key(&self, key: &[u8]) -> bool {
-        unwrap_safe(self.node.contains_key(&self.store, key))
-    }
-
-    pub fn get(&self, key: &[u8]) -> Option<OwnedSlice<u8>> {
-        unwrap_safe(self.node.get(&self.store, key))
     }
 
     pub fn outer_combine(
@@ -2582,15 +2581,19 @@ where
     }
 }
 
+// common prefix of two slices.
+fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
+    a.iter().zip(b).take_while(|(a, b)| a == b).count()
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
     use crate::{
         merge_state::NoStoreT,
-        node::FlexRef,
+        node::{FlexRef, OwnedSlice},
         store::{DynBlobStore, MemStore, NoStore},
-        OwnedSlice,
     };
     use obey::{binary_element_test, binary_property_test, TestSamples};
     use proptest::prelude::*;

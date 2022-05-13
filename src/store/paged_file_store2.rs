@@ -3,9 +3,7 @@ use memmap::{Mmap, MmapMut, MmapOptions};
 use parking_lot::Mutex;
 
 use crate::{
-    read_length_prefixed,
     store::{Blob, BlobOwner, BlobStore},
-    write_length_prefixed,
 };
 use std::{
     fmt::Debug,
@@ -275,6 +273,20 @@ fn pages(size: u64, page_size: u64) -> u64 {
     } else {
         q + 1
     }
+}
+
+fn read_length_prefixed(source: &[u8], offset: usize) -> &[u8] {
+    let len = usize::try_from(u32::from_be_bytes(
+        source[offset..offset + 4].try_into().unwrap(),
+    ))
+    .unwrap();
+    &source[offset + 4..offset + 4 + len]
+}
+
+fn write_length_prefixed(target: &mut [u8], offset: usize, slice: &[u8]) {
+    let len_u32: u32 = slice.len().try_into().unwrap();
+    target[offset..offset + 4].copy_from_slice(&len_u32.to_be_bytes());
+    target[offset + 4..offset + 4 + slice.len()].copy_from_slice(slice);
 }
 
 #[cfg(test)]
