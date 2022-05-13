@@ -1,22 +1,12 @@
 use std::sync::Arc;
 
-mod blob;
-mod blob_store;
-mod flex_ref;
 mod iterators;
 mod merge_state;
+pub mod node;
 mod owned_slice;
-#[cfg(not(target_arch = "wasm32"))]
-mod paged_file_store;
-#[cfg(not(target_arch = "wasm32"))]
-mod paged_file_store2;
+pub mod store;
 mod tree;
-pub use blob::{Blob, BlobOwner};
-pub use blob_store::{BlobStore, DynBlobStore, MemStore, PagedMemStore};
-pub use flex_ref::FlexRef;
 pub use owned_slice::OwnedSlice;
-#[cfg(not(target_arch = "wasm32"))]
-pub use paged_file_store::PagedFileStore;
 pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};
 
 #[cfg(test)]
@@ -34,8 +24,6 @@ extern crate maplit;
 /// 64 bit, le [e, x, x, x, x, x, 0, 0]
 const SPECIAL_MASK: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 1];
 const SPECIAL_MASK_U64: u64 = u64::from_be_bytes(SPECIAL_MASK);
-const ID_MASK: [u8; 8] = [253, 0, 0, 0, 0, 0, 0, 253];
-const EMPTY_INLINE_ARRAY: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 1];
 const NONE_ARRAY: [u8; 8] = [255, 255, 255, 255, 255, 255, 255, 255];
 const NONE_ARRAY_U64: u64 = u64::from_be_bytes(NONE_ARRAY);
 
@@ -45,46 +33,46 @@ const DISC_ID_NONE: u8 = 2;
 const DISC_NONE: u8 = 0x3f;
 
 /// get the type of a special value. It is bit 3..8 of the first byte
-#[inline(always)]
+#[inline]
 const fn type_discriminator(bytes: u64) -> u8 {
     (bytes as u8) >> 2
 }
 
 /// get the extra byte of a special value.
-#[inline(always)]
+#[inline]
 const fn extra_byte(bytes: u64) -> u8 {
     (((bytes as u8) & 2) << 6) | ((bytes >> 57) as u8)
 }
 
 /// make a special value with discriminator and extra
-#[inline(always)]
+#[inline]
 const fn mk_bytes(discriminator: u8, extra: u8) -> [u8; 8] {
     let b0 = (discriminator << 2) | ((extra & 0x80) >> 6) | 1;
     let b7 = (extra << 1) | 1;
     [b0, 0, 0, 0, 0, 0, 0, b7]
 }
 
-#[inline(always)]
+#[inline]
 const fn from_native_bytes(bytes: [u8; 8]) -> u64 {
     unsafe { std::mem::transmute(bytes) }
 }
 
-#[inline(always)]
+#[inline]
 const fn is_pointer(bytes: u64) -> bool {
     (bytes & SPECIAL_MASK_U64) == 0
 }
 
-#[inline(always)]
+#[inline]
 const fn is_extra(bytes: u64) -> bool {
     (bytes & SPECIAL_MASK_U64) == SPECIAL_MASK_U64
 }
 
-#[inline(always)]
+#[inline]
 const fn is_none(bytes: u64) -> bool {
     bytes == NONE_ARRAY_U64
 }
 
-#[inline(always)]
+#[inline]
 /// extract a pointer from 8 bytes
 const fn ptr(value: u64) -> usize {
     debug_assert!(
@@ -94,30 +82,29 @@ const fn ptr(value: u64) -> usize {
     value as usize
 }
 
-#[inline(always)]
+#[inline]
 const fn arc<T>(value: u64) -> Arc<T> {
     unsafe { std::mem::transmute(ptr(value)) }
 }
 
-#[inline(always)]
+#[inline]
 const fn arc_ref<T>(value: &u64) -> &Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }
 
-#[inline(always)]
-const fn aligned_empty_ref() -> &'static [u8] {
+const ALIGNED_EMPTY_REF: &'static [u8] = {
     let t: &'static [u128] = &[];
     unsafe { std::mem::transmute::<&[u128], &[u8]>(t) }
-}
+};
 
-#[inline(always)]
+#[inline]
 fn arc_ref_mut<T>(value: &mut u64) -> &mut Arc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }
 
-#[inline(always)]
+#[inline]
 /// extract a pointer from 8 bytes
 const fn from_ptr(value: usize) -> u64 {
     let value: u64 = value as u64;

@@ -31,14 +31,14 @@ fn do_test() -> anyhow::Result<()> {
         .collect::<BTreeMap<_, _>>();
     let tree0: Tree = elems0.clone().into_iter().collect();
     let tree1: Tree = elems1.clone().into_iter().collect();
-    for i in 0..100 {
+    for _ in 0..100 {
         let mut res = tree0.clone();
         let t0 = Instant::now();
         res.outer_combine_with(&tree1, |a, b| *a = b);
         info!("bulk union {} {} {} s", n1, n2, t0.elapsed().as_secs_f64());
     }
 
-    for i in 0..100 {
+    for _ in 0..100 {
         let mut res = elems0.clone();
         let elems1 = elems1.clone();
         let t0 = Instant::now();

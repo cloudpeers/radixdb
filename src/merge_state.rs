@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 use crate::{
-    blob_store::{NoError, NoStore},
     iterators::SliceIterator,
+    store::{BlobStore, NoError, NoStore},
     tree::TreeNode,
-    BlobStore,
 };
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};

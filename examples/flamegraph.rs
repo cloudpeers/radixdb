@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
 
 use log::info;
-use radixdb::{DynBlobStore, PagedFileStore, Tree, TreeNode};
+use radixdb::{
+    store::{DynBlobStore, PagedFileStore},
+    Tree,
+};
 use tempfile::tempdir;
 
 fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
@@ -16,7 +19,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    for i in 0..100 {
+    for _ in 0..100 {
         let t0 = Instant::now();
         info!("building tree");
         let tree: Tree = elems.clone().into_iter().collect();
@@ -51,7 +54,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     }
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
 
-    for i in 0..1 {
+    for _ in 0..1 {
         info!("traversing unattached tree values...");
         let t0 = Instant::now();
         let mut n = 0;
@@ -79,7 +82,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     info!("traversing attached tree...");
     let t0 = Instant::now();
     let mut n = 0;
-    for _ in tree.try_iter()? {
+    for _ in tree.try_iter() {
         n += 1;
     }
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());

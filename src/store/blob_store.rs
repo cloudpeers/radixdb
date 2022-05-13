@@ -1,6 +1,7 @@
-use crate::blob::{Blob, BlobOwner};
-
-use super::Hex;
+use crate::{
+    store::{Blob, BlobOwner},
+    Hex,
+};
 use anyhow::Context;
 use fnv::FnvHashMap;
 use parking_lot::Mutex;
@@ -43,7 +44,7 @@ impl BlobStore for DynBlobStore {
 }
 
 /// A special store that does nothing, to be used with detached trees that don't use a store
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NoStore;
 
 /// The implementation of NoStore will panic whenever it is used

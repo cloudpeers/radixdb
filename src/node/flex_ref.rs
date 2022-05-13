@@ -1,6 +1,10 @@
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
-use super::*;
+use crate::{
+    arc, arc_ref, arc_ref_mut, extra_byte, from_ptr, is_extra, is_none, is_pointer, mk_bytes,
+    type_discriminator, Hex, ALIGNED_EMPTY_REF, DISC_ID_EXTRA, DISC_ID_NONE, DISC_INLINE,
+    NONE_ARRAY_U64,
+};
 
 #[repr(transparent)]
 #[derive(PartialEq, Eq)]
@@ -8,7 +12,7 @@ pub struct FlexRef<T>(u64, PhantomData<T>);
 
 impl<T> Debug for FlexRef<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(id) = self.id_u64() {
+        if let Some(id) = self.id_value() {
             f.debug_tuple("FlexRef::Id").field(&id).finish()
         } else if let Some(data) = self.inline_as_ref() {
             f.debug_tuple("FlexRef::Inline")
@@ -65,17 +69,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    /// try to create an id from an u64, if it fits
-    ///
-    /// will use None as extra data
-    pub const fn id_from_u64(value: u64) -> Option<Self> {
-        Self::id_from_u64_and_extra(value, None)
-    }
-
-    /// the inline empty array
-    pub const fn inline_empty_array() -> Self {
-        Self::new(mk_bytes(DISC_INLINE, 0))
-    }
+    pub const INLINE_EMPTY_ARRAY: Self = Self::new(mk_bytes(DISC_INLINE, 0));
 
     /// try to create an inline value from a slice, if it fits
     pub fn inline_from_slice(value: &[u8]) -> Option<Self> {
@@ -100,7 +94,7 @@ impl<T> FlexRef<T> {
             let len = extra_byte(self.0) as usize;
             if len == 0 {
                 // special case so the empty ref is aligned
-                Some(aligned_empty_ref())
+                Some(ALIGNED_EMPTY_REF)
             } else {
                 Some(&self.bytes()[1..=len])
             }
@@ -109,7 +103,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    pub const fn id_u64(&self) -> Option<u64> {
+    pub const fn id_value(&self) -> Option<u64> {
         if self.is_id() {
             let mut res = [0u8; 8];
             // this is so the fn can be const
@@ -126,7 +120,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    pub const fn id_extra_data(&self) -> Option<Option<u8>> {
+    pub const fn id_extra(&self) -> Option<Option<u8>> {
         if !is_extra(self.0) {
             None
         } else if type_discriminator(self.0) == DISC_ID_EXTRA {
@@ -182,7 +176,6 @@ impl<T> FlexRef<T> {
         }
     }
 
-    #[inline(always)]
     pub const fn owned_arc_ref(&self) -> Option<&Arc<T>> {
         if is_pointer(self.0) {
             Some(arc_ref(&self.0))
@@ -191,7 +184,6 @@ impl<T> FlexRef<T> {
         }
     }
 
-    #[inline(always)]
     pub fn owned_arc_ref_mut(&mut self) -> Option<&mut Arc<T>> {
         if is_pointer(self.0) {
             Some(arc_ref_mut(&mut self.0))
@@ -254,7 +246,7 @@ mod tests {
         println!("{}", Hex::new(x.bytes()));
         assert_eq!(x.bytes(), &[1, 1, 2, 3, 4, 5, 0, 11]);
 
-        let x = FlexRef::<u64>::inline_empty_array();
+        let x = FlexRef::<u64>::INLINE_EMPTY_ARRAY;
         println!("{}", std::mem::size_of::<usize>());
         println!("{}", Hex::new(x.bytes()));
         assert_eq!(x.bytes(), &[1, 0, 0, 0, 0, 0, 0, 1]);
@@ -268,18 +260,11 @@ mod tests {
     proptest! {
 
         #[test]
-        fn flexref_id_roundtrip(id in 0u64..=0x0000_FFFF__FFFF_FFFFu64) {
-            let f = FlexRef::<u8>::id_from_u64(id).unwrap();
-            info!("{} {:?}", id, f);
-            prop_assert_eq!(Some(id), f.id_u64());
-        }
-
-        #[test]
         fn flexref_id_and_extra_roundtrip(id in 0u64..=0x0000_FFFF__FFFF_FFFFu64, extra in any::<Option<u8>>()) {
             let f = FlexRef::<u8>::id_from_u64_and_extra(id, extra).unwrap();
             info!("{} {:?}", id, f);
-            prop_assert_eq!(Some(id), f.id_u64());
-            prop_assert_eq!(Some(extra), f.id_extra_data());
+            prop_assert_eq!(Some(id), f.id_value());
+            prop_assert_eq!(Some(extra), f.id_extra());
         }
 
         #[test]

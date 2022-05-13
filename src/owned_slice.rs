@@ -2,7 +2,7 @@ use std::{borrow::Borrow, marker::PhantomData, sync::Arc};
 
 use std::ops::Deref;
 
-use crate::{slice_cast, Blob, FlexRef};
+use crate::{node::FlexRef, slice_cast, store::Blob};
 
 #[derive(Debug, Clone)]
 pub enum OwnedSlice<T> {
@@ -15,7 +15,7 @@ pub enum OwnedSlice<T> {
 impl<T> OwnedSlice<T> {
     pub const fn empty() -> Self {
         Self::Flex {
-            flex: FlexRef::inline_empty_array(),
+            flex: FlexRef::INLINE_EMPTY_ARRAY,
         }
     }
 
@@ -58,7 +58,7 @@ impl<T> OwnedSlice<T> {
                     p: PhantomData,
                 })
             }
-            Self::Flex { flex } => {
+            Self::Flex { .. } => {
                 anyhow::bail!("not allowed");
             }
         }
@@ -110,17 +110,13 @@ impl<T: PartialEq> PartialEq for OwnedSlice<T> {
     }
 }
 
-const fn mk_ref<'a, T>(pair: (*const T, usize)) -> &'a [T] {
-    unsafe { std::mem::transmute(pair) }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Borrow, ops::Deref, sync::Arc};
+    use std::{borrow::Borrow, ops::Deref};
 
     use proptest::prelude::*;
 
-    use crate::{Blob, FlexRef, OwnedSlice};
+    use crate::{node::FlexRef, store::Blob, OwnedSlice};
 
     #[test]
     fn size() {
