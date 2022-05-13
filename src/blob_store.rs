@@ -10,13 +10,17 @@ pub trait BlobStoreError {}
 
 impl<T: From<anyhow::Error> + From<NoError>> BlobStoreError for T {}
 
+/// A generic blob store
 pub trait BlobStore: Debug + Send + Sync {
     type Error: From<NoError> + From<anyhow::Error>;
 
+    /// Read a blob with the given id / extra value
     fn read(&self, id: u64) -> std::result::Result<Blob, Self::Error>;
 
+    /// Write a blob, returning an id
     fn write(&self, data: &[u8]) -> std::result::Result<u64, Self::Error>;
 
+    /// Ensure all data is persisted
     fn sync(&self) -> std::result::Result<(), Self::Error>;
 }
 
@@ -38,28 +42,11 @@ impl BlobStore for DynBlobStore {
     }
 }
 
+/// A special store that does nothing, to be used with detached trees that don't use a store
 #[derive(Default, Debug, Clone)]
 pub struct NoStore;
 
-#[derive(Debug)]
-pub enum NoError {}
-
-impl From<NoError> for anyhow::Error {
-    fn from(_: NoError) -> Self {
-        panic!()
-    }
-}
-
-impl From<anyhow::Error> for NoError {
-    fn from(_: anyhow::Error) -> Self {
-        panic!()
-    }
-}
-
-pub fn unwrap_safe<T>(x: Result<T, NoError>) -> T {
-    x.unwrap()
-}
-
+/// The implementation of NoStore will panic whenever it is used
 impl BlobStore for NoStore {
     type Error = NoError;
 
@@ -76,31 +63,30 @@ impl BlobStore for NoStore {
     }
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct NoStoreDyn;
+/// An error type with zero inhabitants, similar to Infallible
+///
+/// When using this error, error handling code will not be generated.
+#[derive(Debug)]
+pub enum NoError {}
 
-impl NoStoreDyn {
-    pub fn new() -> DynBlobStore {
-        Arc::new(Self)
+impl From<NoError> for anyhow::Error {
+    fn from(_: NoError) -> Self {
+        panic!()
     }
 }
 
-impl BlobStore for NoStoreDyn {
-    type Error = anyhow::Error;
-
-    fn read(&self, _: u64) -> anyhow::Result<Blob> {
-        anyhow::bail!("no store");
-    }
-
-    fn write(&self, _: &[u8]) -> anyhow::Result<u64> {
-        anyhow::bail!("no store");
-    }
-
-    fn sync(&self) -> anyhow::Result<()> {
-        anyhow::bail!("no store");
+impl From<anyhow::Error> for NoError {
+    fn from(_: anyhow::Error) -> Self {
+        panic!()
     }
 }
 
+/// Unwrap an unfallible result
+pub fn unwrap_safe<T>(x: Result<T, NoError>) -> T {
+    x.unwrap()
+}
+
+/// A simple in memory store
 #[derive(Default, Clone)]
 pub struct MemStore {
     data: Arc<Mutex<BTreeMap<u64, Blob>>>,

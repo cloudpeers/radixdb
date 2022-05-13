@@ -1,8 +1,11 @@
 use std::{borrow::Borrow, ops::Deref, sync::Arc};
 
+/// A blob backed by a dynamic blob owner
 #[derive(Debug, Clone)]
 pub struct Blob {
+    /// The blob owner
     owner: Arc<dyn BlobOwner>,
+    /// Extra data to allow a single BlobOwner to hand out multiple Blob s. E.g. this could be an offset within a page of shared memory.
     extra: usize,
 }
 
@@ -23,11 +26,13 @@ impl Blob {
         self.owner.get_slice(self.extra)
     }
 
+    /// Create a blob from a slice. This will allocate an `Arc<Vec<u8>>`.
     pub fn from_slice(data: &[u8]) -> Self {
         let owner: Arc<dyn BlobOwner> = Arc::new(data.to_vec());
         Self { owner, extra: 0 }
     }
 
+    /// Create a new blob with a given BlobOwner and extra
     pub fn new(owner: Arc<dyn BlobOwner>, extra: usize) -> anyhow::Result<Self> {
         anyhow::ensure!(owner.is_valid(extra));
         owner.inc(extra);
@@ -55,26 +60,19 @@ impl Borrow<[u8]> for Blob {
     }
 }
 
+/// Trait for a blob owner
 pub trait BlobOwner: Send + Sync + std::fmt::Debug + 'static {
+    /// Called when a blob is being cloned
     fn inc(&self, _extra: usize) {}
+    /// Called when a blob is being dropped
     fn dec(&self, _extra: usize) {}
+    /// Given an extra, get a slice
     fn get_slice(&self, extra: usize) -> &[u8];
+    /// Check if an extra is valid for a blob owner
     fn is_valid(&self, extra: usize) -> bool;
 }
 
-#[derive(Debug)]
-struct EmptyOwner;
-
-impl BlobOwner for EmptyOwner {
-    fn get_slice(&self, _: usize) -> &[u8] {
-        &[]
-    }
-
-    fn is_valid(&self, _: usize) -> bool {
-        true
-    }
-}
-
+/// Implementation of BlobOwner for Vec<u8>, so an `Arc<Vec<u8>>` can be used as an Arc<dyn BlobOwner>
 impl BlobOwner for Vec<u8> {
     fn get_slice(&self, _: usize) -> &[u8] {
         self.as_ref()

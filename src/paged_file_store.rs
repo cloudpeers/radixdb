@@ -295,7 +295,7 @@ mod tests {
         info!("traversing attached tree values...");
         let t0 = Instant::now();
         let mut n = 0;
-        for item in tree.values(&store)? {
+        for item in tree.values(&store) {
             if item.is_err() {
                 info!("{:?}", item);
             }

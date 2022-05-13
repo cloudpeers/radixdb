@@ -69,7 +69,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     info!("traversing attached tree values...");
     let t0 = Instant::now();
     let mut n = 0;
-    for item in tree.try_values()? {
+    for item in tree.try_values() {
         if item.is_err() {
             info!("{:?}", item);
         }

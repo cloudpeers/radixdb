@@ -800,7 +800,7 @@ impl TreeNode {
     }
 
     /// iterate over all values - this is cheaper than iterating over elements, since it does not have to build the keys from fragments
-    pub fn values<'a, S: BlobStore>(&self, store: &'a S) -> Result<Values<'a, S>, S::Error> {
+    pub fn values<'a, S: BlobStore>(&self, store: &'a S) -> Values<'a, S> {
         Values::new(self.clone(), store)
     }
 
@@ -934,7 +934,7 @@ impl Tree {
     }
 
     pub fn prepend(&mut self, prefix: impl Into<TreePrefix>) {
-        unwrap_safe(self.node.prepend(prefix, &self.store));
+        unwrap_safe(self.try_prepend(prefix));
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
@@ -944,7 +944,7 @@ impl Tree {
 
     pub fn values(&self) -> impl Iterator<Item = TreeValue> + '_ {
         // all this unwrap is safe because we have a NoStore store, which does not ever fail
-        unwrap_safe(self.try_values()).map(unwrap_safe)
+        self.try_values().map(unwrap_safe)
     }
 
     pub fn group_by<'a>(
@@ -952,18 +952,18 @@ impl Tree {
         f: impl Fn(&[u8], &TreeNode) -> bool + 'a,
     ) -> impl Iterator<Item = Tree> + 'a {
         // all this unwrap is safe because we have a NoStore store, which does not ever fail
-        unwrap_safe(self.node.group_by(&self.store, f)).map(|r| Tree {
+        unwrap_safe(self.try_group_by(f)).map(|r| Tree {
             node: unwrap_safe(r),
             store: self.store.clone(),
         })
     }
 
     pub fn scan_prefix(&self, prefix: &[u8]) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
-        unwrap_safe(self.node.scan_prefix(&self.store, prefix)).map(unwrap_safe)
+        unwrap_safe(self.try_scan_prefix(prefix)).map(unwrap_safe)
     }
 
-    pub fn filter_prefix(&self, prefix: &[u8]) -> TreeNode {
-        unwrap_safe(self.node.filter_prefix(&self.store, prefix))
+    pub fn filter_prefix(&self, prefix: &[u8]) -> Tree {
+        unwrap_safe(self.try_filter_prefix(prefix))
     }
 
     pub fn first_value(&self) -> Option<TreeValue> {
@@ -1065,17 +1065,41 @@ impl Tree {
     }
 }
 
-impl<S: BlobStore> Tree<S> {
+impl<S: BlobStore + Clone> Tree<S> {
     pub fn is_empty(&self) -> bool {
         self.node.is_empty()
     }
 
-    pub fn try_values(&self) -> Result<Values<'_, S>, S::Error> {
+    pub fn try_prepend(&mut self, prefix: impl Into<TreePrefix>) -> Result<(), S::Error> {
+        self.node.prepend(prefix, &self.store)
+    }
+
+    pub fn try_values(&self) -> Values<'_, S> {
         self.node.values(&self.store)
     }
 
     pub fn try_iter(&self) -> Result<Iter<'_, S>, S::Error> {
         self.node.iter(&self.store)
+    }
+
+    pub fn try_group_by<'a, F: Fn(&[u8], &TreeNode) -> bool>(
+        &'a self,
+        descend: F,
+    ) -> Result<GroupBy<'a, S, F>, S::Error> {
+        self.node.group_by(&self.store, descend)
+    }
+
+    pub fn try_scan_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Iter<'a, S>, S::Error> {
+        self.node.scan_prefix(&self.store, prefix)
+    }
+
+    pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
+        self.node
+            .filter_prefix(&self.store, prefix)
+            .map(|node| Tree {
+                node,
+                store: self.store.clone(),
+            })
     }
 
     pub fn try_first_value(&self) -> Result<Option<TreeValue>, S::Error> {
@@ -2007,6 +2031,78 @@ impl core::ops::Deref for IterKey {
     }
 }
 
+pub struct Iter<'a, S> {
+    path: IterKey,
+    stack: Vec<(TreeNode, usize)>,
+    store: &'a S,
+}
+
+impl<'a, S: BlobStore> Iter<'a, S> {
+    fn empty(store: &'a S) -> Self {
+        Self {
+            stack: Vec::new(),
+            path: IterKey::new(&[]),
+            store,
+        }
+    }
+
+    fn new(tree: TreeNode, store: &'a S, prefix: IterKey) -> Self {
+        Self {
+            stack: vec![(tree, 0)],
+            path: prefix,
+            store,
+        }
+    }
+
+    fn tree(&self) -> &TreeNode {
+        &self.stack.last().unwrap().0
+    }
+
+    fn inc(&mut self) -> Option<usize> {
+        let pos = &mut self.stack.last_mut().unwrap().1;
+        let res = if *pos == 0 { None } else { Some(*pos - 1) };
+        *pos += 1;
+        res
+    }
+
+    fn next0(&mut self) -> Result<Option<(IterKey, TreeValue)>, S::Error> {
+        while !self.stack.is_empty() {
+            if let Some(pos) = self.inc() {
+                let children = self.tree().children.load(self.store)?;
+                if pos < children.len() {
+                    let child = children[pos].clone();
+                    let child_prefix = child.prefix.load(self.store)?;
+                    self.path.append(child_prefix.as_ref());
+                    self.stack.push((child, 0));
+                } else {
+                    let prefix = self.tree().prefix.load(self.store)?;
+                    self.path.pop(prefix.len());
+                    self.stack.pop();
+                }
+            } else if self.tree().value.is_some() {
+                return Ok(Some((self.path.clone(), self.tree().value.clone())));
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl<'a, S: BlobStore> Iterator for Iter<'a, S> {
+    type Item = Result<(IterKey, TreeValue), S::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next0() {
+            Ok(Some(x)) => Some(Ok(x)),
+            Ok(None) => None,
+            Err(cause) => {
+                // ensure that the next call to next will terminate
+                self.stack.clear();
+                Some(Err(cause))
+            }
+        }
+    }
+}
+
 /// An iterator over the values of a radix tree.
 ///
 /// This is more efficient than taking the value part of an entry iteration, because the keys
@@ -2017,11 +2113,11 @@ pub struct Values<'a, S> {
 }
 
 impl<'a, S: BlobStore> Values<'a, S> {
-    fn new(tree: TreeNode, store: &'a S) -> Result<Self, S::Error> {
-        Ok(Self {
+    fn new(tree: TreeNode, store: &'a S) -> Self {
+        Self {
             stack: vec![(OwnedSlice::from_slice(&[tree]), 0)],
             store,
-        })
+        }
     }
 
     fn inc(&mut self) -> usize {
@@ -2160,78 +2256,6 @@ impl<'a, S: BlobStore, F: Fn(&[u8], &TreeNode) -> bool> GroupBy<'a, S, F> {
 
 impl<'a, S: BlobStore, F: Fn(&[u8], &TreeNode) -> bool> Iterator for GroupBy<'a, S, F> {
     type Item = Result<TreeNode, S::Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.next0() {
-            Ok(Some(x)) => Some(Ok(x)),
-            Ok(None) => None,
-            Err(cause) => {
-                // ensure that the next call to next will terminate
-                self.stack.clear();
-                Some(Err(cause))
-            }
-        }
-    }
-}
-
-pub struct Iter<'a, S> {
-    path: IterKey,
-    stack: Vec<(TreeNode, usize)>,
-    store: &'a S,
-}
-
-impl<'a, S: BlobStore> Iter<'a, S> {
-    fn empty(store: &'a S) -> Self {
-        Self {
-            stack: Vec::new(),
-            path: IterKey::new(&[]),
-            store,
-        }
-    }
-
-    fn new(tree: TreeNode, store: &'a S, prefix: IterKey) -> Self {
-        Self {
-            stack: vec![(tree, 0)],
-            path: prefix,
-            store,
-        }
-    }
-
-    fn tree(&self) -> &TreeNode {
-        &self.stack.last().unwrap().0
-    }
-
-    fn inc(&mut self) -> Option<usize> {
-        let pos = &mut self.stack.last_mut().unwrap().1;
-        let res = if *pos == 0 { None } else { Some(*pos - 1) };
-        *pos += 1;
-        res
-    }
-
-    fn next0(&mut self) -> Result<Option<(IterKey, TreeValue)>, S::Error> {
-        while !self.stack.is_empty() {
-            if let Some(pos) = self.inc() {
-                let children = self.tree().children.load(self.store)?;
-                if pos < children.len() {
-                    let child = children[pos].clone();
-                    let child_prefix = child.prefix.load(self.store)?;
-                    self.path.append(child_prefix.as_ref());
-                    self.stack.push((child, 0));
-                } else {
-                    let prefix = self.tree().prefix.load(self.store)?;
-                    self.path.pop(prefix.len());
-                    self.stack.pop();
-                }
-            } else if self.tree().value.is_some() {
-                return Ok(Some((self.path.clone(), self.tree().value.clone())));
-            }
-        }
-        Ok(None)
-    }
-}
-
-impl<'a, S: BlobStore> Iterator for Iter<'a, S> {
-    type Item = Result<(IterKey, TreeValue), S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -2813,8 +2837,7 @@ mod tests {
             let reference = x;
             let tree = mk_owned_tree(&reference);
             let filtered = tree.filter_prefix(&prefix);
-            for r in filtered.iter(&NoStore).unwrap() {
-                let (k, v) = r.unwrap();
+            for (k, v) in filtered.iter() {
                 prop_assert!(k.as_ref().starts_with(&prefix));
                 let v = v.load(&NoStore).unwrap().unwrap();
                 let t = reference.get(k.as_ref()).unwrap();
@@ -3249,7 +3272,7 @@ mod tests {
     fn from_iter() {
         let elems: Vec<(&[u8], &[u8])> = vec![(b"a", b"b")];
         let tree: TreeNode = elems.into_iter().collect();
-        tree.dump_tree(&NoStoreDyn::new()).unwrap();
+        tree.dump_tree(&NoStore).unwrap();
     }
 
     #[test]

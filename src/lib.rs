@@ -12,7 +12,7 @@ mod paged_file_store;
 mod paged_file_store2;
 mod tree;
 pub use blob::{Blob, BlobOwner};
-pub use blob_store::{BlobStore, DynBlobStore, MemStore, NoStoreDyn, PagedMemStore};
+pub use blob_store::{BlobStore, DynBlobStore, MemStore, PagedMemStore};
 pub use flex_ref::FlexRef;
 pub use owned_slice::OwnedSlice;
 #[cfg(not(target_arch = "wasm32"))]

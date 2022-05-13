@@ -242,6 +242,29 @@ mod tests {
     use log::info;
     use proptest::prelude::*;
 
+    #[test]
+    fn miri_endianness() {
+        let x = FlexRef::<u64>::id_from_u64_and_extra(12345678, Some(9)).unwrap();
+        println!("{}", std::mem::size_of::<usize>());
+        println!("{}", Hex::new(x.bytes()));
+        assert_eq!(x.bytes(), &[5, 0, 0, 0, 188, 97, 78, 19]);
+
+        let x = FlexRef::<u64>::inline_from_slice(&[1, 2, 3, 4, 5]).unwrap();
+        println!("{}", std::mem::size_of::<usize>());
+        println!("{}", Hex::new(x.bytes()));
+        assert_eq!(x.bytes(), &[1, 1, 2, 3, 4, 5, 0, 11]);
+
+        let x = FlexRef::<u64>::inline_empty_array();
+        println!("{}", std::mem::size_of::<usize>());
+        println!("{}", Hex::new(x.bytes()));
+        assert_eq!(x.bytes(), &[1, 0, 0, 0, 0, 0, 0, 1]);
+
+        let x = FlexRef::<u64>::none();
+        println!("{}", std::mem::size_of::<usize>());
+        println!("{}", Hex::new(x.bytes()));
+        assert_eq!(x.bytes(), &[255, 255, 255, 255, 255, 255, 255, 255]);
+    }
+
     proptest! {
 
         #[test]
