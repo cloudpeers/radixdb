@@ -19,24 +19,20 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    for _ in 0..100 {
-        let t0 = Instant::now();
-        info!("building tree");
-        let tree: Tree = elems.clone().into_iter().collect();
-        info!(
-            "unattached tree {:?} {} s",
-            tree,
-            t0.elapsed().as_secs_f64()
-        );
-    }
-
-    return Ok(());
-
-    let x = elems.clone();
     let t0 = Instant::now();
-    info!("building tree reference");
-    let _: BTreeMap<_, _> = x.into_iter().collect();
-    info!("BTreeMap {} s", t0.elapsed().as_secs_f64());
+    info!("building tree");
+    let tree: Tree = elems.clone().into_iter().collect();
+    info!(
+        "unattached tree {:?} {} s",
+        tree,
+        t0.elapsed().as_secs_f64()
+    );
+
+    // let x = elems.clone();
+    // let t0 = Instant::now();
+    // info!("building tree reference");
+    // let _: BTreeMap<_, _> = x.into_iter().collect();
+    // info!("BTreeMap {} s", t0.elapsed().as_secs_f64());
     // info!("traversing unattached tree...");
     // let t0 = Instant::now();
     // let mut n = 0;
@@ -45,14 +41,36 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     // }
     // info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
 
-    info!("traversing elements...");
-    let tree: Tree = elems.clone().into_iter().collect();
+    // info!("traversing elements...");
+    // let tree: Tree = elems.clone().into_iter().collect();
+    // let t0 = Instant::now();
+    // let mut n = 0;
+    // for _ in elems.iter() {
+    //     n += 1;
+    // }
+    // info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+
+    info!("getting all elements ref");
     let t0 = Instant::now();
     let mut n = 0;
-    for _ in elems.iter() {
-        n += 1;
+    for key in elems.keys() {
+        if elems.get(key).is_some() {
+            n += 1;
+        }
     }
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+
+    for _ in 0..100 {
+        info!("getting all elements");
+        let t0 = Instant::now();
+        let mut n = 0;
+        for key in elems.keys() {
+            if tree.get(key.as_ref()).is_some() {
+                n += 1;
+            }
+        }
+        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    }
 
     for _ in 0..1 {
         info!("traversing unattached tree values...");

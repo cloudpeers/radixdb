@@ -85,6 +85,14 @@ impl<T> FlexRef<T> {
         Self(from_ptr(addr), PhantomData)
     }
 
+    pub const fn inline_len(&self) -> Option<usize> {
+        if self.is_inline() {
+            Some(extra_byte(self.0) as usize)
+        } else {
+            None
+        }
+    }
+
     pub fn inline_as_ref(&self) -> Option<&[u8]> {
         if self.is_inline() {
             let len = extra_byte(self.0) as usize;
@@ -190,6 +198,23 @@ impl<T> FlexRef<T> {
 }
 
 impl FlexRef<Vec<u8>> {
+    /// gets the optional first byte
+    pub fn first_byte_opt(&self) -> Option<u8> {
+        if let Some(len) = self.inline_len() {
+            if len > 0 {
+                Some(self.bytes()[1])
+            } else {
+                None
+            }
+        } else if let Some(arc) = self.owned_arc_ref() {
+            arc.get(0).cloned()
+        } else if let Some(extra) = self.id_extra() {
+            extra
+        } else {
+            None
+        }
+    }
+
     pub fn inline_or_owned_from_slice(value: &[u8]) -> Self {
         if let Some(res) = FlexRef::inline_from_slice(value) {
             res
@@ -223,7 +248,6 @@ impl<T> Drop for FlexRef<T> {
         }
     }
 }
-
 
 /// Mask for "special" values. No pointer will ever have these bits set at the same time.
 ///

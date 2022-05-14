@@ -5,7 +5,6 @@ pub use flex_ref::FlexRef;
 pub use owned_slice::OwnedSlice;
 pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};
 
-
 fn slice_cast<T, U>(value: &[T]) -> anyhow::Result<&[U]> {
     let (ptr, size) = unsafe { std::mem::transmute(value) };
     let (ptr, size) = slice_cast_raw::<T, U>(ptr, size)?;

@@ -2,9 +2,7 @@ use fnv::FnvHashMap;
 use memmap::{Mmap, MmapMut, MmapOptions};
 use parking_lot::Mutex;
 
-use crate::{
-    store::{Blob, BlobOwner, BlobStore},
-};
+use crate::store::{Blob, BlobOwner, BlobStore};
 use std::{
     fmt::Debug,
     fs::File,

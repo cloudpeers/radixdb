@@ -261,15 +261,7 @@ impl TreePrefix {
     }
 
     fn first_opt(&self) -> Option<u8> {
-        if let Some(data) = self.0.inline_as_ref() {
-            data.get(0).cloned()
-        } else if let Some(arc) = self.0.owned_arc_ref() {
-            arc.get(0).cloned()
-        } else if let Some(first) = self.0.id_extra() {
-            first
-        } else {
-            None
-        }
+        self.0.first_byte_opt()
     }
 
     fn make_mut<S: BlobStore>(&mut self, store: &S) -> Result<&mut Vec<u8>, S::Error> {
