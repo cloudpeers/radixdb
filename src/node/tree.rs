@@ -602,35 +602,6 @@ impl TreeNode {
         })
     }
 
-    fn insert<S: BlobStore>(
-        &mut self,
-        store: &S,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), S::Error> {
-        *self = outer_combine(
-            TTI::<S, NoStore, S::Error>::new(),
-            self,
-            store,
-            &TreeNode::single(key, value),
-            &NoStore,
-            |_, b| Ok(b),
-        )?;
-        Ok(())
-    }
-
-    fn remove<S: BlobStore>(&mut self, store: &S, key: &[u8]) -> Result<(), S::Error> {
-        *self = left_combine(
-            TTI::<S, NoStore, S::Error>::new(),
-            self,
-            store,
-            &TreeNode::single(key, [].as_ref()),
-            &NoStore,
-            |_, _| Ok(TreeValue::none()),
-        )?;
-        Ok(())
-    }
-
     /// An iterator for all pairs with a certain prefix
     fn scan_prefix<'a, S: BlobStore>(
         &self,
