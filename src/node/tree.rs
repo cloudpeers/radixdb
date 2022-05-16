@@ -1062,7 +1062,7 @@ impl Tree {
         unwrap_safe(self.try_left_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 
-    pub fn left_combine_with(&mut self, that: &Tree, f: impl Fn(&mut TreeValue, TreeValue) + Copy) {
+    pub fn left_combine_with(&mut self, that: &Tree, f: impl Fn(&mut TreeValue, &TreeValue) + Copy) {
         unwrap_safe(self.try_left_combine_with::<NoStore, NoError, _, _>(
             that,
             NoStoreConverter,
@@ -1073,7 +1073,7 @@ impl Tree {
     pub fn left_combine_pred(
         &self,
         that: &Tree,
-        f: impl Fn(TreeValue, TreeValue) -> bool + Copy,
+        f: impl Fn(&TreeValue, &TreeValue) -> bool + Copy,
     ) -> bool {
         unwrap_safe(self.try_left_combine_pred::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
@@ -1299,7 +1299,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(&mut TreeValue<S>, TreeValue<S2>) -> Result<(), E> + Copy,
+        F: Fn(&mut TreeValue<S>, &TreeValue<S2>) -> Result<(), E> + Copy,
         C: NodeConverter<S2, S>,
     {
         left_combine_with(
@@ -1318,7 +1318,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(TreeValue<S>, TreeValue<S2>) -> Result<bool, E> + Copy,
+        F: Fn(&TreeValue<S>, &TreeValue<S2>) -> Result<bool, E> + Copy,
     {
         Ok(left_combine_pred(
             TTI::<S, S2, E>::default(),
@@ -1633,8 +1633,6 @@ fn inner_combine<T: TT>(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let av = || a.value.detached(ab);
-    let bv = || b.value.detached(bb);
     let prefix;
     let children;
     let value;
@@ -1758,8 +1756,6 @@ fn inner_combine_pred<T: TT>(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let av = || a.value.detached(ab);
-    let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         if !a.value.is_none() && !b.value.is_none() {
             if f(&a.value, &b.value)? {
@@ -1800,7 +1796,6 @@ pub fn left_combine<T: TT>(
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
     let av = || a.value.detached(ab);
-    let bv = || b.value.detached(bb);
     let prefix;
     let children;
     let value;
@@ -1861,7 +1856,7 @@ fn left_combine_with<T: TT>(
     b: &TreeNode<T::BB>,
     bb: &T::BB,
     c: T::NC,
-    f: impl Fn(&mut TreeValue<T::AB>, TreeValue<T::BB>) -> Result<(), T::E> + Copy,
+    f: impl Fn(&mut TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<(), T::E> + Copy,
 ) -> Result<(), T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1871,7 +1866,7 @@ fn left_combine_with<T: TT>(
         // prefixes are identical
         if b.value.is_some() && a.value.is_some() {
             a.value.detach(ab)?;
-            f(&mut a.value, b.value.clone())?;
+            f(&mut a.value, &b.value)?;
         }
         let ac = a.children.get_mut(ab)?;
         let bc = b.children.load(bb)?;
@@ -2007,19 +2002,17 @@ fn left_combine_pred<T: TT>(
     ab: &T::AB,
     b: &TreeNode<T::BB>,
     bb: &T::BB,
-    f: impl Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
+    f: impl Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
 ) -> Result<bool, T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let av = || a.value.detached(ab);
-    let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         if a.value.is_some() {
             if b.value.is_some() {
                 // ask the predicate
-                if f(a.value.clone(), b.value.clone())? {
+                if f(&a.value, &b.value)? {
                     return Ok(true);
                 }
             } else {
@@ -2529,7 +2522,7 @@ where
 
 impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for LeftCombineOp<F>
 where
-    F: Fn(&mut TreeValue<T::AB>, TreeValue<T::BB>) -> Result<(), T::E> + Copy,
+    F: Fn(&mut TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<(), T::E> + Copy,
     T: TT,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
@@ -2561,7 +2554,7 @@ where
 impl<'a, T, F> MergeOperation<BoolOpMergeState<'a, T>> for LeftCombineOp<F>
 where
     T: TT,
-    F: Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
+    F: Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
