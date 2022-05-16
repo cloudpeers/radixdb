@@ -18,6 +18,12 @@ use super::*;
 #[repr(transparent)]
 pub struct TreeValue<S: BlobStore = NoStore>(FlexRef<Vec<u8>>, PhantomData<S>);
 
+impl TreeValue {
+    pub fn downcast<S: BlobStore>(&self) -> TreeValue<S> {
+        TreeValue(self.0.clone(), PhantomData)
+    }
+}
+
 impl<S: BlobStore> Clone for TreeValue<S> {
     fn clone(&self) -> Self {
         Self(self.0.clone(), PhantomData)
@@ -146,6 +152,12 @@ impl<S: BlobStore> Default for TreeValue<S> {
 /// A tree prefix is a blob, that is stored either inline, on the heap, or as an id
 #[repr(transparent)]
 pub struct TreePrefix<S: BlobStore = NoStore>(FlexRef<Vec<u8>>, PhantomData<S>);
+
+impl TreePrefix {
+    pub fn downcast<S: BlobStore>(&self) -> TreePrefix<S> {
+        TreePrefix(self.0.clone(), PhantomData)
+    }
+}
 
 impl<S: BlobStore> Clone for TreePrefix<S> {
     fn clone(&self) -> Self {
@@ -328,6 +340,12 @@ impl<S: BlobStore> Default for TreePrefix<S> {
 #[repr(transparent)]
 pub struct TreeChildren<S: BlobStore = NoStore>(FlexRef<Vec<TreeNode<S>>>);
 
+impl TreeChildren {
+    pub fn downcast<S: BlobStore>(&self) -> TreeChildren<S> {
+        TreeChildren(unsafe { std::mem::transmute(self.0.clone()) })
+    }
+}
+
 impl<S: BlobStore> Clone for TreeChildren<S> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -497,6 +515,16 @@ impl<S: BlobStore> Clone for TreeNode<S> {
             prefix: self.prefix.clone(),
             value: self.value.clone(),
             children: self.children.clone(),
+        }
+    }
+}
+
+impl TreeNode {
+    pub fn downcast<S: BlobStore>(&self) -> TreeNode<S> {
+        TreeNode {
+            prefix: self.prefix.downcast(),
+            value: self.value.downcast(),
+            children: self.children.downcast(),
         }
     }
 }

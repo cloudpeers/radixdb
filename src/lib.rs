@@ -41,12 +41,10 @@ impl<'a> std::fmt::Display for Hex<'a> {
 
 pub trait NodeConverter<A: BlobStore, B: BlobStore>: Copy {
     fn convert_node(&self, node: &TreeNode<A>, store: &A) -> Result<TreeNode<B>, A::Error> {
-        let node = node.detached(store)?;
-        Ok(unsafe { std::mem::transmute(node) })
+        Ok(node.detached(store)?.downcast())
     }
     fn convert_value(&self, value: &TreeValue<A>, store: &A) -> Result<TreeValue<B>, A::Error> {
-        let value = value.detached(store)?;
-        Ok(unsafe { std::mem::transmute(value) })
+        Ok(value.detached(store)?.downcast())
     }
     fn convert_node_shortened(
         &self,
