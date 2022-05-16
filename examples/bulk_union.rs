@@ -34,7 +34,7 @@ fn do_test() -> anyhow::Result<()> {
     for _ in 0..100 {
         let mut res = tree0.clone();
         let t0 = Instant::now();
-        res.outer_combine_with(&tree1, |a, b| *a = b);
+        res.outer_combine_with(&tree1, |a, b| *a = b.clone());
         info!("bulk union {} {} {} s", n1, n2, t0.elapsed().as_secs_f64());
     }
 

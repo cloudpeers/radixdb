@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
     merge_state::{
-        BoolOpMergeState, DetachConverter, DummyConverter, InPlaceVecMergeStateRef, MergeStateMut,
-        NoConverter, VecMergeState, TT, TTI,
+        BoolOpMergeState, DetachConverter, NoConverter, InPlaceVecMergeStateRef, MergeStateMut,
+        NoStoreConverter, VecMergeState, TT, TTI,
     },
     node::FlexRef,
     store::{unwrap_safe, BlobStore, NoError, NoStore},
@@ -1009,7 +1009,7 @@ impl Tree {
     pub fn outer_combine(
         &self,
         that: &Tree,
-        f: impl Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+        f: impl Fn(&TreeValue, &TreeValue) -> TreeValue + Copy,
     ) -> Tree {
         unwrap_safe(self.try_outer_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
@@ -1017,11 +1017,11 @@ impl Tree {
     pub fn outer_combine_with(
         &mut self,
         that: &Tree,
-        f: impl Fn(&mut TreeValue, TreeValue) + Copy,
+        f: impl Fn(&mut TreeValue, &TreeValue) + Copy,
     ) {
         unwrap_safe(self.try_outer_combine_with::<NoStore, NoError, _, _>(
             that,
-            NoConverter,
+            NoStoreConverter,
             |a, b| Ok(f(a, b)),
         ))
     }
@@ -1029,7 +1029,7 @@ impl Tree {
     pub fn inner_combine(
         &self,
         that: &Tree,
-        f: impl Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+        f: impl Fn(&TreeValue, &TreeValue) -> TreeValue + Copy,
     ) -> Tree {
         unwrap_safe(self.try_inner_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
@@ -1037,11 +1037,11 @@ impl Tree {
     pub fn inner_combine_with(
         &mut self,
         that: &Tree,
-        f: impl Fn(&mut TreeValue, TreeValue) + Copy,
+        f: impl Fn(&mut TreeValue, &TreeValue) + Copy,
     ) {
         unwrap_safe(self.try_inner_combine_with::<NoStore, NoError, _, _>(
             that,
-            NoConverter,
+            NoStoreConverter,
             |a, b| Ok(f(a, b)),
         ))
     }
@@ -1049,7 +1049,7 @@ impl Tree {
     pub fn inner_combine_pred(
         &self,
         that: &Tree,
-        f: impl Fn(TreeValue, TreeValue) -> bool + Copy,
+        f: impl Fn(&TreeValue, &TreeValue) -> bool + Copy,
     ) -> bool {
         unwrap_safe(self.try_inner_combine_pred::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
@@ -1057,7 +1057,7 @@ impl Tree {
     pub fn left_combine(
         &self,
         that: &Tree,
-        f: impl Fn(TreeValue, TreeValue) -> TreeValue + Copy,
+        f: impl Fn(&TreeValue, &TreeValue) -> TreeValue + Copy,
     ) -> Tree {
         unwrap_safe(self.try_left_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
@@ -1065,7 +1065,7 @@ impl Tree {
     pub fn left_combine_with(&mut self, that: &Tree, f: impl Fn(&mut TreeValue, TreeValue) + Copy) {
         unwrap_safe(self.try_left_combine_with::<NoStore, NoError, _, _>(
             that,
-            NoConverter,
+            NoStoreConverter,
             |a, b| Ok(f(a, b)),
         ))
     }
@@ -1080,13 +1080,13 @@ impl Tree {
 
     pub fn retain_prefix_with(&mut self, that: &Tree, f: impl Fn(TreeValue) -> bool + Copy) {
         unwrap_safe(
-            self.try_retain_prefix_with::<NoStore, NoError, _, _>(that, NoConverter, |b| Ok(f(b))),
+            self.try_retain_prefix_with::<NoStore, NoError, _, _>(that, NoStoreConverter, |b| Ok(f(b))),
         )
     }
 
     pub fn remove_prefix_with(&mut self, that: &Tree, f: impl Fn(TreeValue) -> bool + Copy) {
         unwrap_safe(
-            self.try_remove_prefix_with::<NoStore, NoError, _, _>(that, NoConverter, |b| Ok(f(b))),
+            self.try_remove_prefix_with::<NoStore, NoError, _, _>(that, NoStoreConverter, |b| Ok(f(b))),
         )
     }
 }
@@ -1166,10 +1166,10 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(TreeValue<S>, TreeValue<S2>) -> Result<TreeValue, E> + Copy,
+        F: Fn(&TreeValue<S>, &TreeValue<S2>) -> Result<TreeValue, E> + Copy,
     {
         let node = outer_combine(
-            TTI::<S, S2, E, DummyConverter>::default(),
+            TTI::<S, S2, E>::default(),
             &self.node,
             &self.store,
             &that.node,
@@ -1192,7 +1192,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(&mut TreeValue<S>, TreeValue<S2>) -> Result<(), E> + Copy,
+        F: Fn(&mut TreeValue<S>, &TreeValue<S2>) -> Result<(), E> + Copy,
         C: NodeConverter<S2, S>,
     {
         outer_combine_with(
@@ -1211,10 +1211,10 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(TreeValue<S>, TreeValue<S2>) -> Result<TreeValue, E> + Copy,
+        F: Fn(&TreeValue<S>, &TreeValue<S2>) -> Result<TreeValue, E> + Copy,
     {
         let node = inner_combine(
-            TTI::<S, S2, E, DummyConverter>::default(),
+            TTI::<S, S2, E>::default(),
             &self.node,
             &self.store,
             &that.node,
@@ -1237,7 +1237,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(&mut TreeValue<S>, TreeValue<S2>) -> Result<(), E> + Copy,
+        F: Fn(&mut TreeValue<S>, &TreeValue<S2>) -> Result<(), E> + Copy,
         C: NodeConverter<S2, S>,
     {
         inner_combine_with(
@@ -1256,10 +1256,10 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(TreeValue<S>, TreeValue<S2>) -> Result<bool, E> + Copy,
+        F: Fn(&TreeValue<S>, &TreeValue<S2>) -> Result<bool, E> + Copy,
     {
         inner_combine_pred(
-            TTI::<S, S2, E, DummyConverter>::default(),
+            TTI::<S, S2, E>::default(),
             &self.node,
             &self.store,
             &that.node,
@@ -1273,10 +1273,10 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(TreeValue<S>, TreeValue<S2>) -> Result<TreeValue, E> + Copy,
+        F: Fn(&TreeValue<S>, &TreeValue<S2>) -> Result<TreeValue, E> + Copy,
     {
         let node = left_combine(
-            TTI::<S, S2, E, DummyConverter>::default(),
+            TTI::<S, S2, E>::default(),
             &self.node,
             &self.store,
             &that.node,
@@ -1321,7 +1321,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         F: Fn(TreeValue<S>, TreeValue<S2>) -> Result<bool, E> + Copy,
     {
         Ok(left_combine_pred(
-            TTI::<S, S2, E, DummyConverter>::default(),
+            TTI::<S, S2, E>::default(),
             &self.node,
             &self.store,
             &that.node,
@@ -1390,7 +1390,7 @@ impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut tree = Tree::empty();
         for (k, v) in iter.into_iter() {
-            tree.outer_combine_with(&Tree::single(k, v), |a, b| *a = b);
+            tree.outer_combine_with(&Tree::single(k, v), |a, b| *a = b.clone());
         }
         tree
     }
@@ -1479,7 +1479,7 @@ fn outer_combine<T: TT>(
     ab: &T::AB,
     b: &TreeNode<T::BB>,
     bb: &T::BB,
-    f: impl Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
+    f: impl Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
 ) -> Result<TreeNode, T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1505,7 +1505,7 @@ fn outer_combine<T: TT>(
                 av()?
             } else {
                 // call the combine fn
-                f(a.value.clone(), b.value.clone())?
+                f(&a.value, &b.value)?
             }
         };
         children = VecMergeState::<T>::merge(
@@ -1568,7 +1568,7 @@ fn outer_combine_with<T: TT>(
     b: &TreeNode<T::BB>,
     bb: &T::BB,
     c: T::NC,
-    f: impl Fn(&mut TreeValue<T::AB>, TreeValue<T::BB>) -> Result<(), T::E> + Copy,
+    f: impl Fn(&mut TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<(), T::E> + Copy,
 ) -> Result<(), T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1579,7 +1579,7 @@ fn outer_combine_with<T: TT>(
         if b.value.is_some() {
             if a.value.is_some() {
                 a.value.detach(ab)?;
-                f(&mut a.value, b.value.clone())?;
+                f(&mut a.value, &b.value)?;
             } else {
                 a.value = c.convert_value(&b.value, bb)?;
             }
@@ -1601,7 +1601,7 @@ fn outer_combine_with<T: TT>(
         if b.value.is_some() {
             if a.value.is_some() {
                 a.value.detach(ab)?;
-                f(&mut a.value, b.value.clone())?;
+                f(&mut a.value, &b.value)?;
             } else {
                 a.value = c.convert_value(&b.value, bb)?;
             }
@@ -1628,7 +1628,7 @@ fn inner_combine<T: TT>(
     ab: &T::AB,
     b: &TreeNode<T::BB>,
     bb: &T::BB,
-    f: impl Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
+    f: impl Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
 ) -> Result<TreeNode, T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1643,7 +1643,7 @@ fn inner_combine<T: TT>(
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = if !a.value.is_none() && !b.value.is_none() {
             // call the combine fn
-            f(a.value.clone(), b.value.clone())?
+            f(&a.value, &b.value)?
         } else {
             // any none - none
             TreeValue::none()
@@ -1705,7 +1705,7 @@ fn inner_combine_with<T: TT>(
     b: &TreeNode<T::BB>,
     bb: &T::BB,
     c: T::NC,
-    f: impl Fn(&mut TreeValue<T::AB>, TreeValue<T::BB>) -> Result<(), T::E> + Copy,
+    f: impl Fn(&mut TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<(), T::E> + Copy,
 ) -> Result<(), T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1715,7 +1715,7 @@ fn inner_combine_with<T: TT>(
         // prefixes are identical
         if b.value.is_some() && a.value.is_some() {
             a.value.detach(ab)?;
-            f(&mut a.value, b.value.clone())?;
+            f(&mut a.value, &b.value)?;
         } else {
             a.value = TreeValue::none();
         }
@@ -1753,7 +1753,7 @@ fn inner_combine_pred<T: TT>(
     ab: &T::AB,
     b: &TreeNode<T::BB>,
     bb: &T::BB,
-    f: impl Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
+    f: impl Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
 ) -> Result<bool, T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1762,7 +1762,7 @@ fn inner_combine_pred<T: TT>(
     let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         if !a.value.is_none() && !b.value.is_none() {
-            if f(a.value.clone(), b.value.clone())? {
+            if f(&a.value, &b.value)? {
                 return Ok(true);
             }
         }
@@ -1794,7 +1794,7 @@ pub fn left_combine<T: TT>(
     ab: &T::AB,
     b: &TreeNode<T::BB>,
     bb: &T::BB,
-    f: impl Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
+    f: impl Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
 ) -> Result<TreeNode, T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1810,7 +1810,7 @@ pub fn left_combine<T: TT>(
         value = if !a.value.is_none() {
             if !b.value.is_none() {
                 // call the combine fn
-                f(a.value.clone(), b.value.clone())?
+                f(&a.value, &b.value)?
             } else {
                 av()?
             }
@@ -2338,7 +2338,7 @@ struct OuterCombineOp<F> {
 
 impl<'a, T, F> MergeOperation<VecMergeState<'a, T>> for OuterCombineOp<F>
 where
-    F: Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
+    F: Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
     T: TT,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
@@ -2368,7 +2368,7 @@ where
 
 impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for OuterCombineOp<F>
 where
-    F: Fn(&mut TreeValue<T::AB>, TreeValue<T::BB>) -> Result<(), T::E> + Copy,
+    F: Fn(&mut TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<(), T::E> + Copy,
     T: TT,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
@@ -2404,7 +2404,7 @@ struct InnerCombineOp<F> {
 impl<'a, T, F> MergeOperation<VecMergeState<'a, T>> for InnerCombineOp<F>
 where
     T: TT,
-    F: Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
+    F: Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
@@ -2433,7 +2433,7 @@ where
 
 impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for InnerCombineOp<F>
 where
-    F: Fn(&mut TreeValue<T::AB>, TreeValue<T::BB>) -> Result<(), T::E> + Copy,
+    F: Fn(&mut TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<(), T::E> + Copy,
     T: TT,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
@@ -2465,7 +2465,7 @@ where
 impl<'a, T, F> MergeOperation<BoolOpMergeState<'a, T>> for InnerCombineOp<F>
 where
     T: TT,
-    F: Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
+    F: Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
@@ -2500,7 +2500,7 @@ struct LeftCombineOp<F> {
 impl<'a, T, F> MergeOperation<VecMergeState<'a, T>> for LeftCombineOp<F>
 where
     T: TT,
-    F: Fn(TreeValue<T::AB>, TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
+    F: Fn(&TreeValue<T::AB>, &TreeValue<T::BB>) -> Result<TreeValue, T::E> + Copy,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
         a.prefix.first_opt().cmp(&b.prefix.first_opt())
@@ -2717,7 +2717,7 @@ mod tests {
                         }
                     })
                     .fold(TreeNode::empty(), |a, b| {
-                        outer_combine(NoStoreT, &a, &NoStore, &b, &NoStore, |_, b| Ok(b)).unwrap()
+                        outer_combine(NoStoreT, &a, &NoStore, &b, &NoStore, |_, b| Ok(b.clone())).unwrap()
                     }),
             }
         }
@@ -2922,7 +2922,7 @@ mod tests {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
             // check right biased union
-            let rbut = at.outer_combine(&bt, |_, b| b);
+            let rbut = at.outer_combine(&bt, |_, b| b.clone());
             let rbu = to_btree_map(&rbut);
             let mut rbu_reference = a.clone();
             for (k, v) in b.clone() {
@@ -2930,7 +2930,7 @@ mod tests {
             }
             prop_assert_eq!(rbu, rbu_reference);
             // check left biased union
-            let lbut = at.outer_combine(&bt, |a, _| a);
+            let lbut = at.outer_combine(&bt, |a, _| a.clone());
             let lbu = to_btree_map(&lbut);
             let mut lbu_reference = b.clone();
             for (k, v) in a.clone() {
@@ -2941,22 +2941,22 @@ mod tests {
 
         #[test]
         fn union_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
-            let r = a.outer_combine(&b, |a, _| a);
+            let r = a.outer_combine(&b, |a, _| a.clone());
             prop_assert!(binary_element_test(&a, &b, r, |a, b| a.or(b)));
 
-            let r = a.outer_combine(&b, |_, b| b);
+            let r = a.outer_combine(&b, |_, b| b.clone());
             prop_assert!(binary_element_test(&a, &b, r, |a, b| b.or(a)));
         }
 
         #[test]
         fn union_with(a in arb_owned_tree(), b in arb_owned_tree()) {
             // check right biased union
-            let r1 = a.outer_combine(&b, |_, b| b);
+            let r1 = a.outer_combine(&b, |_, b| b.clone());
             let mut r2 = a.clone();
-            r2.outer_combine_with(&b, |a, b| *a = b);
+            r2.outer_combine_with(&b, |a, b| *a = b.clone());
             prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
             // check left biased union
-            let r1 = a.outer_combine(&b, |a, _| a);
+            let r1 = a.outer_combine(&b, |a, _| a.clone());
             let mut r2 = a.clone();
             r2.outer_combine_with(&b, |_, _| {});
             prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
@@ -2967,13 +2967,13 @@ mod tests {
             let at = mk_owned_tree(&a);
             let bt = mk_owned_tree(&b);
             // check right biased intersection
-            let rbut = at.inner_combine(&bt, |_, b| b);
+            let rbut = at.inner_combine(&bt, |_, b| b.clone());
             let rbu = to_btree_map(&rbut);
             let mut rbu_reference = b.clone();
             rbu_reference.retain(|k, _| a.contains_key(k));
             prop_assert_eq!(rbu, rbu_reference);
             // check left biased intersection
-            let lbut = at.inner_combine(&bt, |a, _| a);
+            let lbut = at.inner_combine(&bt, |a, _| a.clone());
             let lbu = to_btree_map(&lbut);
             let mut lbu_reference = a.clone();
             lbu_reference.retain(|k, _| b.contains_key(k));
@@ -2982,22 +2982,22 @@ mod tests {
 
         #[test]
         fn intersection_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
-            let r = a.inner_combine(&b, |a, _| a);
+            let r = a.inner_combine(&b, |a, _| a.clone());
             prop_assert!(binary_element_test(&a, &b, r, |a, b| b.and_then(|_| a)));
 
-            let r = a.inner_combine(&b, |_, b| b);
+            let r = a.inner_combine(&b, |_, b| b.clone());
             prop_assert!(binary_element_test(&a, &b, r, |a, b| a.and_then(|_| b)));
         }
 
         #[test]
         fn intersection_with(a in arb_owned_tree(), b in arb_owned_tree()) {
             // right biased intersection
-            let r1 = a.inner_combine(&b, |_, b| b);
+            let r1 = a.inner_combine(&b, |_, b| b.clone());
             let mut r2 = a.clone();
-            r2.inner_combine_with(&b, |a, b| *a = b);
+            r2.inner_combine_with(&b, |a, b| *a = b.clone());
             prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
             // left biased intersection
-            let r1 = a.inner_combine(&b, |a, _| a);
+            let r1 = a.inner_combine(&b, |a, _| a.clone());
             let mut r2 = a.clone();
             r2.inner_combine_with(&b, |_, _| {});
             prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
@@ -3104,10 +3104,10 @@ mod tests {
 
         #[test]
         fn difference_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
-            let r = a.left_combine(&b, |a, _| a);
+            let r = a.left_combine(&b, |a, _| a.clone());
             prop_assert!(binary_element_test(&a, &b, r, |a, _| a));
 
-            let r = a.left_combine(&b, |_, b| b);
+            let r = a.left_combine(&b, |_, b| b.clone());
             let right = |a: Option<Vec<u8>>, b: Option<Vec<u8>>| {
                 if a.is_some() && b.is_some() { b } else { a }
             };
@@ -3116,7 +3116,7 @@ mod tests {
 
         #[test]
         fn difference_with(a in arb_owned_tree(), b in arb_owned_tree()) {
-            let r1 = a.left_combine(&b, |a, _| a);
+            let r1 = a.left_combine(&b, |a, _| a.clone());
             let mut r2 = a.clone();
             r2.left_combine_with(&b, |_, _| {});
             prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
@@ -3212,7 +3212,7 @@ mod tests {
         let b = btreemap! { vec![1, 2] => vec![] };
         let at = mk_owned_tree(&a);
         let bt = mk_owned_tree(&b);
-        let rt = at.left_combine(&bt, |a, _| a);
+        let rt = at.left_combine(&bt, |a, _| a.clone());
         let r = to_btree_map(&rt);
         assert_eq!(r, btreemap! { vec![1] => vec![] });
     }
@@ -3223,7 +3223,7 @@ mod tests {
         let b = btreemap! { vec![1] => vec![], vec![2] => vec![] };
         let at = mk_owned_tree(&a);
         let bt = mk_owned_tree(&b);
-        let rt = at.left_combine(&bt, |_, b| b);
+        let rt = at.left_combine(&bt, |_, b| b.clone());
         let r = to_btree_map(&rt);
         assert_eq!(r, btreemap! { vec![] => vec![] });
     }
@@ -3234,7 +3234,7 @@ mod tests {
         let b = btreemap! { vec![1, 2] => vec![], vec![2] => vec![] };
         let mut at = mk_owned_tree(&a);
         let bt = mk_owned_tree(&b);
-        at.outer_combine_with(&bt, |a, b| *a = b);
+        at.outer_combine_with(&bt, |a, b| *a = b.clone());
         let rbu = to_btree_map(&at);
         let mut rbu_reference = a.clone();
         for (k, v) in b.clone() {
@@ -3249,7 +3249,7 @@ mod tests {
         let b = btreemap! { vec![] => vec![0] };
         let mut at = mk_owned_tree(&a);
         let bt = mk_owned_tree(&b);
-        at.outer_combine_with(&bt, |a, b| *a = b);
+        at.outer_combine_with(&bt, |a, b| *a = b.clone());
         let rbu = to_btree_map(&at);
         let mut rbu_reference = a.clone();
         for (k, v) in b.clone() {
@@ -3264,7 +3264,7 @@ mod tests {
         let b = btreemap! { vec![] => vec![], vec![1] => vec![] };
         let mut at = mk_owned_tree(&a);
         let bt = mk_owned_tree(&b);
-        at.outer_combine_with(&bt, |a, b| *a = b);
+        at.outer_combine_with(&bt, |a, b| *a = b.clone());
         let rbu = to_btree_map(&at);
         let mut rbu_reference = a.clone();
         for (k, v) in b.clone() {
@@ -3279,7 +3279,7 @@ mod tests {
         let b = btreemap! { vec![1] => vec![], vec![2] => vec![] };
         let mut at = mk_owned_tree(&a);
         let bt = mk_owned_tree(&b);
-        at.inner_combine_with(&bt, |a, b| *a = b);
+        at.inner_combine_with(&bt, |a, b| *a = b.clone());
         let lbi = to_btree_map(&at);
         let mut lbi_reference = a.clone();
         lbi_reference.retain(|k, _| b.contains_key(k));
@@ -3409,7 +3409,7 @@ mod tests {
             Tree::single(key.as_bytes(), value.as_bytes())
         });
         let store: DynBlobStore = Arc::new(MemStore::default());
-        let res = nodes.fold(Tree::empty(), |a, b| a.outer_combine(&b, |_, b| b));
+        let res = nodes.fold(Tree::empty(), |a, b| a.outer_combine(&b, |_, b| b.clone()));
         res.try_dump_tree()?;
         let res = res.attach(store)?;
         println!("{:?}", res);
@@ -3422,25 +3422,25 @@ mod tests {
         println!("disjoint");
         let a = Tree::single(b"a".as_ref(), b"1".as_ref());
         let b = Tree::single(b"b".as_ref(), b"2".as_ref());
-        let t = a.outer_combine(&b, |_, b| b);
+        let t = a.outer_combine(&b, |_, b| b.clone());
         t.try_dump_tree()?;
 
         println!("a prefix of b");
         let a = Tree::single(b"a".as_ref(), b"1".as_ref());
         let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
-        let t = a.outer_combine(&b, |_, b| b);
+        let t = a.outer_combine(&b, |_, b| b.clone());
         t.try_dump_tree()?;
 
         println!("b prefix of a");
         let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
         let b = Tree::single(b"a".as_ref(), b"2".as_ref());
-        let t = a.outer_combine(&b, |_, b| b);
+        let t = a.outer_combine(&b, |_, b| b.clone());
         t.try_dump_tree()?;
 
         println!("same prefix");
         let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
         let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
-        let t = a.outer_combine(&b, |_, b| b);
+        let t = a.outer_combine(&b, |_, b| b.clone());
         t.try_dump_tree()?;
 
         Ok(())

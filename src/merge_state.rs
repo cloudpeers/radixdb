@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use crate::{
     iterators::SliceIterator,
-    node::TreeNode,
+    node::{TreeNode, TreeValue},
     store::{BlobStore, NoError, NoStore},
     NodeConverter,
 };
@@ -214,7 +214,7 @@ pub trait TT: Default {
     type NC: NodeConverter<<Self as TT>::BB, <Self as TT>::AB>;
 }
 
-pub struct TTI<AB, BB, E, NC>(PhantomData<(AB, BB, E, NC)>);
+pub(crate) struct TTI<AB, BB, E, NC = NoConverter>(PhantomData<(AB, BB, E, NC)>);
 
 impl<AB, BB, E, NC> Default for TTI<AB, BB, E, NC> {
     fn default() -> Self {
@@ -254,37 +254,81 @@ impl TT for NoStoreT {
 
     type E = NoError;
 
-    type NC = NoConverter;
+    type NC = NoStoreConverter;
 }
 
+/// A converter that can just convert from NoStore to NoStore, which is obviously just the identity conversion
 #[derive(Clone, Copy)]
-pub struct NoConverter;
+pub struct NoStoreConverter;
 
-impl NodeConverter<NoStore, NoStore> for NoConverter {}
+impl NodeConverter<NoStore, NoStore> for NoStoreConverter {
+
+    fn convert_node(&self, node: &TreeNode, _: &NoStore) -> Result<TreeNode, NoError> {
+        Ok(node.clone())
+    }
+    fn convert_value(&self, value: &TreeValue, _: &NoStore) -> Result<TreeValue, NoError> {
+        Ok(value.clone())
+    }
+    fn convert_node_shortened(
+        &self,
+        node: &TreeNode,
+        store: &NoStore,
+        n: usize,
+    ) -> Result<TreeNode, NoError> {
+        node.clone_shortened(store, n)
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct DetachConverter;
 
-impl<T: BlobStore> NodeConverter<T, NoStore> for DetachConverter {}
-
-#[derive(Clone, Copy)]
-pub(crate) struct DummyConverter;
-
-impl<A: BlobStore, B: BlobStore> NodeConverter<A, B> for DummyConverter {
-    fn convert_node(
+impl<A: BlobStore> NodeConverter<A, NoStore> for DetachConverter {
+    
+    fn convert_node(&self, node: &TreeNode<A>, store: &A) -> Result<TreeNode, A::Error> {
+        node.detached(store)
+    }
+    fn convert_value(&self, value: &TreeValue<A>, store: &A) -> Result<TreeValue, A::Error> {
+        value.detached(store)
+    }
+    fn convert_node_shortened(
         &self,
         node: &TreeNode<A>,
         store: &A,
+        n: usize,
+    ) -> Result<TreeNode, A::Error> {
+        let node = node.clone_shortened(store, n)?;
+        self.convert_node(&node, store)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NoConverter;
+
+impl<A: BlobStore, B: BlobStore> NodeConverter<A, B> for NoConverter {
+
+    fn convert_node(
+        &self,
+        _: &TreeNode<A>,
+        _: &A,
     ) -> Result<TreeNode<B>, <A as BlobStore>::Error> {
-        todo!()
+        panic!()
     }
 
     fn convert_value(
         &self,
-        value: &crate::node::TreeValue<A>,
-        store: &A,
+        _: &crate::node::TreeValue<A>,
+        _: &A,
     ) -> Result<crate::node::TreeValue<B>, <A as BlobStore>::Error> {
-        todo!()
+        panic!()
+    }
+
+    fn convert_node_shortened(
+        &self,
+        _: &TreeNode<A>,
+        _: &A,
+        _: usize,
+    ) -> Result<TreeNode<B>, A::Error> {
+        panic!()
     }
 }
 
