@@ -262,7 +262,6 @@ impl TT for NoStoreT {
 pub struct NoStoreConverter;
 
 impl NodeConverter<NoStore, NoStore> for NoStoreConverter {
-
     fn convert_node(&self, node: &TreeNode, _: &NoStore) -> Result<TreeNode, NoError> {
         Ok(node.clone())
     }
@@ -283,7 +282,6 @@ impl NodeConverter<NoStore, NoStore> for NoStoreConverter {
 pub struct DetachConverter;
 
 impl<A: BlobStore> NodeConverter<A, NoStore> for DetachConverter {
-    
     fn convert_node(&self, node: &TreeNode<A>, store: &A) -> Result<TreeNode, A::Error> {
         node.detached(store)
     }
@@ -305,12 +303,7 @@ impl<A: BlobStore> NodeConverter<A, NoStore> for DetachConverter {
 pub(crate) struct NoConverter;
 
 impl<A: BlobStore, B: BlobStore> NodeConverter<A, B> for NoConverter {
-
-    fn convert_node(
-        &self,
-        _: &TreeNode<A>,
-        _: &A,
-    ) -> Result<TreeNode<B>, <A as BlobStore>::Error> {
+    fn convert_node(&self, _: &TreeNode<A>, _: &A) -> Result<TreeNode<B>, <A as BlobStore>::Error> {
         panic!()
     }
 

@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     merge_state::{
-        BoolOpMergeState, DetachConverter, NoConverter, InPlaceVecMergeStateRef, MergeStateMut,
+        BoolOpMergeState, DetachConverter, InPlaceVecMergeStateRef, MergeStateMut, NoConverter,
         NoStoreConverter, VecMergeState, TT, TTI,
     },
     node::FlexRef,
@@ -911,17 +911,6 @@ pub struct Tree<S: BlobStore = NoStore> {
 }
 
 impl Tree {
-    pub(crate) fn new(
-        key: impl Into<TreePrefix>,
-        value: impl Into<TreeValue>,
-        children: impl Into<TreeChildren>,
-    ) -> Self {
-        Self {
-            node: TreeNode::new(key, value, children),
-            store: NoStore,
-        }
-    }
-
     pub fn empty() -> Self {
         Self {
             node: TreeNode::empty(),
@@ -1062,7 +1051,11 @@ impl Tree {
         unwrap_safe(self.try_left_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 
-    pub fn left_combine_with(&mut self, that: &Tree, f: impl Fn(&mut TreeValue, &TreeValue) + Copy) {
+    pub fn left_combine_with(
+        &mut self,
+        that: &Tree,
+        f: impl Fn(&mut TreeValue, &TreeValue) + Copy,
+    ) {
         unwrap_safe(self.try_left_combine_with::<NoStore, NoError, _, _>(
             that,
             NoStoreConverter,
@@ -1078,16 +1071,20 @@ impl Tree {
         unwrap_safe(self.try_left_combine_pred::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 
-    pub fn retain_prefix_with(&mut self, that: &Tree, f: impl Fn(TreeValue) -> bool + Copy) {
-        unwrap_safe(
-            self.try_retain_prefix_with::<NoStore, NoError, _, _>(that, NoStoreConverter, |b| Ok(f(b))),
-        )
+    pub fn retain_prefix_with(&mut self, that: &Tree, f: impl Fn(&TreeValue) -> bool + Copy) {
+        unwrap_safe(self.try_retain_prefix_with::<NoStore, NoError, _, _>(
+            that,
+            NoStoreConverter,
+            |b| Ok(f(b)),
+        ))
     }
 
-    pub fn remove_prefix_with(&mut self, that: &Tree, f: impl Fn(TreeValue) -> bool + Copy) {
-        unwrap_safe(
-            self.try_remove_prefix_with::<NoStore, NoError, _, _>(that, NoStoreConverter, |b| Ok(f(b))),
-        )
+    pub fn remove_prefix_with(&mut self, that: &Tree, f: impl Fn(&TreeValue) -> bool + Copy) {
+        unwrap_safe(self.try_remove_prefix_with::<NoStore, NoError, _, _>(
+            that,
+            NoStoreConverter,
+            |b| Ok(f(b)),
+        ))
     }
 }
 
@@ -1340,7 +1337,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(TreeValue) -> Result<bool, E> + Copy,
+        F: Fn(&TreeValue<S2>) -> Result<bool, E> + Copy,
         C: NodeConverter<S2, S>,
     {
         retain_prefix_with(
@@ -1364,7 +1361,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         S2: BlobStore,
         E: From<S::Error>,
         E: From<S2::Error>,
-        F: Fn(TreeValue) -> Result<bool, E> + Copy,
+        F: Fn(&TreeValue<S2>) -> Result<bool, E> + Copy,
         C: NodeConverter<S2, S>,
     {
         remove_prefix_with(
@@ -1901,7 +1898,7 @@ fn retain_prefix_with<T: TT>(
     b: &TreeNode<T::BB>,
     bb: &T::BB,
     c: T::NC,
-    f: impl Fn(TreeValue) -> Result<bool, T::E> + Copy,
+    f: impl Fn(&TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
 ) -> Result<(), T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1909,7 +1906,7 @@ fn retain_prefix_with<T: TT>(
     let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
-        if b.value.is_none() || !f(bv()?)? {
+        if b.value.is_none() || !f(&b.value)? {
             a.value = TreeValue::none();
             let ac = a.children.get_mut(ab)?;
             let bc = b.children.load(bb)?;
@@ -1922,7 +1919,7 @@ fn retain_prefix_with<T: TT>(
             let ac = a.children.get_mut(ab)?;
             let bc = b.children.load(bb)?;
             InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, c, &RetainPrefixOp { f })?;
-        } else if !f(bv()?)? {
+        } else if !f(&b.value)? {
             a.value = TreeValue::none();
             a.children = TreeChildren::empty();
         }
@@ -1952,7 +1949,7 @@ fn remove_prefix_with<T: TT>(
     b: &TreeNode<T::BB>,
     bb: &T::BB,
     c: T::NC,
-    f: impl Fn(TreeValue) -> Result<bool, T::E> + Copy,
+    f: impl Fn(&TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
 ) -> Result<(), T::E> {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -1960,7 +1957,7 @@ fn remove_prefix_with<T: TT>(
     let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
-        if b.value.is_some() && f(bv()?)? {
+        if b.value.is_some() && f(&b.value)? {
             // nuke it
             a.value = TreeValue::none();
             a.children = TreeChildren::empty();
@@ -1972,7 +1969,7 @@ fn remove_prefix_with<T: TT>(
         }
     } else if n == bp.len() {
         // that is a prefix of self
-        if b.value.is_some() && f(bv()?)? {
+        if b.value.is_some() && f(&b.value)? {
             // nuke it
             a.value = TreeValue::none();
             a.children = TreeChildren::empty();
@@ -2588,7 +2585,7 @@ struct RetainPrefixOp<F> {
 
 impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for RetainPrefixOp<F>
 where
-    F: Fn(TreeValue) -> Result<bool, T::E> + Copy,
+    F: Fn(&TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
     T: TT,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
@@ -2623,7 +2620,7 @@ struct RemovePrefixOp<F> {
 
 impl<'a, T, F> MergeOperation<InPlaceVecMergeStateRef<'a, T>> for RemovePrefixOp<F>
 where
-    F: Fn(TreeValue) -> Result<bool, T::E> + Copy,
+    F: Fn(&TreeValue<T::BB>) -> Result<bool, T::E> + Copy,
     T: TT,
 {
     fn cmp(&self, a: &TreeNode<T::AB>, b: &TreeNode<T::BB>) -> Ordering {
@@ -2710,7 +2707,8 @@ mod tests {
                         }
                     })
                     .fold(TreeNode::empty(), |a, b| {
-                        outer_combine(NoStoreT, &a, &NoStore, &b, &NoStore, |_, b| Ok(b.clone())).unwrap()
+                        outer_combine(NoStoreT, &a, &NoStore, &b, &NoStore, |_, b| Ok(b.clone()))
+                            .unwrap()
                     }),
             }
         }
