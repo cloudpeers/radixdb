@@ -3,6 +3,8 @@ mod merge_state;
 pub mod node;
 pub mod store;
 pub use node::Tree;
+use node::{TreeNode, TreeValue};
+use store::BlobStore;
 
 #[cfg(test)]
 #[macro_use]
@@ -34,5 +36,25 @@ impl<'a> std::fmt::Debug for Hex<'a> {
 impl<'a> std::fmt::Display for Hex<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[{}]", hex::encode(self.0))
+    }
+}
+
+pub trait NodeConverter<A: BlobStore, B: BlobStore>: Copy {
+    fn convert_node(&self, node: &TreeNode<A>, store: &A) -> Result<TreeNode<B>, A::Error> {
+        let node = node.detached(store)?;
+        Ok(unsafe { std::mem::transmute(node) })
+    }
+    fn convert_value(&self, value: &TreeValue<A>, store: &A) -> Result<TreeValue<B>, A::Error> {
+        let value = value.detached(store)?;
+        Ok(unsafe { std::mem::transmute(value) })
+    }
+    fn convert_node_shortened(
+        &self,
+        node: &TreeNode<A>,
+        store: &A,
+        n: usize,
+    ) -> Result<TreeNode<B>, A::Error> {
+        let node = node.clone_shortened(store, n)?;
+        self.convert_node(&node, store)
     }
 }

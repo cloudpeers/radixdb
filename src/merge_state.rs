@@ -3,6 +3,7 @@ use crate::{
     iterators::SliceIterator,
     node::TreeNode,
     store::{BlobStore, NoError, NoStore},
+    NodeConverter,
 };
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
@@ -27,6 +28,7 @@ pub(crate) struct InPlaceVecMergeStateRef<'a, T: TT> {
     pub ab: &'a T::AB,
     pub b: SliceIterator<'a, TreeNode<T::BB>>,
     pub bb: &'a T::BB,
+    pub c: T::NC,
     pub err: Option<T::E>,
 }
 
@@ -36,12 +38,14 @@ impl<'a, T: TT> InPlaceVecMergeStateRef<'a, T> {
         ab: &'a T::AB,
         b: &'a [TreeNode<T::BB>],
         bb: &'a T::BB,
+        c: T::NC,
     ) -> Self {
         Self {
             a: a.into(),
             ab,
             b: SliceIterator(b.as_ref()),
             bb,
+            c,
             err: None,
         }
     }
@@ -65,7 +69,21 @@ impl<'a, T: TT> MergeStateMut for InPlaceVecMergeStateRef<'a, T> {
     }
     fn advance_b(&mut self, n: usize, take: bool) -> bool {
         if take {
-            self.a.extend_from_iter((&mut self.b).cloned(), n);
+            let iter = &mut self.b;
+            // self.a.extend_from_iter((&mut self.b).cloned(), n);
+            for _ in 0..n {
+                if let Some(node) = iter.next() {
+                    match self.c.convert_node(node, self.bb) {
+                        Ok(node) => self.a.push(node),
+                        Err(err) => {
+                            self.err = Some(err.into());
+                            return false;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
         } else {
             for _ in 0..n {
                 let _ = self.b.next();
@@ -87,9 +105,10 @@ impl<'a, T: TT> InPlaceVecMergeStateRef<'a, T> {
         ab: &'a T::AB,
         b: &'a [TreeNode<T::BB>],
         bb: &'a T::BB,
+        c: T::NC,
         o: &O,
     ) -> Result<(), T::E> {
-        let mut state = Self::new(a, ab, b, bb);
+        let mut state = Self::new(a, ab, b, bb, c);
         o.merge(&mut state);
         if let Some(err) = state.err {
             Err(err)
@@ -192,25 +211,34 @@ pub trait TT: Default {
     type BB: BlobStore;
     type E: From<<<Self as TT>::AB as BlobStore>::Error>
         + From<<<Self as TT>::BB as BlobStore>::Error>;
+    type NC: NodeConverter<<Self as TT>::BB, <Self as TT>::AB>;
 }
 
-pub struct TTI<AB, BB, E>(PhantomData<(AB, BB, E)>);
+pub struct TTI<AB, BB, E, NC>(PhantomData<(AB, BB, E, NC)>);
 
-impl<AB, BB, E> Default for TTI<AB, BB, E> {
+impl<AB, BB, E, NC> Default for TTI<AB, BB, E, NC> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
 
-impl<AB: BlobStore, BB: BlobStore, E: From<AB::Error> + From<BB::Error>> TT for TTI<AB, BB, E> {
+impl<
+        AB: BlobStore,
+        BB: BlobStore,
+        E: From<AB::Error> + From<BB::Error>,
+        NC: NodeConverter<BB, AB>,
+    > TT for TTI<AB, BB, E, NC>
+{
     type AB = AB;
 
     type BB = BB;
 
     type E = E;
+
+    type NC = NC;
 }
 
-impl<AB, BB, E> TTI<AB, BB, E> {
+impl<AB, BB, E, NC> TTI<AB, BB, E, NC> {
     pub fn new() -> Self {
         Self(PhantomData)
     }
@@ -225,6 +253,39 @@ impl TT for NoStoreT {
     type BB = NoStore;
 
     type E = NoError;
+
+    type NC = NoConverter;
+}
+
+#[derive(Clone, Copy)]
+pub struct NoConverter;
+
+impl NodeConverter<NoStore, NoStore> for NoConverter {}
+
+#[derive(Clone, Copy)]
+pub struct DetachConverter;
+
+impl<T: BlobStore> NodeConverter<T, NoStore> for DetachConverter {}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DummyConverter;
+
+impl<A: BlobStore, B: BlobStore> NodeConverter<A, B> for DummyConverter {
+    fn convert_node(
+        &self,
+        node: &TreeNode<A>,
+        store: &A,
+    ) -> Result<TreeNode<B>, <A as BlobStore>::Error> {
+        todo!()
+    }
+
+    fn convert_value(
+        &self,
+        value: &crate::node::TreeValue<A>,
+        store: &A,
+    ) -> Result<crate::node::TreeValue<B>, <A as BlobStore>::Error> {
+        todo!()
+    }
 }
 
 /// A merge state where we build into a new vec
@@ -261,7 +322,7 @@ impl<'a, T: TT> VecMergeState<'a, T> {
         }
     }
 
-    fn into_vec(self) -> std::result::Result<Vec<TreeNode<T::AB>>, T::E> {
+    fn into_vec(self) -> std::result::Result<Vec<TreeNode>, T::E> {
         if let Some(err) = self.err {
             Err(err)
         } else {
