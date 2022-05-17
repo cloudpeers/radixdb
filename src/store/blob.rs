@@ -6,6 +6,8 @@ pub struct Blob {
     /// The blob owner
     owner: Arc<dyn BlobOwner>,
     /// Extra data to allow a single BlobOwner to hand out multiple Blob s. E.g. this could be an offset within a page of shared memory.
+    ///
+    /// Make this a u64?
     extra: usize,
 }
 
@@ -61,6 +63,8 @@ impl Borrow<[u8]> for Blob {
 }
 
 /// Trait for a blob owner
+///
+/// A blob owner can own a single blob, or it can be a "Page" containing multiple blobs, identified by the id
 pub trait BlobOwner: Send + Sync + std::fmt::Debug + 'static {
     /// Called when a blob is being cloned
     fn inc(&self, _extra: usize) {}
