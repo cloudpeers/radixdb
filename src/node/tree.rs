@@ -1,7 +1,6 @@
 use binary_merge::MergeOperation;
 use std::{
-    any::TypeId, borrow::Borrow, cmp::Ordering, fmt::Debug, marker::PhantomData, result::Result,
-    sync::Arc,
+    borrow::Borrow, cmp::Ordering, fmt::Debug, marker::PhantomData, result::Result, sync::Arc,
 };
 
 use crate::{

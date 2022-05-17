@@ -7,10 +7,6 @@ use fnv::FnvHashMap;
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
 
-pub trait BlobStoreError {}
-
-impl<T: From<anyhow::Error> + From<NoError>> BlobStoreError for T {}
-
 /// A generic blob store
 pub trait BlobStore: Debug + Send + Sync {
     type Error: From<NoError> + From<anyhow::Error>;

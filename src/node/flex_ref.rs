@@ -2,6 +2,9 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use crate::Hex;
 
+/// A compact representation of an inline or heap allocated object or an id.
+///
+/// Guaranteed to be 64 bit on every platform.
 #[repr(transparent)]
 #[derive(PartialEq, Eq)]
 pub struct FlexRef<T>(u64, PhantomData<T>);
