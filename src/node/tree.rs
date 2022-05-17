@@ -14,7 +14,7 @@ use crate::{
     Hex,
 };
 
-use super::*;
+use super::{merge_state::DowncastConverter, *};
 
 #[repr(transparent)]
 pub struct TreeValue<S: BlobStore = NoStore>(FlexRef<Vec<u8>>, PhantomData<S>);
@@ -58,7 +58,7 @@ impl<S: BlobStore> From<Vec<u8>> for TreeValue<S> {
 /// A tree prefix is an optional blob, that is stored either inline, on the heap, or as an id
 impl<S: BlobStore> TreeValue<S> {
     #[inline]
-    fn none() -> Self {
+    pub fn none() -> Self {
         Self(FlexRef::none(), PhantomData)
     }
 
@@ -1005,11 +1005,11 @@ impl Tree {
     }
 
     pub fn contains_key(&self, key: &[u8]) -> bool {
-        unwrap_safe(self.node.contains_key(&self.store, key))
+        unwrap_safe(self.try_contains_key(key))
     }
 
     pub fn get(&self, key: &[u8]) -> Option<OwnedSlice<u8>> {
-        unwrap_safe(self.node.get(&self.store, key))
+        unwrap_safe(self.try_get(key))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
@@ -1157,12 +1157,27 @@ impl Tree {
 }
 
 impl<S: BlobStore + Clone> Tree<S> {
+    pub fn new(store: S) -> Self {
+        Self {
+            node: TreeNode::empty(),
+            store,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.node.is_empty()
     }
 
     pub fn try_prepend(&mut self, prefix: impl Into<TreePrefix<S>>) -> Result<(), S::Error> {
         self.node.prepend(prefix, &self.store)
+    }
+
+    pub fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
+        self.node.contains_key(&self.store, key)
+    }
+
+    pub fn try_get(&self, key: &[u8]) -> Result<Option<OwnedSlice<u8>>, S::Error> {
+        self.node.get(&self.store, key)
     }
 
     pub fn try_values(&self) -> Values<S> {

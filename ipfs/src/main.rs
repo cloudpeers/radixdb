@@ -2,9 +2,13 @@
 //! A radix tree that implements a content-addressed store for ipfs
 //!
 //!
-use radixdb::*;
+use radixdb::{
+    node::{DowncastConverter, OwnedSlice, TreePrefix, TreeValue},
+    store::{Blob, BlobStore, DynBlobStore, PagedFileStore},
+    *,
+};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, time::Instant};
+use std::{collections::BTreeSet, sync::Arc, time::Instant};
 use tempfile::tempfile;
 
 /// alias -> id
@@ -84,7 +88,7 @@ fn serialize_links(links: &BTreeSet<u64>) -> Vec<u8> {
     res
 }
 
-fn links_iter(blob: Blob<u8>) -> anyhow::Result<impl Iterator<Item = u64>> {
+fn links_iter(blob: &[u8]) -> anyhow::Result<impl Iterator<Item = u64>> {
     anyhow::ensure!(blob.len() % 8 == 0);
     // todo: avoid going via a vec
     let ids = blob
@@ -96,8 +100,30 @@ fn links_iter(blob: Blob<u8>) -> anyhow::Result<impl Iterator<Item = u64>> {
 }
 
 struct Ipfs {
-    root: TreeNode,
+    root: RadixTree<DynBlobStore>,
     store: DynBlobStore,
+}
+
+trait RadixTreeExt<S: BlobStore> {
+    fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), S::Error>;
+
+    fn remove(&mut self, key: &[u8]) -> Result<(), S::Error>;
+}
+
+impl<S: BlobStore + Clone> RadixTreeExt<S> for RadixTree<S> {
+    fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), S::Error> {
+        self.try_outer_combine_with(&RadixTree::single(key, value), DowncastConverter, |a, b| {
+            Ok(*a = b.downcast())
+        })
+    }
+
+    fn remove(&mut self, key: &[u8]) -> Result<(), S::Error> {
+        self.try_left_combine_with(
+            &RadixTree::single(key, vec![]),
+            DowncastConverter,
+            |a, b| Ok(*a = TreeValue::none()),
+        )
+    }
 }
 
 struct Block {
@@ -158,24 +184,25 @@ impl Ipfs {
         println!("taking out the dead");
         for id in dead {
             if let Some(cid) = self.get_cid(id)? {
-                self.root.remove(&self.store, &id_key(&cid))?;
+                self.root.remove(&id_key(&cid))?;
             }
-            self.root.remove(&self.store, &links_key(id))?;
-            self.root.remove(&self.store, &block_key(id))?;
-            self.root.remove(&self.store, &cid_key(id))?;
+            self.root.remove(&links_key(id))?;
+            self.root.remove(&block_key(id))?;
+            self.root.remove(&cid_key(id))?;
         }
         println!("{}", t0.elapsed().as_secs_f64());
         Ok(())
     }
 
     fn commit(&mut self) -> anyhow::Result<()> {
-        self.root.attach(&mut self.store)?;
-        self.store.sync()
+        todo!()
+        // self.root.attach(&mut self.store)?;
+        // self.root.store.sync()
     }
 
     fn aliases(&self) -> anyhow::Result<BTreeSet<u64>> {
         self.root
-            .scan_prefix(&self.store, ALIAS)?
+            .try_scan_prefix(ALIAS)?
             .map(|r| {
                 r.and_then(|(_, v)| {
                     let blob = v.load(&self.store)?.unwrap();
@@ -188,7 +215,7 @@ impl Ipfs {
     /// all ids we know of
     fn ids(&self) -> anyhow::Result<BTreeSet<u64>> {
         self.root
-            .scan_prefix(&self.store, IDS)?
+            .try_scan_prefix(IDS)?
             .map(|r| {
                 r.and_then(|(_, v)| {
                     let blob = v.load(&self.store)?.unwrap();
@@ -200,14 +227,14 @@ impl Ipfs {
 
     fn new(store: DynBlobStore) -> anyhow::Result<Self> {
         Ok(Self {
+            root: RadixTree::new(store.clone()),
             store,
-            root: TreeNode::empty(),
         })
     }
 
     fn get_id(&self, hash: &[u8]) -> anyhow::Result<Option<u64>> {
         let id_key = id_key(hash);
-        Ok(if let Some(blob) = self.root.get(&self.store, &id_key)? {
+        Ok(if let Some(blob) = self.root.try_get(&id_key)? {
             let id: [u8; 8] = blob.as_ref().try_into()?;
             Some(u64::from_be_bytes(id))
         } else {
@@ -215,67 +242,63 @@ impl Ipfs {
         })
     }
 
-    fn get_cid(&self, id: u64) -> anyhow::Result<Option<Blob<u8>>> {
+    fn get_cid(&self, id: u64) -> anyhow::Result<Option<OwnedSlice<u8>>> {
         let id_key = cid_key(id);
-        self.root.get(&self.store, &id_key)
+        self.root.try_get(&id_key)
     }
 
-    fn get_block(&self, id: u64) -> anyhow::Result<Option<Blob<u8>>> {
+    fn get_block(&self, id: u64) -> anyhow::Result<Option<OwnedSlice<u8>>> {
         let block_key = block_key(id);
-        self.root.get(&self.store, &block_key)
+        self.root.try_get(&block_key)
     }
 
     fn alias(&mut self, name: &[u8], hash: Option<&[u8]>) -> anyhow::Result<()> {
         if let Some(hash) = hash {
             let id = self.get_or_create_id(hash)?;
-            self.root
-                .insert(&self.store, &alias_key(name), &id.to_be_bytes())?;
+            self.root.insert(&alias_key(name), &id.to_be_bytes())?;
         } else {
-            self.root.remove(&self.store, &alias_key(name))?;
+            self.root.remove(&alias_key(name))?;
         }
         Ok(())
     }
 
     fn links(&self, id: u64) -> anyhow::Result<Option<impl Iterator<Item = u64>>> {
-        Ok(
-            if let Some(blob) = self.root.get(&self.store, &links_key(id))? {
-                Some(links_iter(blob)?)
-            } else {
-                None
-            },
-        )
+        Ok(if let Some(blob) = self.root.try_get(&links_key(id))? {
+            Some(links_iter(blob.as_ref())?)
+        } else {
+            None
+        })
     }
 
     fn get_or_create_id(&mut self, hash: &[u8]) -> anyhow::Result<u64> {
         let id_key = id_key(hash);
-        Ok(if let Some(blob) = self.root.get(&self.store, &id_key)? {
+        Ok(if let Some(blob) = self.root.try_get(&id_key)? {
             let id: [u8; 8] = blob.as_ref().try_into()?;
             u64::from_be_bytes(id)
         } else {
-            let cids = self.root.filter_prefix(&self.store, CIDS)?;
+            let cids = self.root.try_filter_prefix(CIDS)?;
             // compute higest id
-            let id =
-                if let Some((prefix, _)) = cids.last_entry(&self.store, TreePrefix::default())? {
-                    // get id from prefix and inc by one
-                    let prefix = prefix.load(&self.store)?;
-                    let id: [u8; 8] = prefix[prefix.len() - 8..].try_into()?;
-                    u64::from_be_bytes(id) + 1
-                } else {
-                    0
-                };
+            let id = if let Some((prefix, _)) = cids.try_last_entry(TreePrefix::default())? {
+                // get id from prefix and inc by one
+                let prefix = prefix.load(&self.store)?;
+                let id: [u8; 8] = prefix[prefix.len() - 8..].try_into()?;
+                u64::from_be_bytes(id) + 1
+            } else {
+                0
+            };
             let cid_key = cid_key(id);
-            self.root
-                .insert(&self.store, &id_key, &u64::to_be_bytes(id))?;
-            self.root.insert(&self.store, &cid_key, &hash)?;
+            self.root.insert(&id_key, &u64::to_be_bytes(id))?;
+            self.root.insert(&cid_key, &hash)?;
             id
         })
     }
 
     fn dump(&self) -> anyhow::Result<()> {
-        self.root
-            .dump_tree_custom("", &self.store, format_prefix, format_value, |_| {
-                Ok("".into())
-            })
+        todo!()
+        // self.root
+        //     .dump_tree_custom("", &self.store, format_prefix, format_value, |_| {
+        //         Ok("".into())
+        //     })
     }
 
     fn put(&mut self, block: &Block) -> anyhow::Result<u64> {
@@ -286,12 +309,12 @@ impl Ipfs {
             .iter()
             .map(|link| self.get_or_create_id(link))
             .collect::<anyhow::Result<BTreeSet<_>>>()?;
-        self.root.insert(&self.store, &block_key, &block.data)?;
+        self.root.insert(&block_key, &block.data)?;
         self.root
-            .insert(&self.store, &links_key(id), &serialize_links(&link_ids))?;
+            .insert(&links_key(id), &serialize_links(&link_ids))?;
         Ok(id)
     }
-    fn get(&mut self, hash: &[u8]) -> anyhow::Result<Option<Blob<u8>>> {
+    fn get(&mut self, hash: &[u8]) -> anyhow::Result<Option<OwnedSlice<u8>>> {
         Ok(if let Some(id) = self.get_id(hash)? {
             self.get_block(id)?
         } else {
@@ -304,7 +327,7 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
     let file = tempfile()?;
     let store = PagedFileStore::<4194304>::new(file)?;
-    let mut ipfs = Ipfs::new(Box::new(store.clone()))?;
+    let mut ipfs = Ipfs::new(Arc::new(store.clone()))?;
     let mut hashes = Vec::new();
     for i in 0..1000_000u64 {
         println!("putting block {}", i);
