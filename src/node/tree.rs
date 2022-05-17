@@ -1,16 +1,17 @@
 use binary_merge::MergeOperation;
 use std::{
-    borrow::Borrow, cmp::Ordering, fmt::Debug, marker::PhantomData, result::Result, sync::Arc,
+    any::TypeId, borrow::Borrow, cmp::Ordering, fmt::Debug, marker::PhantomData, result::Result,
+    sync::Arc,
 };
 
 use crate::{
-    merge_state::{
+    node::merge_state::{
         BoolOpMergeState, DetachConverter, InPlaceVecMergeStateRef, MergeStateMut,
-        NoStoreConverter, VecMergeState, TT, TTI,
+        NoStoreConverter, NodeConverter, VecMergeState, TT, TTI,
     },
     node::FlexRef,
     store::{unwrap_safe, BlobStore, NoError, NoStore},
-    Hex, NodeConverter,
+    Hex,
 };
 
 use super::*;
@@ -117,7 +118,7 @@ impl<S: BlobStore> TreeValue<S> {
     {
         let mut t = self.clone();
         t.detach(store)?;
-        Ok(unsafe { std::mem::transmute(t) })
+        Ok(TreeValue(t.0, PhantomData))
     }
 
     /// attaches the value to the store. on success it will either be none, inline or id
@@ -288,6 +289,15 @@ impl<S: BlobStore> TreePrefix<S> {
             self.0 = FlexRef::inline_or_owned_from_slice(slice.as_ref());
         }
         Ok(())
+    }
+
+    pub(crate) fn detached(&self, store: &S) -> Result<TreePrefix, S::Error>
+    where
+        S: BlobStore,
+    {
+        let mut t = self.clone();
+        t.detach(store)?;
+        Ok(TreePrefix(t.0, PhantomData))
     }
 
     /// attaches the prefix to the store. on success it will either be inline or id
@@ -471,17 +481,34 @@ impl<S: BlobStore> TreeChildren<S> {
         Ok(Arc::make_mut(arc))
     }
 
-    fn detach(&mut self, store: &S) -> Result<(), S::Error> {
+    /// detaches the children from the store, up to a depth `depth`
+    ///
+    /// Set depth to `usize::MAX` to completely detach the tree
+    fn detach(&mut self, store: &S, depth: usize) -> Result<(), S::Error> {
         if let Some(id) = self.0.id_value() {
-            let mut children = TreeNode::nodes_from_bytes(store.read(id)?.as_ref())
+            let children = TreeNode::nodes_from_bytes(store.read(id)?.as_ref())
                 .unwrap()
                 .to_vec();
-            for child in &mut children {
-                child.detach(store)?;
-            }
             self.0 = FlexRef::owned_from_arc(Arc::new(children))
         }
+        // for any store but NoStore, we must detach even if the root of the tree is already detached
+        if store.needs_deep_detach() && depth > 0 {
+            if let Some(children) = self.0.owned_arc_ref_mut() {
+                for child in Arc::make_mut(children) {
+                    child.detach(store, depth - 1)?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    pub(crate) fn detached(&self, store: &S) -> Result<TreeChildren, S::Error>
+    where
+        S: BlobStore,
+    {
+        let mut t = self.clone();
+        t.detach(store, usize::MAX)?;
+        Ok(unsafe { std::mem::transmute(t) })
     }
 
     /// attaches the children to the store. on success it be an id
@@ -648,11 +675,13 @@ impl<S: BlobStore> TreeNode<S> {
         }
     }
 
-    /// detach the node from its `store`.
-    fn detach(&mut self, store: &S) -> Result<(), S::Error> {
+    /// detach the node from its `store` up to a depth `depth`.
+    ///
+    /// Set depth to `usize::MAX` to completely detach the tree
+    fn detach(&mut self, store: &S, depth: usize) -> Result<(), S::Error> {
         self.prefix.detach(store)?;
         self.value.detach(store)?;
-        self.children.detach(store)?;
+        self.children.detach(store, depth)?;
         Ok(())
     }
 
@@ -738,9 +767,11 @@ impl<S: BlobStore> TreeNode<S> {
     ///
     /// if `recursive` is true, the tree gets completely detached, otherwise just one level deep.
     pub(crate) fn detached(&self, store: &S) -> Result<TreeNode, S::Error> {
-        let mut t = self.clone();
-        t.detach(store)?;
-        Ok(unsafe { std::mem::transmute(t) })
+        Ok(TreeNode {
+            prefix: self.prefix.detached(store)?,
+            value: self.value.detached(store)?,
+            children: self.children.detached(store)?,
+        })
     }
 
     /// attaches the node components to the store
@@ -940,7 +971,7 @@ impl<S: BlobStore> TreeNode<S> {
     }
 }
 
-/// A tuple of a tree and its store. This is the entry point into the library.
+/// A radix tree from bytes to bytes, that can optionally be attached to a persistent blob store.
 #[derive(Debug, Clone, Default)]
 pub struct Tree<S: BlobStore = NoStore> {
     node: TreeNode<S>,
@@ -1412,7 +1443,8 @@ impl<S: BlobStore + Clone> Tree<S> {
         )
     }
 
-    pub fn detach(&self) -> Result<Tree, S::Error> {
+    /// Return a detached clone of this tree
+    pub fn detached(&self) -> Result<Tree, S::Error> {
         Ok(Tree {
             node: self.node.detached(&self.store)?,
             store: NoStore,
@@ -1607,12 +1639,10 @@ fn outer_combine_with<T: TT>(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         if b.value.is_some() {
             if a.value.is_some() {
-                a.value.detach(ab)?;
                 f(&mut a.value, &b.value)?;
             } else {
                 a.value = c.convert_value(&b.value, bb)?;
@@ -1634,7 +1664,6 @@ fn outer_combine_with<T: TT>(
         // prefixes are identical
         if b.value.is_some() {
             if a.value.is_some() {
-                a.value.detach(ab)?;
                 f(&mut a.value, &b.value)?;
             } else {
                 a.value = c.convert_value(&b.value, bb)?;
@@ -1742,11 +1771,9 @@ fn inner_combine_with<T: TT>(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         if b.value.is_some() && a.value.is_some() {
-            a.value.detach(ab)?;
             f(&mut a.value, &b.value)?;
         } else {
             a.value = TreeValue::none();
@@ -1895,11 +1922,9 @@ fn left_combine_with<T: TT>(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         if b.value.is_some() && a.value.is_some() {
-            a.value.detach(ab)?;
             f(&mut a.value, &b.value)?;
         }
         let ac = a.children.get_mut(ab)?;
@@ -1940,7 +1965,6 @@ fn retain_prefix_with<T: TT>(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         if b.value.is_none() || !f(&b.value)? {
@@ -1991,7 +2015,6 @@ fn remove_prefix_with<T: TT>(
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let bv = || b.value.detached(bb);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         if b.value.is_some() && f(&b.value)? {
@@ -2696,8 +2719,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        merge_state::NoStoreT,
-        node::{FlexRef, OwnedSlice},
+        node::{merge_state::NoStoreT, FlexRef, OwnedSlice},
         store::{DynBlobStore, MemStore, NoStore},
     };
     use obey::{binary_element_test, binary_property_test, TestSamples};
@@ -3423,7 +3445,7 @@ mod tests {
         println!("{:?}", node);
         node.attach(&mut store)?;
         println!("{:?}", node);
-        node.detach(&mut store)?;
+        node.detach(&mut store, usize::MAX)?;
         println!("{:?}", node);
         println!("{:?}", store);
         Ok(())

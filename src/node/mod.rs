@@ -1,7 +1,9 @@
 mod flex_ref;
+mod merge_state;
 mod owned_slice;
 mod tree;
 pub use flex_ref::FlexRef;
+pub use merge_state::NodeConverter;
 pub use owned_slice::OwnedSlice;
 pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};
 

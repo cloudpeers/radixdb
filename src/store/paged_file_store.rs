@@ -218,7 +218,7 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::{store::DynBlobStore, Tree};
+    use crate::{store::DynBlobStore, RadixTree};
 
     use super::*;
     use log::info;
@@ -264,7 +264,7 @@ mod tests {
         });
         let t0 = Instant::now();
         info!("building tree");
-        let tree: Tree = elems.collect();
+        let tree: RadixTree = elems.collect();
         info!(
             "unattached tree {:?} {} s",
             tree,
@@ -301,7 +301,7 @@ mod tests {
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
         info!("detaching tree...");
         let t0 = Instant::now();
-        let tree = tree.detach()?;
+        let tree = tree.detached()?;
         info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
         info!("traversing unattached tree...");
         let t0 = Instant::now();

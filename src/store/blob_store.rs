@@ -23,6 +23,11 @@ pub trait BlobStore: Debug + Send + Sync {
 
     /// Ensure all data is persisted
     fn sync(&self) -> std::result::Result<(), Self::Error>;
+
+    /// True if the store needs deep detach. This is true for basically all stores except the special NoStore store
+    fn needs_deep_detach(&self) -> bool {
+        true
+    }
 }
 
 pub type DynBlobStore = Arc<dyn BlobStore<Error = anyhow::Error>>;
@@ -40,6 +45,10 @@ impl BlobStore for DynBlobStore {
 
     fn sync(&self) -> anyhow::Result<()> {
         self.as_ref().sync()
+    }
+
+    fn needs_deep_detach(&self) -> bool {
+        self.as_ref().needs_deep_detach()
     }
 }
 
@@ -61,6 +70,10 @@ impl BlobStore for NoStore {
 
     fn sync(&self) -> std::result::Result<(), Self::Error> {
         panic!("no store");
+    }
+
+    fn needs_deep_detach(&self) -> bool {
+        false
     }
 }
 

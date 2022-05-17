@@ -3,7 +3,6 @@ use crate::{
     iterators::SliceIterator,
     node::{TreeNode, TreeValue},
     store::{BlobStore, NoError, NoStore},
-    NodeConverter,
 };
 use binary_merge::{MergeOperation, MergeState};
 use core::{fmt, fmt::Debug};
@@ -257,7 +256,33 @@ impl TT for NoStoreT {
     type NC = NoStoreConverter;
 }
 
-/// A converter that can just convert from NoStore to NoStore, which is obviously just the identity conversion
+/// A node converter describes how to completely convert nodes attached to one store `A` to nodes attached to another store `B`.
+///
+/// There is a zero cost converter `NoStoreConverter` for converting from NoStore to NoStore, and an universal converter
+/// `DetachConverter` that just detaches from `A` and then downcasts to `B` without attaching.
+///
+/// But you could also write a more clever converter that e.g. maps ids.
+pub trait NodeConverter<A: BlobStore, B: BlobStore>: Copy {
+    /// Convert a value from being attached to store `A` to a node belonging to store `B` (not necessarily attached)
+    fn convert_value(&self, value: &TreeValue<A>, store: &A) -> Result<TreeValue<B>, A::Error> {
+        Ok(value.detached(store)?.downcast())
+    }
+    /// Convert a node from being attached to store `A` to a node belonging to store `B` (not necessarily attached)
+    fn convert_node(&self, node: &TreeNode<A>, store: &A) -> Result<TreeNode<B>, A::Error> {
+        Ok(node.detached(store)?.downcast())
+    }
+    /// Convert a node from being attached to store `A` to a node belonging to store `B` (not necessarily attached)...
+    ///
+    /// and drop n bytes from the prefix
+    fn convert_node_shortened(
+        &self,
+        node: &TreeNode<A>,
+        store: &A,
+        n: usize,
+    ) -> Result<TreeNode<B>, A::Error>;
+}
+
+/// A converter that can just convert from NoStore to NoStore, which is just the identity conversion
 #[derive(Clone, Copy)]
 pub struct NoStoreConverter;
 
@@ -281,21 +306,42 @@ impl NodeConverter<NoStore, NoStore> for NoStoreConverter {
 #[derive(Clone, Copy)]
 pub struct DetachConverter;
 
-impl<A: BlobStore> NodeConverter<A, NoStore> for DetachConverter {
-    fn convert_node(&self, node: &TreeNode<A>, store: &A) -> Result<TreeNode, A::Error> {
-        node.detached(store)
+impl<A: BlobStore, B: BlobStore> NodeConverter<A, B> for DetachConverter {
+    fn convert_node(&self, node: &TreeNode<A>, store: &A) -> Result<TreeNode<B>, A::Error> {
+        Ok(node.detached(store)?.downcast())
     }
-    fn convert_value(&self, value: &TreeValue<A>, store: &A) -> Result<TreeValue, A::Error> {
-        value.detached(store)
+    fn convert_value(&self, value: &TreeValue<A>, store: &A) -> Result<TreeValue<B>, A::Error> {
+        Ok(value.detached(store)?.downcast())
     }
     fn convert_node_shortened(
         &self,
         node: &TreeNode<A>,
         store: &A,
         n: usize,
-    ) -> Result<TreeNode, A::Error> {
+    ) -> Result<TreeNode<B>, A::Error> {
         let node = node.clone_shortened(store, n)?;
-        self.convert_node(&node, store)
+        Ok(self.convert_node(&node, store)?.downcast())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct DowncastConverter;
+
+impl<A: BlobStore> NodeConverter<NoStore, A> for DowncastConverter {
+    fn convert_node(&self, node: &TreeNode, _: &NoStore) -> Result<TreeNode<A>, NoError> {
+        Ok(node.downcast())
+    }
+    fn convert_value(&self, value: &TreeValue, _: &NoStore) -> Result<TreeValue<A>, NoError> {
+        Ok(value.downcast())
+    }
+    fn convert_node_shortened(
+        &self,
+        node: &TreeNode,
+        store: &NoStore,
+        n: usize,
+    ) -> Result<TreeNode<A>, NoError> {
+        let node = node.clone_shortened(store, n)?;
+        Ok(node.downcast())
     }
 }
 

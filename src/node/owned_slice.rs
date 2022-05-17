@@ -7,6 +7,8 @@ use crate::{node::FlexRef, store::Blob};
 use super::slice_cast;
 
 #[derive(Debug, Clone)]
+
+/// An owned slice of data
 pub enum OwnedSlice<T> {
     /// an owned slice that comes from a blob store
     Blob { blob: Blob, p: PhantomData<T> },
@@ -15,6 +17,7 @@ pub enum OwnedSlice<T> {
 }
 
 impl<T> OwnedSlice<T> {
+    /// An empty owned slice
     pub const fn empty() -> Self {
         Self::Flex {
             flex: FlexRef::INLINE_EMPTY_ARRAY,
