@@ -3,7 +3,7 @@ use futures::{
     channel::{mpsc, oneshot},
     executor::block_on,
 };
-use radixdb::Blob;
+use radixdb::store::{Blob, BlobStore};
 use std::fmt::Debug;
 use std::ops::Range;
 
@@ -74,7 +74,7 @@ pub(crate) enum Command {
         dir_name: SharedStr,
         file_name: SharedStr,
         offset: u64,
-        cb: oneshot::Sender<anyhow::Result<Blob<u8>>>,
+        cb: oneshot::Sender<anyhow::Result<Blob>>,
     },
     Shutdown,
 }
@@ -227,11 +227,10 @@ impl SyncFile {
     }
 }
 
-impl radixdb::BlobStore for SyncFile {
-
+impl BlobStore for SyncFile {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob> {
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::ReadFileLengthPrefixed {
             offset: id,

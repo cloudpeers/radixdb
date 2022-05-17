@@ -2,7 +2,7 @@ use anyhow::Context;
 use futures::{channel::mpsc, FutureExt, StreamExt};
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use log::info;
-use radixdb::Blob;
+use radixdb::store::Blob;
 use range_collections::{AbstractRangeSet, RangeSet, RangeSet2};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -93,7 +93,7 @@ impl WebCacheFs {
         dir_name: SharedStr,
         file_name: SharedStr,
         offset: u64,
-    ) -> anyhow::Result<Blob<u8>> {
+    ) -> anyhow::Result<Blob> {
         let (_, files) = self.dirs.get_mut(&dir_name).context("dir not open")?;
         let file = files.get_mut(&file_name).context("file not open")?;
         file.load_length_prefixed(offset).await
@@ -362,7 +362,7 @@ impl WebCacheFile {
         Ok(res)
     }
 
-    pub(crate) async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Blob<u8>> {
+    pub(crate) async fn load_length_prefixed(&self, start: u64) -> anyhow::Result<Blob> {
         // info!("load_length_prefixed index={}", start);
         // let t0 = js_sys::Date::now();
         let chunks = intersecting_chunks(&self.chunks, start..start + 4).collect::<Vec<_>>();
@@ -370,7 +370,7 @@ impl WebCacheFile {
         let res = self.load_chunks(start..end, chunks).await?;
         let len = usize::try_from(u32::from_be_bytes(res[0..4].try_into().unwrap()))?;
         anyhow::ensure!(res.len() >= len + 4);
-        let res = Blob::arc_from_byte_slice(&res[4..len + 4]);
+        let res = Blob::from_slice(&res[4..len + 4]);
         // info!("load_length_prefixed {}", js_sys::Date::now() - t0);
         Ok(res)
     }

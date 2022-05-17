@@ -1,7 +1,6 @@
 use std::ffi::CStr;
 
 use log::info;
-use radixdb::BlobStore;
 use sqlite_vfs::{OpenOptions, VfsError, VfsResult};
 
 use crate::{SyncDir, SyncFile};
@@ -51,7 +50,8 @@ impl sqlite_vfs::File for DatabaseFile {
     }
 
     fn sync(&mut self) -> VfsResult<()> {
-        self.inner.sync().map_err(anyhow_to_vfs)
+        todo!()
+        // self.inner.sync().map_err(anyhow_to_vfs)
     }
 }
 

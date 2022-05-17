@@ -1,7 +1,7 @@
 use log::{debug, info, trace};
 use num_traits::Num;
 use parking_lot::Mutex;
-use radixdb::{Blob, BlobOwner, BlobStore};
+use radixdb::store::{Blob, BlobOwner, BlobStore};
 use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
@@ -113,7 +113,7 @@ impl PagingFileInner {
         self.append(&mut data)
     }
 
-    pub(crate) fn load_length_prefixed(&mut self, start: u64) -> anyhow::Result<Blob<u8>> {
+    pub(crate) fn load_length_prefixed(&mut self, start: u64) -> anyhow::Result<Blob> {
         let last_page = page_num(self.length, self.page_size);
         let page_num = page_num(start, self.page_size);
         // offset of start within its page
@@ -138,7 +138,7 @@ impl PagingFileInner {
             self.full_pages.insert(page_num, page);
             self.full_pages.get(&page_num).unwrap()
         };
-        Blob::custom(page.clone(), offset)
+        Blob::new(page.clone(), offset)
     }
 }
 
@@ -154,10 +154,9 @@ impl PagingFile {
 }
 
 impl BlobStore for PagingFile {
-
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob<u8>> {
+    fn read(&self, id: u64) -> anyhow::Result<Blob> {
         self.0.lock().load_length_prefixed(id)
     }
 

@@ -6,7 +6,10 @@ use futures::FutureExt;
 use js_sys::{Date, Promise, JSON};
 use log::{info, trace};
 use parking_lot::Mutex;
-use radixdb::{BlobStore, DynBlobStore, TreeNode};
+use radixdb::{
+    store::{Blob, DynBlobStore},
+    RadixTree,
+};
 use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
@@ -76,7 +79,7 @@ async fn cache_bench() -> anyhow::Result<()> {
     let dt = js_sys::Date::now() - t0;
     info!("write {}", dt);
     let t0 = js_sys::Date::now();
-    let blob = file.load_length_prefixed(0).await?;
+    let blob: Blob = file.load_length_prefixed(0).await?;
     let dt = js_sys::Date::now() - t0;
     info!("read {} {}", dt, blob.len());
     Ok(())
@@ -98,45 +101,42 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     });
     let t0 = now();
     info!("building tree");
-    let mut tree: TreeNode = elems.collect();
+    let mut tree: RadixTree = elems.collect();
     info!("unattached tree {:?} {} s", tree, now() - t0);
     info!("traversing unattached tree...");
     let t0 = now();
     let mut n = 0;
-    for _ in tree.try_iter(&store)? {
+    for _ in tree.iter() {
         n += 1;
     }
     info!("done {} items, {} s", n, now() - t0);
     info!("attaching tree...");
     let t0 = now();
-    tree.attach(&mut store)?;
+    let tree = tree.attach(store.clone())?;
     store.sync()?;
     info!("attached tree {:?} {} s", tree, now() - t0);
     info!("traversing attached tree values...");
     let t0 = now();
     let mut n = 0;
-    for item in tree.try_values(&store) {
-        if item.is_err() {
-            info!("{:?}", item);
-        }
+    for item in tree.try_values() {
         n += 1;
     }
     info!("done {} items, {} s", n, now() - t0);
     info!("traversing attached tree...");
     let t0 = now();
     let mut n = 0;
-    for _ in tree.try_iter(&store)? {
+    for _ in tree.try_iter() {
         n += 1;
     }
     info!("done {} items, {} s", n, now() - t0);
     info!("detaching tree...");
     let t0 = now();
-    tree.detach(&store)?;
+    let tree = tree.detached()?;
     info!("detached tree {:?} {} s", tree, now() - t0);
     info!("traversing unattached tree...");
     let t0 = now();
     let mut n = 0;
-    for _ in tree.try_iter(&store)? {
+    for _ in tree.iter() {
         n += 1;
     }
     info!("done {} items, {} s", n, now() - t0);
@@ -150,7 +150,7 @@ fn cache_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
     dir.delete_file("test")?;
     let file = dir.open_file("test")?;
     let file = PagingFile::new(file, 1024 * 1024)?;
-    let store: DynBlobStore = Box::new(file);
+    let store: DynBlobStore = Arc::new(file);
     do_test(store)
 }
 
