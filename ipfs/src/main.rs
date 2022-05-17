@@ -4,7 +4,7 @@
 //!
 use radixdb::{
     node::{DowncastConverter, OwnedSlice, TreePrefix, TreeValue},
-    store::{Blob, BlobStore, DynBlobStore, PagedFileStore},
+    store::{Blob, BlobStore, DynBlobStore, NoError, PagedFileStore},
     *,
 };
 use sha2::{Digest, Sha256};
@@ -176,28 +176,48 @@ impl Ipfs {
         println!("figuring out live set");
         let live_set = self.live_set()?;
         let mut dead = self.ids()?;
-        for id in live_set {
-            dead.remove(&id);
-        }
+        dead.retain(|id| !live_set.contains(id));
         println!("{}", t0.elapsed().as_secs_f64());
         let t0 = Instant::now();
         println!("taking out the dead");
-        for id in dead {
-            if let Some(cid) = self.get_cid(id)? {
-                self.root.remove(&id_key(&cid))?;
+        if true {
+            for id in dead {
+                if let Some(cid) = self.get_cid(id)? {
+                    self.root.remove(&id_key(&cid))?;
+                }
+                self.root.remove(&links_key(id))?;
+                self.root.remove(&block_key(id))?;
+                self.root.remove(&cid_key(id))?;
             }
-            self.root.remove(&links_key(id))?;
-            self.root.remove(&block_key(id))?;
-            self.root.remove(&cid_key(id))?;
+        } else {
+            let dead_ids: RadixTree = dead
+                .iter()
+                .cloned()
+                .flat_map(|id| {
+                    let mut res = vec![
+                        (links_key(id), vec![]),
+                        (block_key(id), vec![]),
+                        (cid_key(id), vec![]),
+                    ];
+                    if let Some(cid) = self.get_cid(id).unwrap() {
+                        res.push((id_key(&cid), vec![]))
+                    }
+                    res
+                })
+                .collect();
+            let remove = |a: &mut TreeValue<DynBlobStore>, _: &TreeValue| -> Result<(), NoError> {
+                Ok(*a = TreeValue::none())
+            };
+            self.root
+                .try_left_combine_with(&dead_ids, DowncastConverter, &remove)?;
         }
         println!("{}", t0.elapsed().as_secs_f64());
         Ok(())
     }
 
     fn commit(&mut self) -> anyhow::Result<()> {
-        todo!()
-        // self.root.attach(&mut self.store)?;
-        // self.root.store.sync()
+        self.root.reattach()?;
+        self.store.sync()
     }
 
     fn aliases(&self) -> anyhow::Result<BTreeSet<u64>> {
@@ -213,7 +233,7 @@ impl Ipfs {
     }
 
     /// all ids we know of
-    fn ids(&self) -> anyhow::Result<BTreeSet<u64>> {
+    fn ids(&self) -> anyhow::Result<Vec<u64>> {
         self.root
             .try_scan_prefix(IDS)?
             .map(|r| {

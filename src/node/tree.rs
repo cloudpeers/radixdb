@@ -989,6 +989,7 @@ pub struct Tree<S: BlobStore = NoStore> {
 }
 
 impl Tree {
+    /// An empty tree
     pub fn empty() -> Self {
         Self {
             node: TreeNode::empty(),
@@ -996,6 +997,7 @@ impl Tree {
         }
     }
 
+    /// A leaf, value with the empty prefix
     pub fn leaf(value: impl Into<TreeValue>) -> Self {
         Self {
             node: TreeNode::leaf(value),
@@ -1003,6 +1005,7 @@ impl Tree {
         }
     }
 
+    /// A single entry tree, prefix and value
     pub fn single(key: impl Into<TreePrefix>, value: impl Into<TreeValue>) -> Self {
         Self {
             node: TreeNode::single(key, value),
@@ -1067,7 +1070,7 @@ impl Tree {
         unwrap_safe(self.try_last_entry(prefix))
     }
 
-    pub fn attach<S: BlobStore>(&self, store: S) -> Result<Tree<S>, S::Error> {
+    pub fn attached<S: BlobStore>(&self, store: S) -> Result<Tree<S>, S::Error> {
         let mut tree: TreeNode<S> = unsafe { std::mem::transmute(self.node.clone()) };
         tree.attach(&store)?;
         Ok(Tree { node: tree, store })
@@ -1474,6 +1477,10 @@ impl<S: BlobStore + Clone> Tree<S> {
             node: self.node.detached(&self.store)?,
             store: NoStore,
         })
+    }
+
+    pub fn reattach(&mut self) -> Result<(), S::Error> {
+        self.node.attach(&self.store)
     }
 }
 
@@ -2940,7 +2947,7 @@ mod tests {
             let reference = x;
             let tree = mk_owned_tree(&reference);
             let store: DynBlobStore = Arc::new(MemStore::default());
-            let tree = tree.attach(store).unwrap();
+            let tree = tree.attached(store).unwrap();
             let tree = tree.try_detach().unwrap();
             let actual = to_btree_map(&tree);
             prop_assert_eq!(reference, actual);
@@ -3486,7 +3493,7 @@ mod tests {
         let store: DynBlobStore = Arc::new(MemStore::default());
         let res = nodes.fold(Tree::empty(), |a, b| a.outer_combine(&b, |_, b| b.clone()));
         res.try_dump_tree()?;
-        let res = res.attach(store)?;
+        let res = res.attached(store)?;
         println!("{:?}", res);
         res.try_dump_tree()?;
         Ok(())

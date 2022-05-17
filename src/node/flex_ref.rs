@@ -29,8 +29,13 @@ impl<T> Debug for FlexRef<T> {
 }
 
 impl<T> FlexRef<T> {
-    const fn new(bytes: [u8; 8]) -> Self {
-        Self(unsafe { std::mem::transmute(bytes) }, PhantomData)
+    #[inline(always)]
+    const fn new(value: u64) -> Self {
+        Self(value, PhantomData)
+    }
+    #[inline(always)]
+    const fn from_bytes(bytes: [u8; 8]) -> Self {
+        Self::new(unsafe { std::mem::transmute(bytes) })
     }
 
     pub const fn bytes(&self) -> &[u8; 8] {
@@ -43,7 +48,7 @@ impl<T> FlexRef<T> {
 
     /// the none marker value
     pub const fn none() -> Self {
-        Self(NONE_ARRAY_U64, PhantomData)
+        Self::new(NONE_ARRAY_U64)
     }
 
     /// try to create an id from an u64, if it fits
@@ -62,13 +67,13 @@ impl<T> FlexRef<T> {
             bytes[4] = id_bytes[5];
             bytes[5] = id_bytes[6];
             bytes[6] = id_bytes[7];
-            Some(Self::new(bytes))
+            Some(Self::from_bytes(bytes))
         } else {
             None
         }
     }
 
-    pub const INLINE_EMPTY_ARRAY: Self = Self::new(mk_bytes(DISC_INLINE, 0));
+    pub const INLINE_EMPTY_ARRAY: Self = Self::from_bytes(mk_bytes(DISC_INLINE, 0));
 
     /// try to create an inline value from a slice, if it fits
     pub fn inline_from_slice(value: &[u8]) -> Option<Self> {
@@ -76,7 +81,7 @@ impl<T> FlexRef<T> {
         if len < 7 {
             let mut res = mk_bytes(DISC_INLINE, len as u8);
             res[1..=len].copy_from_slice(value);
-            Some(Self::new(res))
+            Some(Self::from_bytes(res))
         } else {
             None
         }
@@ -85,7 +90,7 @@ impl<T> FlexRef<T> {
     /// create an owned from an arc to a sized thing
     pub const fn owned_from_arc(arc: Arc<T>) -> Self {
         let addr: usize = unsafe { std::mem::transmute(arc) };
-        Self(from_ptr(addr), PhantomData)
+        Self::new(from_ptr(addr))
     }
 
     pub const fn inline_len(&self) -> Option<usize> {
@@ -239,7 +244,7 @@ impl<T> Clone for FlexRef<T> {
         if let Some(arc) = self.owned_arc_ref() {
             Self::owned_from_arc(arc.clone())
         } else {
-            Self(self.0, PhantomData)
+            Self::new(self.0)
         }
     }
 }

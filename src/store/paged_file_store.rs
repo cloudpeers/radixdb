@@ -279,7 +279,7 @@ mod tests {
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
         info!("attaching tree...");
         let t0 = Instant::now();
-        let tree = tree.attach(store.clone())?;
+        let tree = tree.attached(store.clone())?;
         store.sync()?;
         info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
         info!("traversing attached tree values...");
