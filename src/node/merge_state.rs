@@ -303,6 +303,7 @@ impl NodeConverter<NoStore, NoStore> for NoStoreConverter {
     }
 }
 
+/// A converter that converts from one store to another store by just completely detaching it
 #[derive(Clone, Copy)]
 pub struct DetachConverter;
 
@@ -324,6 +325,7 @@ impl<A: BlobStore, B: BlobStore> NodeConverter<A, B> for DetachConverter {
     }
 }
 
+/// A converter that converts from NoStore to any store by just downcasting without actually attaching anything
 #[derive(Clone, Copy)]
 pub struct DowncastConverter;
 
@@ -345,6 +347,7 @@ impl<A: BlobStore> NodeConverter<NoStore, A> for DowncastConverter {
     }
 }
 
+/// A converter that will panic on each call, used only internally for cases where a converter is not needed
 #[derive(Clone, Copy)]
 pub(crate) struct NoConverter;
 

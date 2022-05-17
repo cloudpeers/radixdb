@@ -14,14 +14,14 @@ use crate::{
     Hex,
 };
 
-use super::{merge_state::DowncastConverter, *};
+use super::*;
 
 #[repr(transparent)]
 pub struct TreeValue<S: BlobStore = NoStore>(FlexRef<Vec<u8>>, PhantomData<S>);
 
 impl TreeValue {
     pub fn downcast<S: BlobStore>(&self) -> TreeValue<S> {
-        TreeValue(self.0.clone(), PhantomData)
+        TreeValue::new(self.0.clone())
     }
 
     pub fn data(&self) -> Option<&[u8]> {
@@ -39,7 +39,7 @@ impl TreeValue {
 
 impl<S: BlobStore> Clone for TreeValue<S> {
     fn clone(&self) -> Self {
-        Self(self.0.clone(), PhantomData)
+        Self::new(self.0.clone())
     }
 }
 
@@ -57,27 +57,33 @@ impl<S: BlobStore> From<Vec<u8>> for TreeValue<S> {
 
 /// A tree prefix is an optional blob, that is stored either inline, on the heap, or as an id
 impl<S: BlobStore> TreeValue<S> {
+    #[inline(always)]
+    fn new(value: FlexRef<Vec<u8>>) -> Self {
+        Self(value, PhantomData)
+    }
+
+    /// A special value for a TreeValue of none. This is done for efficiency of the on disk representation vs. using an Option.
     #[inline]
     pub fn none() -> Self {
-        Self(FlexRef::none(), PhantomData)
+        Self::new(FlexRef::none())
     }
 
     #[inline]
-    fn is_none(&self) -> bool {
+    pub fn is_none(&self) -> bool {
         self.0.is_none()
     }
 
     #[inline]
-    fn is_some(&self) -> bool {
+    pub fn is_some(&self) -> bool {
         !self.is_none()
     }
 
     fn from_vec(data: Vec<u8>) -> Self {
-        Self(FlexRef::inline_or_owned_from_vec(data), PhantomData)
+        Self::new(FlexRef::inline_or_owned_from_vec(data))
     }
 
     fn from_slice(data: &[u8]) -> Self {
-        Self(FlexRef::inline_or_owned_from_slice(data), PhantomData)
+        Self::new(FlexRef::inline_or_owned_from_slice(data))
     }
 
     pub fn load(&self, store: &S) -> Result<Option<OwnedSlice<u8>>, S::Error>
@@ -118,7 +124,7 @@ impl<S: BlobStore> TreeValue<S> {
     {
         let mut t = self.clone();
         t.detach(store)?;
-        Ok(TreeValue(t.0, PhantomData))
+        Ok(TreeValue::new(t.0))
     }
 
     /// attaches the value to the store. on success it will either be none, inline or id
@@ -168,7 +174,7 @@ pub struct TreePrefix<S: BlobStore = NoStore>(FlexRef<Vec<u8>>, PhantomData<S>);
 
 impl TreePrefix {
     pub fn downcast<S: BlobStore>(&self) -> TreePrefix<S> {
-        TreePrefix(self.0.clone(), PhantomData)
+        TreePrefix::new(self.0.clone())
     }
 }
 
@@ -186,7 +192,7 @@ impl AsRef<[u8]> for TreePrefix {
 
 impl<S: BlobStore> Clone for TreePrefix<S> {
     fn clone(&self) -> Self {
-        Self(self.0.clone(), PhantomData)
+        Self::new(self.0.clone())
     }
 }
 
@@ -209,21 +215,26 @@ impl<S: BlobStore> From<Arc<Vec<u8>>> for TreePrefix<S> {
 }
 
 impl<S: BlobStore> TreePrefix<S> {
+    #[inline(always)]
+    fn new(value: FlexRef<Vec<u8>>) -> Self {
+        Self(value, PhantomData)
+    }
+
     fn validate_serialized(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.0.is_inline() || self.0.is_id());
         Ok(())
     }
 
     fn from_slice(data: &[u8]) -> Self {
-        Self(FlexRef::inline_or_owned_from_slice(data), PhantomData)
+        Self::new(FlexRef::inline_or_owned_from_slice(data))
     }
 
     fn from_vec(data: Vec<u8>) -> Self {
-        Self(FlexRef::inline_or_owned_from_vec(data), PhantomData)
+        Self::new(FlexRef::inline_or_owned_from_vec(data))
     }
 
     fn from_arc_vec(data: Arc<Vec<u8>>) -> Self {
-        Self(FlexRef::owned_from_arc(data), PhantomData)
+        Self::new(FlexRef::owned_from_arc(data))
     }
 
     fn truncate(&mut self, n: usize, store: &S) -> Result<TreePrefix<S>, S::Error> {
@@ -297,7 +308,7 @@ impl<S: BlobStore> TreePrefix<S> {
     {
         let mut t = self.clone();
         t.detach(store)?;
-        Ok(TreePrefix(t.0, PhantomData))
+        Ok(TreePrefix::new(t.0))
     }
 
     /// attaches the prefix to the store. on success it will either be inline or id
@@ -324,7 +335,7 @@ impl<S: BlobStore> TreePrefix<S> {
 
     #[inline]
     fn empty() -> Self {
-        Self(FlexRef::INLINE_EMPTY_ARRAY, PhantomData)
+        Self::new(FlexRef::INLINE_EMPTY_ARRAY)
     }
 
     fn first_opt(&self) -> Option<u8> {
@@ -344,7 +355,7 @@ impl<S: BlobStore> TreePrefix<S> {
         let mut t = Vec::with_capacity(a.len() + b.len());
         t.extend_from_slice(a);
         t.extend_from_slice(b);
-        Self(FlexRef::inline_or_owned_from_vec(t), PhantomData)
+        Self::new(FlexRef::inline_or_owned_from_vec(t))
     }
 }
 
@@ -691,8 +702,7 @@ impl<S: BlobStore> TreeNode<S> {
             Ok(match x {
                 FindResult::Found(res) => {
                     let mut res = res.clone();
-                    res.prefix =
-                        TreePrefix(FlexRef::inline_or_owned_from_slice(prefix), PhantomData);
+                    res.prefix = TreePrefix::new(FlexRef::inline_or_owned_from_slice(prefix));
                     res
                 }
                 FindResult::Prefix { tree: res, rt } => {
