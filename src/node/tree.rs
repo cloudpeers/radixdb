@@ -16,6 +16,7 @@ use crate::{
 
 use super::*;
 
+/// The value carried by a tree node. This can be either an inline slice, a heap allocated slice, or a special value none.
 #[repr(transparent)]
 pub struct TreeValue<S: BlobStore = NoStore>(FlexRef<Vec<u8>>, PhantomData<S>);
 
