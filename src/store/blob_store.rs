@@ -26,6 +26,9 @@ pub trait BlobStore: Debug + Send + Sync {
     }
 }
 
+/// Type for a dynamic blob store
+///
+/// Uses Arc so the dynamic reference can be cheaply cloned.
 pub type DynBlobStore = Arc<dyn BlobStore<Error = anyhow::Error>>;
 
 impl BlobStore for DynBlobStore {
