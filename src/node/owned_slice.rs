@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, marker::PhantomData, sync::Arc};
+use std::{borrow::Borrow, marker::PhantomData, rc::Rc};
 
 use std::ops::Deref;
 
@@ -29,11 +29,11 @@ impl<T> OwnedSlice<T> {
         T: Clone,
     {
         Self::Flex {
-            flex: FlexRef::owned_from_arc(Arc::new(data.to_vec())),
+            flex: FlexRef::owned_from_arc(Rc::new(data.to_vec())),
         }
     }
 
-    pub fn from_arc_vec(data: Arc<Vec<T>>) -> Self
+    pub fn from_arc_vec(data: Rc<Vec<T>>) -> Self
     where
         T: Clone,
     {

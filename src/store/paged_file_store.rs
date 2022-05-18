@@ -1,21 +1,20 @@
 use fnv::FnvHashMap;
 use memmap::{Mmap, MmapOptions};
-use parking_lot::Mutex;
 
 use crate::store::{Blob, BlobOwner, BlobStore};
 use std::{
     fmt::Debug,
     fs::File,
     io::{Seek, Write},
-    sync::Arc,
+    rc::Rc, cell::RefCell,
 };
 
 #[derive(Clone)]
-pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
+pub struct PagedFileStore<const SIZE: usize>(Rc<RefCell<Inner<SIZE>>>);
 
 impl<const SIZE: usize> Debug for PagedFileStore<SIZE> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let inner = self.0.lock();
+        let inner = self.0.borrow();
         f.debug_struct("PagedFileStore")
             .field("pages", &inner.pages.len())
             .field("recent", &inner.recent.len())
@@ -52,7 +51,7 @@ impl<const SIZE: usize> PageInner<SIZE> {
     }
 }
 
-impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
+impl<const SIZE: usize> BlobOwner for Rc<PageInner<SIZE>> {
     fn get_slice(&self, offset: usize) -> &[u8] {
         let data = self.mmap.as_ref();
         let base = offset + 4;
@@ -71,12 +70,12 @@ impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
 }
 
 #[derive(Debug, Clone)]
-struct Page<const SIZE: usize>(Arc<dyn BlobOwner>);
+struct Page<const SIZE: usize>(Rc<dyn BlobOwner>);
 
 impl<const SIZE: usize> Page<SIZE> {
     fn new(mmap: Mmap) -> Self {
         assert!(mmap.len() == SIZE);
-        Self(Arc::new(Arc::new(PageInner::<SIZE>::new(mmap))))
+        Self(Rc::new(Rc::new(PageInner::<SIZE>::new(mmap))))
     }
 
     /// try to get the bytes at the given offset
@@ -190,7 +189,7 @@ fn align(offset: u64) -> u64 {
 
 impl<const SIZE: usize> PagedFileStore<SIZE> {
     pub fn new(file: File) -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(Mutex::new(Inner::new(file)?))))
+        Ok(Self(Rc::new(RefCell::new(Inner::new(file)?))))
     }
 }
 
@@ -198,11 +197,11 @@ impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
     type Error = anyhow::Error;
 
     fn read(&self, id: u64) -> anyhow::Result<Blob> {
-        self.0.lock().bytes(id)
+        self.0.borrow().bytes(id)
     }
 
     fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
-        self.0.lock().append(data)
+        self.0.borrow_mut().append(data)
     }
 
     fn sync(&self) -> anyhow::Result<()> {
@@ -335,7 +334,7 @@ mod tests {
             .write(true)
             .open(&path)?;
         let db = PagedFileStore::<1048576>::new(file).unwrap();
-        let store: DynBlobStore = Arc::new(db);
+        let store: DynBlobStore = Rc::new(db);
         do_test(store)
     }
 

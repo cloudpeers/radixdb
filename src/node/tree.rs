@@ -1,6 +1,6 @@
 use binary_merge::MergeOperation;
 use std::{
-    borrow::Borrow, cmp::Ordering, fmt::Debug, marker::PhantomData, result::Result, sync::Arc,
+    borrow::Borrow, cmp::Ordering, fmt::Debug, marker::PhantomData, result::Result, rc::Rc,
 };
 
 use crate::{
@@ -208,8 +208,8 @@ impl<S: BlobStore> From<Vec<u8>> for TreePrefix<S> {
     }
 }
 
-impl<S: BlobStore> From<Arc<Vec<u8>>> for TreePrefix<S> {
-    fn from(data: Arc<Vec<u8>>) -> Self {
+impl<S: BlobStore> From<Rc<Vec<u8>>> for TreePrefix<S> {
+    fn from(data: Rc<Vec<u8>>) -> Self {
         Self::from_arc_vec(data)
     }
 }
@@ -233,7 +233,7 @@ impl<S: BlobStore> TreePrefix<S> {
         Self::new(FlexRef::inline_or_owned_from_vec(data))
     }
 
-    fn from_arc_vec(data: Arc<Vec<u8>>) -> Self {
+    fn from_arc_vec(data: Rc<Vec<u8>>) -> Self {
         Self::new(FlexRef::owned_from_arc(data))
     }
 
@@ -345,10 +345,10 @@ impl<S: BlobStore> TreePrefix<S> {
     fn make_mut(&mut self, store: &S) -> Result<&mut Vec<u8>, S::Error> {
         if !self.0.is_arc() {
             let data = self.load(store)?;
-            self.0 = FlexRef::owned_from_arc(Arc::new(data.as_ref().to_vec()));
+            self.0 = FlexRef::owned_from_arc(Rc::new(data.as_ref().to_vec()));
         }
         let arc = self.0.owned_arc_ref_mut().expect("must be an arc");
-        Ok(Arc::make_mut(arc))
+        Ok(Rc::make_mut(arc))
     }
 
     fn join(a: &[u8], b: &[u8]) -> Self {
@@ -421,14 +421,14 @@ impl<S: BlobStore> From<Vec<TreeNode<S>>> for TreeChildren<S> {
     }
 }
 
-impl<S: BlobStore> From<Arc<Vec<TreeNode<S>>>> for TreeChildren<S> {
-    fn from(value: Arc<Vec<TreeNode<S>>>) -> Self {
+impl<S: BlobStore> From<Rc<Vec<TreeNode<S>>>> for TreeChildren<S> {
+    fn from(value: Rc<Vec<TreeNode<S>>>) -> Self {
         Self::from_arc(value)
     }
 }
 
 impl<S: BlobStore> TreeChildren<S> {
-    fn from_arc(data: Arc<Vec<TreeNode<S>>>) -> Self {
+    fn from_arc(data: Rc<Vec<TreeNode<S>>>) -> Self {
         Self(FlexRef::owned_from_arc(data))
     }
 
@@ -436,7 +436,7 @@ impl<S: BlobStore> TreeChildren<S> {
         if vec.is_empty() {
             Self::default()
         } else {
-            Self::from_arc(Arc::new(vec))
+            Self::from_arc(Rc::new(vec))
         }
     }
 
@@ -478,7 +478,7 @@ impl<S: BlobStore> TreeChildren<S> {
 
     fn make_mut(&mut self) -> Option<&mut Vec<TreeNode<S>>> {
         if let Some(arc) = self.0.owned_arc_ref_mut() {
-            Some(Arc::make_mut(arc))
+            Some(Rc::make_mut(arc))
         } else {
             None
         }
@@ -486,10 +486,10 @@ impl<S: BlobStore> TreeChildren<S> {
 
     fn get_mut(&mut self, store: &S) -> Result<&mut Vec<TreeNode<S>>, S::Error> {
         if !self.0.is_arc() {
-            self.0 = FlexRef::owned_from_arc(Arc::new(self.load(store)?.to_vec()));
+            self.0 = FlexRef::owned_from_arc(Rc::new(self.load(store)?.to_vec()));
         }
         let arc = self.0.owned_arc_ref_mut().unwrap();
-        Ok(Arc::make_mut(arc))
+        Ok(Rc::make_mut(arc))
     }
 
     /// detaches the children from the store, up to a depth `depth`
@@ -500,12 +500,12 @@ impl<S: BlobStore> TreeChildren<S> {
             let children = TreeNode::nodes_from_bytes(store.read(id)?.as_ref())
                 .unwrap()
                 .to_vec();
-            self.0 = FlexRef::owned_from_arc(Arc::new(children))
+            self.0 = FlexRef::owned_from_arc(Rc::new(children))
         }
         // for any store but NoStore, we must detach even if the root of the tree is already detached
         if store.needs_deep_detach() && depth > 0 {
             if let Some(children) = self.0.owned_arc_ref_mut() {
-                for child in Arc::make_mut(children) {
+                for child in Rc::make_mut(children) {
                     child.detach(store, depth - 1)?;
                 }
             }
@@ -1506,12 +1506,12 @@ enum FindResult<T> {
     },
     // did not find anything, T is the closest match, with n remaining (unmatched) in the prefix of T
     NotFound {
-        // the closest match
-        closest: T,
-        // number of remaining elements in the prefix of the tree
-        rt: usize,
-        // number of remaining elements in the search prefix
-        rp: usize,
+        // // the closest match
+        // closest: T,
+        // // number of remaining elements in the prefix of the tree
+        // rt: usize,
+        // // number of remaining elements in the search prefix
+        // rp: usize,
     },
 }
 
@@ -1554,17 +1554,17 @@ fn find<S: BlobStore, T>(
             return find(store, child, &prefix[n..], f);
         } else {
             FindResult::NotFound {
-                closest: tree,
-                rp,
-                rt,
+                // closest: tree,
+                // rp,
+                // rt,
             }
         }
     } else {
         // disjoint, but we still need to store how far we matched
         FindResult::NotFound {
-            closest: tree,
-            rp,
-            rt,
+            // closest: tree,
+            // rp,
+            // rt,
         }
     };
     f(fr)
@@ -2134,23 +2134,23 @@ fn left_combine_pred<T: TT>(
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct IterKey(Arc<Vec<u8>>);
+pub struct IterKey(Rc<Vec<u8>>);
 
 impl IterKey {
     fn new(root: &[u8]) -> Self {
-        Self(Arc::new(root.to_vec()))
+        Self(Rc::new(root.to_vec()))
     }
 
     fn append(&mut self, data: &[u8]) {
         // for typical iterator use, a reference is not kept for a long time, so this will be very cheap
         //
         // in the case a reference is kept, this will make a copy.
-        let elems = Arc::make_mut(&mut self.0);
+        let elems = Rc::make_mut(&mut self.0);
         elems.extend_from_slice(data);
     }
 
     fn pop(&mut self, n: usize) {
-        let elems = Arc::make_mut(&mut self.0);
+        let elems = Rc::make_mut(&mut self.0);
         elems.truncate(elems.len().saturating_sub(n));
     }
 }
@@ -2760,7 +2760,7 @@ mod tests {
         collections::{BTreeMap, BTreeSet},
         convert::Infallible,
         mem::size_of,
-        sync::Arc,
+        rc::Rc,
     };
 
     #[derive(Debug, PartialEq, Eq)]
@@ -2946,7 +2946,7 @@ mod tests {
         fn attach_detach_roundtrip(x in arb_tree_contents()) {
             let reference = x;
             let tree = mk_owned_tree(&reference);
-            let store: DynBlobStore = Arc::new(MemStore::default());
+            let store: DynBlobStore = Rc::new(MemStore::default());
             let tree = tree.attached(store).unwrap();
             let tree = tree.try_detach().unwrap();
             let actual = to_btree_map(&tree);
@@ -3437,13 +3437,13 @@ mod tests {
         println!("{:?}", x);
         let x = FlexRef::<()>::id_from_u64_and_extra(1234, None);
         println!("{:?}", x);
-        let arc = Arc::new(b"abcd".to_vec());
+        let arc = Rc::new(b"abcd".to_vec());
         let a1 = arc.clone();
         let a2 = arc.clone();
         // base addr of the arc
         let _u1: usize = unsafe { std::mem::transmute(a1) };
         // content addr of the arc, 16 bytes larger on 64 bit
-        let _u2 = Arc::into_raw(a2) as usize;
+        let _u2 = Rc::into_raw(a2) as usize;
         // println!("{} {} {}", u1, u2, u2 - u1);
         let x = FlexRef::owned_from_arc(arc);
         println!("{:?}", x);
@@ -3471,7 +3471,7 @@ mod tests {
 
     #[test]
     fn tree_node_attach_detach() -> anyhow::Result<()> {
-        let mut store: DynBlobStore = Arc::new(MemStore::default());
+        let mut store: DynBlobStore = Rc::new(MemStore::default());
         let node = TreeNode::single(b"abcdefgh".as_ref(), b"ijklmnop".as_ref());
         let mut node = TreeNode::new(b"a".as_ref(), TreeValue::none(), [node].as_ref());
         println!("{:?}", node);
@@ -3490,7 +3490,7 @@ mod tests {
             let value = i.to_string() + "000000000";
             Tree::single(key.as_bytes(), value.as_bytes())
         });
-        let store: DynBlobStore = Arc::new(MemStore::default());
+        let store: DynBlobStore = Rc::new(MemStore::default());
         let res = nodes.fold(Tree::empty(), |a, b| a.outer_combine(&b, |_, b| b.clone()));
         res.try_dump_tree()?;
         let res = res.attached(store)?;

@@ -1,10 +1,10 @@
-use std::{borrow::Borrow, ops::Deref, sync::Arc};
+use std::{borrow::Borrow, ops::Deref, rc::Rc};
 
 /// A blob backed by a dynamic blob owner
 #[derive(Debug, Clone)]
 pub struct Blob {
     /// The blob owner
-    owner: Arc<dyn BlobOwner>,
+    owner: Rc<dyn BlobOwner>,
     /// Extra data to allow a single BlobOwner to hand out multiple Blob s. E.g. this could be an offset within a page of shared memory.
     ///
     /// Make this a u64?
@@ -28,14 +28,14 @@ impl Blob {
         self.owner.get_slice(self.extra)
     }
 
-    /// Create a blob from a slice. This will allocate an `Arc<Vec<u8>>`.
+    /// Create a blob from a slice. This will allocate an `Rc<Vec<u8>>`.
     pub fn from_slice(data: &[u8]) -> Self {
-        let owner: Arc<dyn BlobOwner> = Arc::new(data.to_vec());
+        let owner: Rc<dyn BlobOwner> = Rc::new(data.to_vec());
         Self { owner, extra: 0 }
     }
 
     /// Create a new blob with a given BlobOwner and extra
-    pub fn new(owner: Arc<dyn BlobOwner>, extra: usize) -> anyhow::Result<Self> {
+    pub fn new(owner: Rc<dyn BlobOwner>, extra: usize) -> anyhow::Result<Self> {
         anyhow::ensure!(owner.is_valid(extra));
         owner.inc(extra);
         Ok(Self { owner, extra })
@@ -65,7 +65,7 @@ impl Borrow<[u8]> for Blob {
 /// Trait for a blob owner
 ///
 /// A blob owner can own a single blob, or it can be a "Page" containing multiple blobs, identified by the id
-pub trait BlobOwner: Send + Sync + std::fmt::Debug + 'static {
+pub trait BlobOwner: std::fmt::Debug + 'static {
     /// Called when a blob is being cloned
     fn inc(&self, _extra: usize) {}
     /// Called when a blob is being dropped
@@ -76,7 +76,7 @@ pub trait BlobOwner: Send + Sync + std::fmt::Debug + 'static {
     fn is_valid(&self, extra: usize) -> bool;
 }
 
-/// Implementation of BlobOwner for Vec<u8>, so an `Arc<Vec<u8>>` can be used as an Arc<dyn BlobOwner>
+/// Implementation of BlobOwner for Vec<u8>, so an `Rc<Vec<u8>>` can be used as an Rc<dyn BlobOwner>
 impl BlobOwner for Vec<u8> {
     fn get_slice(&self, _: usize) -> &[u8] {
         self.as_ref()

@@ -8,7 +8,7 @@ use radixdb::{
     *,
 };
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use std::{collections::BTreeSet, rc::Rc, time::Instant};
 use tempfile::tempfile;
 
 /// alias -> id
@@ -58,25 +58,25 @@ fn alias_key(alias: &[u8]) -> Vec<u8> {
     res
 }
 
-fn block_key(id: u64) -> Vec<u8> {
-    let mut res = Vec::with_capacity(BLOCK.len() + 8);
-    res.extend_from_slice(BLOCK);
-    res.extend_from_slice(&id.to_be_bytes());
+fn block_key(id: u64) -> [u8;11] {
+    let mut res = [0u8; 11];
+    res[..5].copy_from_slice(BLOCK);
+    res[5..].copy_from_slice(&id_to_bytes(id));
     res
 }
 
-fn links_key(id: u64) -> Vec<u8> {
-    let mut res = Vec::with_capacity(BLOCK.len() + 8 + LINKS.len());
-    res.extend_from_slice(BLOCK);
-    res.extend_from_slice(&id.to_be_bytes());
-    res.extend_from_slice(LINKS);
+fn links_key(id: u64) -> [u8;16] {
+    let mut res = [0u8; 16];
+    res[..5].copy_from_slice(BLOCK);
+    res[5..11].copy_from_slice(&id_to_bytes(id));
+    res[11..].copy_from_slice(LINKS);
     res
 }
 
-fn cid_key(id: u64) -> Vec<u8> {
-    let mut res = Vec::with_capacity(CIDS.len() + 8);
-    res.extend_from_slice(CIDS);
-    res.extend_from_slice(&id.to_be_bytes());
+fn cid_key(id: u64) -> [u8; 10] {
+    let mut res = [0u8; 10];
+    res[..4].copy_from_slice(CIDS);
+    res[4..].copy_from_slice(&id_to_bytes(id));
     res
 }
 
@@ -145,6 +145,15 @@ impl Block {
     }
 }
 
+fn id_to_bytes(id: u64) -> [u8; 6] {
+    id.to_be_bytes()[2..].try_into().unwrap()
+}
+
+fn id_from_bytes(b: [u8; 6]) -> u64 {
+    let t = [0,0,b[0],b[1],b[2],b[3],b[4],b[5]];
+    u64::from_be_bytes(t)
+}
+
 impl Ipfs {
     /// compute the set of all live ids
     fn live_set(&self) -> anyhow::Result<BTreeSet<u64>> {
@@ -195,9 +204,9 @@ impl Ipfs {
                 .cloned()
                 .flat_map(|id| {
                     let mut res = vec![
-                        (links_key(id), vec![]),
-                        (block_key(id), vec![]),
-                        (cid_key(id), vec![]),
+                        (links_key(id).to_vec(), vec![]),
+                        (block_key(id).to_vec(), vec![]),
+                        (cid_key(id).to_vec(), vec![]),
                     ];
                     if let Some(cid) = self.get_cid(id).unwrap() {
                         res.push((id_key(&cid), vec![]))
@@ -226,7 +235,7 @@ impl Ipfs {
             .map(|r| {
                 r.and_then(|(_, v)| {
                     let blob = v.load(&self.store)?.unwrap();
-                    Ok(u64::from_be_bytes(blob.as_ref().try_into()?))
+                    Ok(id_from_bytes(blob.as_ref().try_into()?))
                 })
             })
             .collect()
@@ -239,7 +248,7 @@ impl Ipfs {
             .map(|r| {
                 r.and_then(|(_, v)| {
                     let blob = v.load(&self.store)?.unwrap();
-                    Ok(u64::from_be_bytes(blob.as_ref().try_into()?))
+                    Ok(id_from_bytes(blob.as_ref().try_into()?))
                 })
             })
             .collect()
@@ -255,8 +264,8 @@ impl Ipfs {
     fn get_id(&self, hash: &[u8]) -> anyhow::Result<Option<u64>> {
         let id_key = id_key(hash);
         Ok(if let Some(blob) = self.root.try_get(&id_key)? {
-            let id: [u8; 8] = blob.as_ref().try_into()?;
-            Some(u64::from_be_bytes(id))
+            let id: [u8; 6] = blob.as_ref().try_into()?;
+            Some(id_from_bytes(id))
         } else {
             None
         })
@@ -275,7 +284,7 @@ impl Ipfs {
     fn alias(&mut self, name: &[u8], hash: Option<&[u8]>) -> anyhow::Result<()> {
         if let Some(hash) = hash {
             let id = self.get_or_create_id(hash)?;
-            self.root.insert(&alias_key(name), &id.to_be_bytes())?;
+            self.root.insert(&alias_key(name), &id_to_bytes(id))?;
         } else {
             self.root.remove(&alias_key(name))?;
         }
@@ -293,21 +302,21 @@ impl Ipfs {
     fn get_or_create_id(&mut self, hash: &[u8]) -> anyhow::Result<u64> {
         let id_key = id_key(hash);
         Ok(if let Some(blob) = self.root.try_get(&id_key)? {
-            let id: [u8; 8] = blob.as_ref().try_into()?;
-            u64::from_be_bytes(id)
+            let id: [u8; 6] = blob.as_ref().try_into()?;
+            id_from_bytes(id)
         } else {
             let cids = self.root.try_filter_prefix(CIDS)?;
             // compute higest id
             let id = if let Some((prefix, _)) = cids.try_last_entry(TreePrefix::default())? {
                 // get id from prefix and inc by one
                 let prefix = prefix.load(&self.store)?;
-                let id: [u8; 8] = prefix[prefix.len() - 8..].try_into()?;
-                u64::from_be_bytes(id) + 1
+                let id: [u8; 6] = prefix[prefix.len() - 6..].try_into()?;
+                id_from_bytes(id) + 1
             } else {
                 0
             };
             let cid_key = cid_key(id);
-            self.root.insert(&id_key, &u64::to_be_bytes(id))?;
+            self.root.insert(&id_key, &id_to_bytes(id))?;
             self.root.insert(&cid_key, &hash)?;
             id
         })
@@ -347,9 +356,9 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
     let file = tempfile()?;
     let store = PagedFileStore::<4194304>::new(file)?;
-    let mut ipfs = Ipfs::new(Arc::new(store.clone()))?;
+    let mut ipfs = Ipfs::new(Rc::new(store.clone()))?;
     let mut hashes = Vec::new();
-    for i in 0..1000_000u64 {
+    for i in 0..100_000u64 {
         println!("putting block {}", i);
         let mut data = [0u8; 10000];
         data[0..8].copy_from_slice(&i.to_be_bytes());
@@ -390,12 +399,15 @@ fn main() -> anyhow::Result<()> {
     println!("done {} {}", res, t0.elapsed().as_secs_f64());
     hashes.sort();
     println!("traversing all (random)");
-    let t0 = Instant::now();
-    let mut res = 0u64;
-    for hash in &hashes {
-        res += ipfs.get(hash)?.unwrap().len() as u64;
+    for i in 0..100 {
+        let t0 = Instant::now();
+        let mut res = 0u64;
+        for hash in &hashes {
+            res += ipfs.get(hash)?.unwrap().len() as u64;
+        }
+        println!("done {} {}", res, t0.elapsed().as_secs_f64());
     }
-    println!("done {} {}", res, t0.elapsed().as_secs_f64());
+    return Ok(());
     // ipfs.dump()?;
     println!("performing gc");
     ipfs.gc()?;

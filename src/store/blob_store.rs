@@ -5,10 +5,10 @@ use crate::{
 use anyhow::Context;
 use fnv::FnvHashMap;
 use parking_lot::Mutex;
-use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
+use std::{collections::BTreeMap, fmt::Debug, rc::Rc};
 
 /// A generic blob store
-pub trait BlobStore: Debug + Send + Sync {
+pub trait BlobStore: Debug {
     type Error: From<NoError> + From<anyhow::Error>;
 
     /// Read a blob with the given id / extra value
@@ -28,8 +28,8 @@ pub trait BlobStore: Debug + Send + Sync {
 
 /// Type for a dynamic blob store
 ///
-/// Uses Arc so the dynamic reference can be cheaply cloned.
-pub type DynBlobStore = Arc<dyn BlobStore<Error = anyhow::Error>>;
+/// Uses Rc so the dynamic reference can be cheaply cloned.
+pub type DynBlobStore = Rc<dyn BlobStore<Error = anyhow::Error>>;
 
 impl BlobStore for DynBlobStore {
     type Error = anyhow::Error;
@@ -102,7 +102,7 @@ pub fn unwrap_safe<T>(x: Result<T, NoError>) -> T {
 /// A simple in memory store
 #[derive(Default, Clone)]
 pub struct MemStore {
-    data: Arc<Mutex<BTreeMap<u64, Blob>>>,
+    data: Rc<Mutex<BTreeMap<u64, Blob>>>,
 }
 
 impl Debug for MemStore {
@@ -146,7 +146,7 @@ struct Inner<const SIZE: usize> {
 }
 
 #[derive(Default, Clone)]
-pub struct PagedMemStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
+pub struct PagedMemStore<const SIZE: usize>(Rc<Mutex<Inner<SIZE>>>);
 
 const ALIGN: usize = 8;
 
@@ -169,7 +169,7 @@ impl<const SIZE: usize> PageInner<SIZE> {
     }
 }
 
-impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
+impl<const SIZE: usize> BlobOwner for Rc<PageInner<SIZE>> {
     fn get_slice(&self, offset: usize) -> &[u8] {
         let data = &self.as_ref().data;
         let base = offset + 4;
@@ -188,16 +188,16 @@ impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
 }
 
 #[derive(Debug, Clone)]
-struct Page<const SIZE: usize>(Arc<dyn BlobOwner>);
+struct Page<const SIZE: usize>(Rc<dyn BlobOwner>);
 
 struct PageBuilder<const SIZE: usize> {
-    data: Arc<PageInner<SIZE>>,
+    data: Rc<PageInner<SIZE>>,
 }
 
 impl<const SIZE: usize> PageBuilder<SIZE> {
     fn new() -> Self {
         Self {
-            data: Arc::new(PageInner::new()),
+            data: Rc::new(PageInner::new()),
         }
     }
 
@@ -209,14 +209,14 @@ impl<const SIZE: usize> PageBuilder<SIZE> {
             "slice extends beyond the end of the page"
         );
         anyhow::ensure!(offset & 7 == 0, "offsets must be 8 byte aligned");
-        let inner = Arc::get_mut(&mut self.data).context("non exclusive access")?;
+        let inner = Rc::get_mut(&mut self.data).context("non exclusive access")?;
         inner.data[offset..offset + 4].copy_from_slice(&(len as u32).to_be_bytes());
         inner.data[offset + 4..offset + len + 4].copy_from_slice(data);
         Ok(())
     }
 
     fn build(self) -> Page<SIZE> {
-        Page(Arc::new(self.data))
+        Page(Rc::new(self.data))
     }
 }
 
@@ -315,7 +315,7 @@ impl<const SIZE: usize> Inner<SIZE> {
 
 impl<const SIZE: usize> PagedMemStore<SIZE> {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(Inner::new())))
+        Self(Rc::new(Mutex::new(Inner::new())))
     }
 }
 

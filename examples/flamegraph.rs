@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
+use std::{collections::BTreeMap, fs, sync::Arc, time::Instant, rc::Rc};
 
 use log::info;
 use radixdb::{
@@ -138,7 +138,7 @@ fn browser_compare() -> anyhow::Result<()> {
         .write(true)
         .open(&path)?;
     let db = PagedFileStore::<1048576>::new(file).unwrap();
-    let store: DynBlobStore = Arc::new(db);
+    let store: DynBlobStore = Rc::new(db);
     do_test(store)
 }
 

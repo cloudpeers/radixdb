@@ -1,4 +1,4 @@
-use std::{fmt::Debug, marker::PhantomData, sync::Arc};
+use std::{fmt::Debug, marker::PhantomData, rc::Rc};
 
 use crate::Hex;
 
@@ -19,8 +19,8 @@ impl<T> Debug for FlexRef<T> {
                 .finish()
         } else if let Some(arc) = self.owned_arc_ref() {
             f.debug_struct("FlexRef::Owned")
-                .field("p", &Arc::as_ptr(arc))
-                .field("c", &Arc::strong_count(arc))
+                .field("p", &Rc::as_ptr(arc))
+                .field("c", &Rc::strong_count(arc))
                 .finish()
         } else {
             f.debug_tuple("FlexRef::None").finish()
@@ -88,7 +88,7 @@ impl<T> FlexRef<T> {
     }
 
     /// create an owned from an arc to a sized thing
-    pub const fn owned_from_arc(arc: Arc<T>) -> Self {
+    pub const fn owned_from_arc(arc: Rc<T>) -> Self {
         let addr: usize = unsafe { std::mem::transmute(arc) };
         Self::new(from_ptr(addr))
     }
@@ -168,7 +168,7 @@ impl<T> FlexRef<T> {
         is_none(self.0)
     }
 
-    pub fn owned_take_arc(&mut self) -> Option<Arc<T>> {
+    pub fn owned_take_arc(&mut self) -> Option<Rc<T>> {
         if is_pointer(self.0) {
             let res = arc(self.0);
             self.0 = NONE_ARRAY_U64;
@@ -178,7 +178,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    pub fn owned_into_arc(self) -> Option<Arc<T>> {
+    pub fn owned_into_arc(self) -> Option<Rc<T>> {
         if is_pointer(self.0) {
             let res = arc(self.0);
             std::mem::forget(self);
@@ -188,7 +188,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    pub const fn owned_arc_ref(&self) -> Option<&Arc<T>> {
+    pub const fn owned_arc_ref(&self) -> Option<&Rc<T>> {
         if is_pointer(self.0) {
             Some(arc_ref(&self.0))
         } else {
@@ -196,7 +196,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    pub fn owned_arc_ref_mut(&mut self) -> Option<&mut Arc<T>> {
+    pub fn owned_arc_ref_mut(&mut self) -> Option<&mut Rc<T>> {
         if is_pointer(self.0) {
             Some(arc_ref_mut(&mut self.0))
         } else {
@@ -227,14 +227,14 @@ impl FlexRef<Vec<u8>> {
         if let Some(res) = FlexRef::inline_from_slice(value) {
             res
         } else {
-            FlexRef::owned_from_arc(Arc::new(value.to_vec()))
+            FlexRef::owned_from_arc(Rc::new(value.to_vec()))
         }
     }
     pub fn inline_or_owned_from_vec(value: Vec<u8>) -> Self {
         if let Some(res) = FlexRef::inline_from_slice(&value) {
             res
         } else {
-            FlexRef::owned_from_arc(Arc::new(value))
+            FlexRef::owned_from_arc(Rc::new(value))
         }
     }
 }
@@ -327,12 +327,12 @@ const fn ptr(value: u64) -> usize {
 }
 
 #[inline]
-const fn arc<T>(value: u64) -> Arc<T> {
+const fn arc<T>(value: u64) -> Rc<T> {
     unsafe { std::mem::transmute(ptr(value)) }
 }
 
 #[inline]
-const fn arc_ref<T>(value: &u64) -> &Arc<T> {
+const fn arc_ref<T>(value: &u64) -> &Rc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }
@@ -343,7 +343,7 @@ const ALIGNED_EMPTY_REF: &'static [u8] = {
 };
 
 #[inline]
-fn arc_ref_mut<T>(value: &mut u64) -> &mut Arc<T> {
+fn arc_ref_mut<T>(value: &mut u64) -> &mut Rc<T> {
     // todo: pretty sure this is broken on 32 bit!
     unsafe { std::mem::transmute(value) }
 }

@@ -7,11 +7,11 @@ use std::{
     fmt::Debug,
     fs::File,
     io::{Seek, Write},
-    sync::Arc,
+    rc::Rc,
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
+pub(crate) struct PagedFileStore<const SIZE: usize>(Rc<Mutex<Inner<SIZE>>>);
 
 struct Inner<const SIZE: usize> {
     file: File,
@@ -40,7 +40,7 @@ impl<const SIZE: usize> PageInner<SIZE> {
     }
 }
 
-impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
+impl<const SIZE: usize> BlobOwner for Rc<PageInner<SIZE>> {
     fn get_slice(&self, offset: usize) -> &[u8] {
         read_length_prefixed(self.mmap.as_ref(), offset)
     }
@@ -57,12 +57,12 @@ impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
 }
 
 #[derive(Debug, Clone)]
-struct Page<const SIZE: usize>(Arc<dyn BlobOwner>);
+struct Page<const SIZE: usize>(Rc<dyn BlobOwner>);
 
 impl<const SIZE: usize> Page<SIZE> {
     fn new(mmap: Mmap) -> Self {
         assert!(mmap.len() == SIZE);
-        Self(Arc::new(Arc::new(PageInner::<SIZE>::new(mmap))))
+        Self(Rc::new(Rc::new(PageInner::<SIZE>::new(mmap))))
     }
 
     /// try to get the bytes at the given offset
@@ -243,7 +243,7 @@ impl<const PAGE_SIZE: usize> Inner<PAGE_SIZE> {
 
 impl<const SIZE: usize> PagedFileStore<SIZE> {
     pub fn new(file: File) -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(Mutex::new(Inner::<SIZE>::new(file)?))))
+        Ok(Self(Rc::new(Mutex::new(Inner::<SIZE>::new(file)?))))
     }
 }
 
