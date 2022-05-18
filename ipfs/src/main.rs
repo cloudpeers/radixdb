@@ -349,7 +349,7 @@ fn main() -> anyhow::Result<()> {
     let store = PagedFileStore::<4194304>::new(file)?;
     let mut ipfs = Ipfs::new(Arc::new(store.clone()))?;
     let mut hashes = Vec::new();
-    for i in 0..1000_000u64 {
+    for i in 0..100_000u64 {
         println!("putting block {}", i);
         let mut data = [0u8; 10000];
         data[0..8].copy_from_slice(&i.to_be_bytes());
@@ -389,13 +389,15 @@ fn main() -> anyhow::Result<()> {
     }
     println!("done {} {}", res, t0.elapsed().as_secs_f64());
     hashes.sort();
-    println!("traversing all (random)");
-    let t0 = Instant::now();
-    let mut res = 0u64;
-    for hash in &hashes {
-        res += ipfs.get(hash)?.unwrap().len() as u64;
+    for _ in 0..100 {
+        println!("traversing all (random)");
+        let t0 = Instant::now();
+        let mut res = 0u64;
+        for hash in &hashes {
+            res += ipfs.get(hash)?.unwrap().len() as u64;
+        }
+        println!("done {} {}", res, t0.elapsed().as_secs_f64());
     }
-    println!("done {} {}", res, t0.elapsed().as_secs_f64());
     // ipfs.dump()?;
     println!("performing gc");
     ipfs.gc()?;
