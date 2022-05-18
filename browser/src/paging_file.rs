@@ -209,7 +209,7 @@ const ALIGNMENT: u64 = 8;
 struct Page(Arc<[u8]>);
 
 impl BlobOwner for Page {
-    fn is_valid(&self, offset: usize) -> bool {
+    fn inc(&self, offset: usize) -> bool {
         let data = &self.0;
         if offset + 4 <= data.len() {
             let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
