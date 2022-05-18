@@ -36,8 +36,7 @@ impl Blob {
 
     /// Create a new blob with a given BlobOwner and extra
     pub fn new(owner: Rc<dyn BlobOwner>, extra: usize) -> anyhow::Result<Self> {
-        anyhow::ensure!(owner.is_valid(extra));
-        owner.inc(extra);
+        anyhow::ensure!(owner.inc(extra));
         Ok(Self { owner, extra })
     }
 }
@@ -67,13 +66,11 @@ impl Borrow<[u8]> for Blob {
 /// A blob owner can own a single blob, or it can be a "Page" containing multiple blobs, identified by the id
 pub trait BlobOwner: std::fmt::Debug + 'static {
     /// Called when a blob is being cloned
-    fn inc(&self, _extra: usize) {}
+    fn inc(&self, _extra: usize) -> bool;
     /// Called when a blob is being dropped
     fn dec(&self, _extra: usize) {}
     /// Given an extra, get a slice
     fn get_slice(&self, extra: usize) -> &[u8];
-    /// Check if an extra is valid for a blob owner
-    fn is_valid(&self, extra: usize) -> bool;
 }
 
 /// Implementation of BlobOwner for Vec<u8>, so an `Rc<Vec<u8>>` can be used as an Rc<dyn BlobOwner>
@@ -82,7 +79,7 @@ impl BlobOwner for Vec<u8> {
         self.as_ref()
     }
 
-    fn is_valid(&self, _: usize) -> bool {
+    fn inc(&self, _: usize) -> bool {
         true
     }
 }

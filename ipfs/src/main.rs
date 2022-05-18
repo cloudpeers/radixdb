@@ -358,14 +358,16 @@ fn main() -> anyhow::Result<()> {
     let store = PagedFileStore::<4194304>::new(file)?;
     let mut ipfs = Ipfs::new(Rc::new(store.clone()))?;
     let mut hashes = Vec::new();
+    let mut id = 0;
     for i in 0..100_000u64 {
         println!("putting block {}", i);
         let mut data = [0u8; 10000];
         data[0..8].copy_from_slice(&i.to_be_bytes());
         let block = Block::new(&data);
-        ipfs.put(&block)?;
+        id = ipfs.put(&block)?;
         hashes.push(block.hash);
     }
+    println!("created tree {}", id);
     println!("committing {:?}", store);
     ipfs.commit()?;
     println!("done {:?}", store);
@@ -383,6 +385,7 @@ fn main() -> anyhow::Result<()> {
     // ipfs.dump()?;
     println!("{:?}", ipfs.live_set()?);
     ipfs.alias(b"root1", None)?;
+    println!("{:?}", store);
     println!("traversing all (in order)");
     let t0 = Instant::now();
     let mut res = 0u64;
@@ -390,6 +393,7 @@ fn main() -> anyhow::Result<()> {
         res += ipfs.get(hash)?.unwrap().len() as u64;
     }
     println!("done {} {}", res, t0.elapsed().as_secs_f64());
+    println!("{:?}", store);
     println!("traversing all (in order, hot)");
     let t0 = Instant::now();
     let mut res = 0u64;

@@ -19,6 +19,8 @@ impl<const SIZE: usize> Debug for PagedFileStore<SIZE> {
             .field("pages", &inner.pages.len())
             .field("recent", &inner.recent.len())
             .field("size", &(inner.pages.len() * SIZE))
+            .field("append_count", &inner.append_count)
+            .field("read_count", &inner.read_count)
             .finish()
     }
 }
@@ -27,6 +29,8 @@ struct Inner<const SIZE: usize> {
     file: File,
     pages: FnvHashMap<u64, Page<SIZE>>,
     recent: FnvHashMap<u64, Blob>,
+    append_count: u64,
+    read_count: u64,
 }
 
 const ALIGN: usize = 8;
@@ -58,7 +62,7 @@ impl<const SIZE: usize> BlobOwner for Rc<PageInner<SIZE>> {
         let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         &data[base..base + length]
     }
-    fn is_valid(&self, offset: usize) -> bool {
+    fn inc(&self, offset: usize) -> bool {
         let data = self.mmap.as_ref();
         if offset + 4 <= data.len() {
             let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
@@ -90,6 +94,8 @@ impl<const SIZE: usize> Debug for Inner<SIZE> {
             .field("file", &self.file)
             .field("pages", &self.pages.len())
             .field("recent", &self.recent.len())
+            .field("append_count", &self.append_count)
+            .field("read_count", &self.read_count)
             .finish()
     }
 }
@@ -101,6 +107,8 @@ impl<const SIZE: usize> Inner<SIZE> {
             file,
             pages: Default::default(),
             recent: Default::default(),
+            append_count: 0,
+            read_count: 0,
         })
     }
     const fn page(offset: u64) -> u64 {
@@ -175,7 +183,12 @@ impl<const SIZE: usize> Inner<SIZE> {
         self.file.write_all(data)?;
         self.file.flush()?;
         self.recent.insert(id, Blob::from_slice(data));
+        self.append_count += 1;
         Ok(id)
+    }
+
+    fn total_read_count(&self) -> u64 {
+        0
     }
 }
 
@@ -197,7 +210,9 @@ impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
     type Error = anyhow::Error;
 
     fn read(&self, id: u64) -> anyhow::Result<Blob> {
-        self.0.borrow().bytes(id)
+        let mut b = self.0.borrow_mut();
+        b.read_count += 1;
+        b.bytes(id)
     }
 
     fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
