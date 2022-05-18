@@ -66,7 +66,9 @@ impl Borrow<[u8]> for Blob {
 /// A blob owner can own a single blob, or it can be a "Page" containing multiple blobs, identified by the id
 pub trait BlobOwner: Send + Sync + std::fmt::Debug + 'static {
     /// Called when a blob is being cloned
-    fn inc(&self, _extra: usize) -> bool { true }
+    fn inc(&self, _extra: usize) -> bool {
+        true
+    }
     /// Called when a blob is being dropped
     fn dec(&self, _extra: usize) {}
     /// Given an extra, get a slice

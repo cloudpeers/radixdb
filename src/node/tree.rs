@@ -1617,26 +1617,16 @@ fn outer_combine<T: TT>(
         // a is a prefix of b
         // value is value of a
         value = av()?;
-        let b = b.clone_shortened(bb, n)?;
-        children = VecMergeState::<T>::merge(
-            &a.children.load(ab)?,
-            &ab,
-            &[b],
-            &bb,
-            &OuterCombineOp { f },
-        )?;
+        let bc = [b.clone_shortened(bb, n)?];
+        children =
+            VecMergeState::<T>::merge(&a.children.load(ab)?, &ab, &bc, &bb, &OuterCombineOp { f })?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         value = bv()?;
-        let a = a.clone_shortened(ab, n)?;
-        children = VecMergeState::<T>::merge(
-            &[a],
-            &ab,
-            &b.children.load(bb)?,
-            &bb,
-            &OuterCombineOp { f },
-        )?;
+        let ac = [a.clone_shortened(ab, n)?];
+        children =
+            VecMergeState::<T>::merge(&ac, &ab, &b.children.load(bb)?, &bb, &OuterCombineOp { f })?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -1753,27 +1743,17 @@ fn inner_combine<T: TT>(
         // value is value of a
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
-        let b = b.clone_shortened(bb, n)?;
-        children = VecMergeState::<T>::merge(
-            &a.children.load(ab)?,
-            &ab,
-            &[b],
-            &bb,
-            &InnerCombineOp { f },
-        )?;
+        let bc = [b.clone_shortened(bb, n)?];
+        children =
+            VecMergeState::<T>::merge(&a.children.load(ab)?, &ab, &bc, &bb, &InnerCombineOp { f })?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
-        let a = a.clone_shortened(ab, n)?;
-        children = VecMergeState::<T>::merge(
-            &[a],
-            &ab,
-            &b.children.load(bb)?,
-            &bb,
-            &InnerCombineOp { f },
-        )?;
+        let ac = [a.clone_shortened(ab, n)?];
+        children =
+            VecMergeState::<T>::merge(&ac, &ab, &b.children.load(bb)?, &bb, &InnerCombineOp { f })?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -1917,16 +1897,16 @@ pub fn left_combine<T: TT>(
         // a is a prefix of b
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = a.value.detached(ab)?;
-        let b = b.clone_shortened(bb, n)?;
+        let bc = [b.clone_shortened(bb, n)?];
         children =
-            VecMergeState::<T>::merge(&a.children.load(ab)?, &ab, &[b], &bb, &LeftCombineOp { f })?;
+            VecMergeState::<T>::merge(&a.children.load(ab)?, &ab, &bc, &bb, &LeftCombineOp { f })?;
     } else if n == bp.len() {
         // b is a prefix of a
         prefix = TreePrefix::from_slice(&ap[..n]);
         value = TreeValue::none();
-        let a = a.clone_shortened(ab, n)?;
+        let ac = [a.clone_shortened(ab, n)?];
         children =
-            VecMergeState::<T>::merge(&[a], &ab, &b.children.load(bb)?, &bb, &LeftCombineOp { f })?;
+            VecMergeState::<T>::merge(&ac, &ab, &b.children.load(bb)?, &bb, &LeftCombineOp { f })?;
     } else {
         // the two nodes are disjoint
         // just take a as it is, but detach it
