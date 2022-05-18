@@ -3,6 +3,7 @@ mod flex_ref;
 mod merge_state;
 mod owned_slice;
 mod tree;
+mod flex_ref_2;
 pub use flex_ref::FlexRef;
 pub use merge_state::{DetachConverter, DowncastConverter, NoStoreConverter, NodeConverter};
 pub use owned_slice::OwnedSlice;
