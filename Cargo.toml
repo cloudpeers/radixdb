@@ -19,6 +19,7 @@ log = "0.4.16"
 obey = "0.1.0"
 parking_lot = "0.12.0"
 smallvec = "1.8.0"
+sorted-iter = "0.1.8"
 thousands = "0.2.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

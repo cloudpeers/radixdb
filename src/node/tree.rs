@@ -93,7 +93,7 @@ impl<S: BlobStore> TreeValue<S> {
         if self.0.is_arc() || self.0.is_inline() {
             Ok(Some(OwnedSlice::flex(self.0.clone())))
         } else if let Some(id) = self.0.id_value() {
-            store.read(id).map(|x| Some(OwnedSlice::blob(x)))
+            store.read(id).map(|x| Some(OwnedSlice::from_blob(x)))
         } else if self.0.is_none() {
             Ok(None)
         } else {
@@ -275,7 +275,7 @@ impl<S: BlobStore> TreePrefix<S> {
         if self.0.is_inline() || self.0.is_arc() {
             Ok(OwnedSlice::flex(self.0.clone()))
         } else if let Some(id) = self.0.id_value() {
-            store.read(id).map(|x| OwnedSlice::blob(x))
+            store.read(id).map(|x| OwnedSlice::from_blob(x))
         } else {
             unreachable!("invalid state of a TreePrefix");
         }
@@ -462,7 +462,7 @@ impl<S: BlobStore> TreeChildren<S> {
         if self.0.is_inline() || self.0.is_arc() {
             Ok(OwnedSlice::flex(self.0.clone()))
         } else if let Some(id) = self.0.id_value() {
-            let blob = store.read(id).map(|x| OwnedSlice::<TreeNode>::blob(x))?;
+            let blob = store.read(id).map(|x| OwnedSlice::<TreeNode>::from_blob(x))?;
             Ok(blob.cast::<TreeNode<S>>()?)
         } else if self.0.is_none() {
             Ok(OwnedSlice::empty())

@@ -42,7 +42,7 @@ impl<T> OwnedSlice<T> {
         }
     }
 
-    pub const fn blob(blob: Blob) -> Self {
+    pub const fn from_blob(blob: Blob) -> Self {
         Self::Blob {
             blob,
             p: PhantomData,

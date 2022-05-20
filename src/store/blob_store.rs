@@ -8,8 +8,8 @@ use parking_lot::Mutex;
 use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
 
 /// A generic blob store
-pub trait BlobStore: Debug + Send + Sync {
-    type Error: From<NoError> + From<anyhow::Error>;
+pub trait BlobStore: Debug + Send + Sync + 'static {
+    type Error: From<NoError> + From<anyhow::Error> + Debug;
 
     /// Read a blob with the given id / extra value
     fn read(&self, id: u64) -> std::result::Result<Blob, Self::Error>;
