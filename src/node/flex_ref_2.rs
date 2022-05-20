@@ -33,15 +33,15 @@ enum Type {
 }
 
 #[repr(transparent)]
-struct TreePrefix<S = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
+struct TreePrefixRef<S = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
 
-impl<S: BlobStore> Debug for TreePrefix<S> {
+impl<S: BlobStore> Debug for TreePrefixRef<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TreePrefix({:?})", &self.1)
     }
 }
 
-impl<S: BlobStore> TreePrefix<S> {
+impl<S: BlobStore> TreePrefixRef<S> {
     fn first_opt(&self) -> Option<u8> {
         self.1.first_u8_opt()
     }
@@ -51,13 +51,13 @@ impl<S: BlobStore> TreePrefix<S> {
         unsafe { std::mem::transmute(value) }
     }
 
-    fn load(&self, store: &S) -> Result<OwnedSlice, S::Error> {
+    fn load(&self, store: &S) -> Result<TreePrefix, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
-            OwnedSlice::from_slice(x)
+            TreePrefix::from_slice(x)
         } else if let Some(x) = self.1.arc_as_clone() {
-            OwnedSlice::from_arc_vec(x)
+            TreePrefix::from_arc_vec(x)
         } else if let Some(id) = self.1.id_as_u64() {
-            OwnedSlice::from_blob(store.read(id)?)
+            TreePrefix::from_blob(store.read(id)?)
         } else {
             panic!()
         })
@@ -83,7 +83,7 @@ impl<S: BlobStore> TreePrefix<S> {
     }
 }
 
-impl AsRef<[u8]> for TreePrefix {
+impl AsRef<[u8]> for TreePrefixRef {
     fn as_ref(&self) -> &[u8] {
         todo!()
     }
@@ -149,35 +149,35 @@ impl Deref for OwnedSlice {
     }
 }
 
-struct OwnedTreeValue(OwnedSlice);
+struct TreeValue(OwnedSlice);
 
-impl Debug for OwnedTreeValue {
+impl Debug for TreeValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("OwnedTreeValue")
+        f.debug_tuple("TreeValue")
             .field(&Hex::new(self.as_ref()))
             .finish()
     }
 }
 
-impl From<&[u8]> for OwnedTreeValue {
+impl From<&[u8]> for TreeValue {
     fn from(v: &[u8]) -> Self {
         Self(v.into())
     }
 }
 
-impl From<Vec<u8>> for OwnedTreeValue {
+impl From<Vec<u8>> for TreeValue {
     fn from(v: Vec<u8>) -> Self {
         Self(v.into())
     }
 }
 
-impl From<Arc<Vec<u8>>> for OwnedTreeValue {
+impl From<Arc<Vec<u8>>> for TreeValue {
     fn from(v: Arc<Vec<u8>>) -> Self {
         Self(v.into())
     }
 }
 
-impl OwnedTreeValue {
+impl TreeValue {
     fn empty() -> Self {
         Self(OwnedSlice::empty())
     }
@@ -195,13 +195,13 @@ impl OwnedTreeValue {
     }
 }
 
-impl AsRef<[u8]> for OwnedTreeValue {
+impl AsRef<[u8]> for TreeValue {
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref()
     }
 }
 
-impl Deref for OwnedTreeValue {
+impl Deref for TreeValue {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -209,27 +209,32 @@ impl Deref for OwnedTreeValue {
     }
 }
 
-struct OwnedTreePrefix(OwnedSlice);
+struct TreePrefix(OwnedSlice);
 
-impl From<&[u8]> for OwnedTreePrefix {
+impl From<&[u8]> for TreePrefix {
     fn from(v: &[u8]) -> Self {
         Self(v.into())
     }
 }
 
-impl From<Vec<u8>> for OwnedTreePrefix {
+impl From<Vec<u8>> for TreePrefix {
     fn from(v: Vec<u8>) -> Self {
         Self(v.into())
     }
 }
 
-impl From<Arc<Vec<u8>>> for OwnedTreePrefix {
+impl From<Arc<Vec<u8>>> for TreePrefix {
     fn from(v: Arc<Vec<u8>>) -> Self {
         Self(v.into())
     }
 }
 
-impl OwnedTreePrefix {
+impl TreePrefix {
+
+    fn append<S: BlobStore>(&mut self, that: &TreePrefixRef<S>, store: &S) -> Result<(), S::Error> {
+        todo!()
+    }
+
     fn empty() -> Self {
         Self(OwnedSlice::empty())
     }
@@ -247,13 +252,13 @@ impl OwnedTreePrefix {
     }
 }
 
-impl AsRef<[u8]> for OwnedTreePrefix {
+impl AsRef<[u8]> for TreePrefix {
     fn as_ref(&self) -> &[u8] {
         self.0.as_ref()
     }
 }
 
-impl Deref for OwnedTreePrefix {
+impl Deref for TreePrefix {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -262,59 +267,59 @@ impl Deref for OwnedTreePrefix {
 }
 
 #[repr(transparent)]
-struct TreeValue<S: BlobStore = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
+struct TreeValueRef<S: BlobStore = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
 
-impl<S: BlobStore> Debug for TreeValue<S> {
+impl<S: BlobStore> Debug for TreeValueRef<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TreeValue({:?})", &self.1)
     }
 }
 
-impl<S: BlobStore> TreeValue<S> {
+impl<S: BlobStore> TreeValueRef<S> {
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
     }
 
-    fn load(&self, store: &S) -> Result<OwnedTreeValue, S::Error> {
+    fn load(&self, store: &S) -> Result<TreeValue, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
-            OwnedTreeValue::from_slice(x)
+            TreeValue::from_slice(x)
         } else if let Some(x) = self.1.arc_as_clone() {
-            OwnedTreeValue::from_arc_vec(x)
+            TreeValue::from_arc_vec(x)
         } else if let Some(id) = self.1.id_as_u64() {
-            OwnedTreeValue::from_blob(store.read(id)?)
+            TreeValue::from_blob(store.read(id)?)
         } else {
             panic!()
         })
     }
 }
 
-impl TreeValue {
-    fn to_owned(&self) -> OwnedTreeValue {
+impl TreeValueRef {
+    fn to_owned(&self) -> TreeValue {
         unwrap_safe(self.load(&NoStore))
     }
 }
 
 #[repr(transparent)]
-struct TreeValueOpt<S: BlobStore = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
+struct TreeValueOptRef<S: BlobStore = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
 
-impl<S: BlobStore> Debug for TreeValueOpt<S> {
+impl<S: BlobStore> Debug for TreeValueOptRef<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TreeValueOpt({:?})", &self.1)
     }
 }
 
-impl<S: BlobStore> TreeValueOpt<S> {
+impl<S: BlobStore> TreeValueOptRef<S> {
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
     }
 
-    fn value_opt(&self) -> Option<&TreeValue<S>> {
+    fn value_opt(&self) -> Option<&TreeValueRef<S>> {
         if self.is_none() {
             None
         } else {
-            Some(TreeValue::new(&self.1))
+            Some(TreeValueRef::new(&self.1))
         }
     }
 
@@ -330,13 +335,13 @@ impl<S: BlobStore> TreeValueOpt<S> {
         self.1.is_some()
     }
 
-    fn load(&self, store: &S) -> Result<Option<OwnedTreeValue>, S::Error> {
+    fn load(&self, store: &S) -> Result<Option<TreeValue>, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
-            Some(OwnedTreeValue::from_slice(x))
+            Some(TreeValue::from_slice(x))
         } else if let Some(x) = self.1.arc_as_clone() {
-            Some(OwnedTreeValue::from_arc_vec(x))
+            Some(TreeValue::from_arc_vec(x))
         } else if let Some(id) = self.1.id_as_u64() {
-            Some(OwnedTreeValue::from_blob(store.read(id)?))
+            Some(TreeValue::from_blob(store.read(id)?))
         } else {
             None
         })
@@ -355,9 +360,9 @@ impl<S: BlobStore> TreeValueOpt<S> {
 }
 
 #[repr(transparent)]
-struct TreeChildren<S: BlobStore>(PhantomData<S>, FlexRef<Vec<u8>>);
+struct TreeChildrenRef<S: BlobStore>(PhantomData<S>, FlexRef<Vec<u8>>);
 
-impl<S: BlobStore> Debug for TreeChildren<S> {
+impl<S: BlobStore> Debug for TreeChildrenRef<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.1.tpe() {
             Type::Inline => write!(f, "TreeChildren::Empty"),
@@ -368,7 +373,7 @@ impl<S: BlobStore> Debug for TreeChildren<S> {
     }
 }
 
-impl<S: BlobStore> TreeChildren<S> {
+impl<S: BlobStore> TreeChildrenRef<S> {
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
@@ -379,14 +384,14 @@ impl<S: BlobStore> TreeChildren<S> {
         Ok((Self::new(f), rest))
     }
 
-    fn load(&self, store: &S) -> Result<OwnedNodeSeq<S>, S::Error> {
+    fn load(&self, store: &S) -> Result<NodeSeq<S>, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
             assert!(x.is_empty());
-            OwnedNodeSeq::empty()
+            NodeSeq::empty()
         } else if let Some(x) = self.1.arc_as_clone() {
-            OwnedNodeSeq::from_arc_vec(x)
+            NodeSeq::from_arc_vec(x)
         } else if let Some(id) = self.1.id_as_u64() {
-            OwnedNodeSeq::from_blob(store.read(id)?)
+            NodeSeq::from_blob(store.read(id)?)
         } else {
             panic!()
         })
@@ -407,9 +412,9 @@ impl<S: BlobStore> TreeChildren<S> {
     }
 }
 
-struct OwnedNodeSeq<S: BlobStore>(OwnedSlice, PhantomData<S>);
+struct NodeSeq<S: BlobStore>(OwnedSlice, PhantomData<S>);
 
-impl<S: BlobStore> OwnedNodeSeq<S> {
+impl<S: BlobStore> NodeSeq<S> {
     fn empty() -> Self {
         Self(OwnedSlice::empty(), PhantomData)
     }
@@ -423,17 +428,17 @@ impl<S: BlobStore> OwnedNodeSeq<S> {
     }
 }
 
-impl<S: BlobStore> AsRef<NodeSeq<S>> for OwnedNodeSeq<S> {
-    fn as_ref(&self) -> &NodeSeq<S> {
-        NodeSeq::new(&self.0)
+impl<S: BlobStore> AsRef<NodeSeqRef<S>> for NodeSeq<S> {
+    fn as_ref(&self) -> &NodeSeqRef<S> {
+        NodeSeqRef::new(&self.0)
     }
 }
 
-impl<S: BlobStore> Deref for OwnedNodeSeq<S> {
-    type Target = NodeSeq<S>;
+impl<S: BlobStore> Deref for NodeSeq<S> {
+    type Target = NodeSeqRef<S>;
 
     fn deref(&self) -> &Self::Target {
-        NodeSeq::new(self.0.as_ref())
+        NodeSeqRef::new(self.0.as_ref())
     }
 }
 
@@ -445,7 +450,7 @@ impl<'a, S: BlobStore> TreeChildrenIterator<'a, S> {
         if self.0.is_empty() {
             None
         } else {
-            Some(TreePrefix::<S>::read(&self.0).map(|x| x.first_opt()))
+            Some(TreePrefixRef::<S>::read(&self.0).map(|x| x.first_opt()))
         }
     }
 }
@@ -469,9 +474,9 @@ impl<'a, S: BlobStore> Iterator for TreeChildrenIterator<'a, S> {
 }
 
 struct TreeNode<'a, S: BlobStore> {
-    prefix: &'a TreePrefix<S>,
-    value: &'a TreeValueOpt<S>,
-    children: &'a TreeChildren<S>,
+    prefix: &'a TreePrefixRef<S>,
+    value: &'a TreeValueOptRef<S>,
+    children: &'a TreeChildrenRef<S>,
 }
 
 impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
@@ -491,9 +496,9 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
 
     fn empty() -> Self {
         Self {
-            prefix: TreePrefix::empty(),
-            value: TreeValueOpt::none(),
-            children: TreeChildren::empty(),
+            prefix: TreePrefixRef::empty(),
+            value: TreeValueOptRef::none(),
+            children: TreeChildrenRef::empty(),
         }
     }
 
@@ -502,9 +507,9 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     }
 
     fn read_one(buffer: &'a [u8]) -> Result<(Self, &'a [u8]), S::Error> {
-        let (prefix, buffer) = TreePrefix::read_one(buffer)?;
-        let (value, buffer) = TreeValueOpt::read_one(buffer)?;
-        let (children, buffer) = TreeChildren::read_one(buffer)?;
+        let (prefix, buffer) = TreePrefixRef::read_one(buffer)?;
+        let (value, buffer) = TreeValueOptRef::read_one(buffer)?;
+        let (children, buffer) = TreeChildrenRef::read_one(buffer)?;
         Ok((
             Self {
                 prefix,
@@ -532,6 +537,90 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
             child.dump(indent + 4, store)?;
         }
         Ok(())
+    }
+
+
+    /// get the first value
+    fn first_value(&self, store: &S) -> Result<Option<TreeValue>, S::Error> {
+        Ok(if self.children.is_empty() {
+            self.value.load(store)?
+        } else {
+            let children = self.children.load(store)?;
+            children.iter().next().unwrap()?.first_value(store)?
+        })
+    }
+
+    /// get the first entry
+    fn first_entry(
+        &self,
+        store: &S,
+        mut prefix: TreePrefix,
+    ) -> Result<Option<(TreePrefix, TreeValue)>, S::Error> {
+        prefix.append(&self.prefix, store)?;
+        Ok(if self.children.is_empty() {
+            if let Some(value) = self.value.value_opt() {
+                Some((prefix, value.load(store)?))
+            } else {
+                None
+            }
+        } else {
+            let children = self.children.load(store)?;
+            children.iter().next().unwrap()?.first_entry(store, prefix)?
+        })
+    }
+
+
+    /// get the first value
+    fn last_value(&self, store: &S) -> Result<Option<TreeValue>, S::Error> {
+        Ok(if self.children.is_empty() {
+            self.value.load(store)?
+        } else {
+            let children = self.children.load(store)?;
+            children.iter().last().unwrap()?.first_value(store)?
+        })
+    }
+
+    /// get the first entry
+    fn last_entry(
+        &self,
+        store: &S,
+        mut prefix: TreePrefix,
+    ) -> Result<Option<(TreePrefix, TreeValue)>, S::Error> {
+        prefix.append(&self.prefix, store)?;
+        Ok(if self.children.is_empty() {
+            if let Some(value) = self.value.value_opt() {
+                Some((prefix, value.load(store)?))
+            } else {
+                None
+            }
+        } else {
+            let children = self.children.load(store)?;
+            children.iter().last().unwrap()?.first_entry(store, prefix)?
+        })
+    }
+
+    /// Return the subtree with the given prefix. Will return an empty tree in case there is no match.
+    fn filter_prefix(&self, store: &S, prefix: &[u8]) -> Result<NodeSeqBuilder<S>, S::Error> {
+        find(store, self, prefix, |x| {
+            Ok(match x {
+                FindResult::Found(res) => {
+                    let mut b = NodeSeqBuilder::new();
+                    todo!();
+                    // let mut res = res.clone();
+                    // res.prefix = TreePrefix::new(FlexRef::inline_or_owned_from_slice(prefix));
+                    b
+                }
+                FindResult::Prefix { tree: res, rt } => {
+                    let mut b = NodeSeqBuilder::new();
+                    let rp = res.prefix.load(store)?;
+                    todo!();
+                    // let mut res = res.clone();
+                    // res.prefix = TreePrefix::join(prefix, &rp[rp.len() - rt..]);
+                    b
+                }
+                FindResult::NotFound { .. } => NodeSeqBuilder::empty_tree(),
+            })
+        })
     }
 }
 
@@ -735,9 +824,9 @@ fn tpe(value: u8) -> Type {
 }
 
 #[repr(transparent)]
-struct NodeSeq<S: BlobStore>(PhantomData<S>, [u8]);
+struct NodeSeqRef<S: BlobStore>(PhantomData<S>, [u8]);
 
-impl<S: BlobStore> NodeSeq<S> {
+impl<S: BlobStore> NodeSeqRef<S> {
     fn new(value: &[u8]) -> &Self {
         unsafe { std::mem::transmute(value) }
     }
@@ -763,24 +852,24 @@ impl<S: BlobStore> NodeSeq<S> {
     }
 }
 
-struct OwnedNodeSeqBuilder<S: BlobStore = NoStore>(Vec<u8>, PhantomData<S>);
+struct NodeSeqBuilder<S: BlobStore = NoStore>(Vec<u8>, PhantomData<S>);
 
-impl<S: BlobStore> Debug for OwnedNodeSeqBuilder<S> {
+impl<S: BlobStore> Debug for NodeSeqBuilder<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
 }
 
-impl<S: BlobStore> OwnedNodeSeqBuilder<S> {
+impl<S: BlobStore> NodeSeqBuilder<S> {
     fn new() -> Self {
         Self(Vec::new(), PhantomData)
     }
 
-    fn push_prefix(&mut self, prefix: OwnedSlice) {
+    fn push_prefix(&mut self, prefix: TreePrefix) {
         self.0.push_flexref_arc_or_inline(prefix, 32);
     }
 
-    fn push_value(&mut self, value: Option<OwnedTreeValue>) {
+    fn push_value(&mut self, value: Option<TreeValue>) {
         if let Some(value) = value {
             self.0.push_flexref_arc_or_inline(value, 32);
         } else {
@@ -788,7 +877,7 @@ impl<S: BlobStore> OwnedNodeSeqBuilder<S> {
         }
     }
 
-    fn push_children(&mut self, value: OwnedNodeSeqBuilder<S>) {
+    fn push_children(&mut self, value: NodeSeqBuilder<S>) {
         if !value.0.is_empty() {
             self.0.push_flexref_arc(Arc::new(value))
         } else {
@@ -810,9 +899,9 @@ impl<S: BlobStore> OwnedNodeSeqBuilder<S> {
 
     fn push_new(
         &mut self,
-        prefix: OwnedSlice,
-        value: Option<OwnedTreeValue>,
-        children: OwnedNodeSeqBuilder<S>,
+        prefix: TreePrefix,
+        value: Option<TreeValue>,
+        children: NodeSeqBuilder<S>,
     ) {
         self.push_prefix(prefix);
         self.push_value(value);
@@ -825,15 +914,15 @@ impl<S: BlobStore> OwnedNodeSeqBuilder<S> {
         store: &S2,
     ) -> Result<(), S2::Error> {
         /// TODO: get rid of this!
-        let t: &mut OwnedNodeSeqBuilder<S2> = unsafe { std::mem::transmute(self) };
+        let t: &mut NodeSeqBuilder<S2> = unsafe { std::mem::transmute(self) };
         Ok(t.push(node))
     }
 
     fn push_new_unsplit(
         &mut self,
-        prefix: OwnedSlice,
-        value: Option<OwnedTreeValue>,
-        children: OwnedNodeSeqBuilder<S>,
+        prefix: TreePrefix,
+        value: Option<TreeValue>,
+        children: NodeSeqBuilder<S>,
         store: &S,
     ) -> Result<(), S::Error> {
         // todo
@@ -871,7 +960,7 @@ impl<S: BlobStore> OwnedNodeSeqBuilder<S> {
         n: usize,
     ) -> Result<(), S2::Error> {
         /// TODO: get rid of this!
-        let t: &mut OwnedNodeSeqBuilder<S2> = unsafe { std::mem::transmute(self) };
+        let t: &mut NodeSeqBuilder<S2> = unsafe { std::mem::transmute(self) };
         t.push_shortened(node, store, n)
     }
 
@@ -890,21 +979,21 @@ impl<S: BlobStore> OwnedNodeSeqBuilder<S> {
     }
 }
 
-impl<S: BlobStore> AsRef<NodeSeq<S>> for OwnedNodeSeqBuilder<S> {
-    fn as_ref(&self) -> &NodeSeq<S> {
-        NodeSeq::new(self.0.as_ref())
+impl<S: BlobStore> AsRef<NodeSeqRef<S>> for NodeSeqBuilder<S> {
+    fn as_ref(&self) -> &NodeSeqRef<S> {
+        NodeSeqRef::new(self.0.as_ref())
     }
 }
 
-impl<S: BlobStore> Deref for OwnedNodeSeqBuilder<S> {
-    type Target = NodeSeq<S>;
+impl<S: BlobStore> Deref for NodeSeqBuilder<S> {
+    type Target = NodeSeqRef<S>;
 
     fn deref(&self) -> &Self::Target {
-        NodeSeq::new(self.0.as_ref())
+        NodeSeqRef::new(self.0.as_ref())
     }
 }
 
-impl<S: BlobStore> Drop for OwnedNodeSeqBuilder<S> {
+impl<S: BlobStore> Drop for NodeSeqBuilder<S> {
     fn drop(&mut self) {
         for elem in self.as_ref().iter() {
             if let Ok(elem) = elem {
@@ -918,7 +1007,7 @@ impl<S: BlobStore> Drop for OwnedNodeSeqBuilder<S> {
 #[derive(Debug)]
 struct Tree<S: BlobStore = NoStore> {
     /// This contains exactly one node, even in the case of an empty tree
-    node: OwnedNodeSeqBuilder<S>,
+    node: NodeSeqBuilder<S>,
     /// The associated store
     store: S,
 }
@@ -926,34 +1015,53 @@ struct Tree<S: BlobStore = NoStore> {
 impl Tree {
     fn empty() -> Self {
         Self {
-            node: OwnedNodeSeqBuilder::empty_tree(),
+            node: NodeSeqBuilder::empty_tree(),
             store: NoStore,
         }
     }
 
     fn single(key: &[u8], value: &[u8]) -> Self {
         Self {
-            node: OwnedNodeSeqBuilder::single(key, value),
+            node: NodeSeqBuilder::single(key, value),
             store: NoStore,
         }
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<OwnedTreeValue> {
+    pub fn get(&self, key: &[u8]) -> Option<TreeValue> {
         unwrap_safe(self.try_get(key))
     }
-}
 
-impl Tree {
+    pub fn contains_key(&self, key: &[u8]) -> bool {
+        unwrap_safe(self.try_contains_key(key))
+    }
+
+
+    pub fn first_value(&self) -> Option<TreeValue> {
+        unwrap_safe(self.try_first_value())
+    }
+
+    pub fn last_value(&self) -> Option<TreeValue> {
+        unwrap_safe(self.try_last_value())
+    }
+
+    pub fn first_entry(&self, prefix: TreePrefix) -> Option<(TreePrefix, TreeValue)> {
+        unwrap_safe(self.try_first_entry(prefix))
+    }
+
+    pub fn last_entry(&self, prefix: TreePrefix) -> Option<(TreePrefix, TreeValue)> {
+        unwrap_safe(self.try_last_entry(prefix))
+    }
+
     pub fn outer_combine(
         &self,
         that: &Tree,
-        f: impl Fn(&TreeValue, &TreeValue) -> Option<OwnedTreeValue> + Copy,
+        f: impl Fn(&TreeValueRef, &TreeValueRef) -> Option<TreeValue> + Copy,
     ) -> Tree {
         unwrap_safe(self.try_outer_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 }
 
-impl<S: BlobStore> Tree<S> {
+impl<S: BlobStore + Clone> Tree<S> {
     fn node(&self) -> TreeNode<'_, S> {
         self.node.iter().next().unwrap().unwrap()
     }
@@ -963,7 +1071,7 @@ impl<S: BlobStore> Tree<S> {
     }
 
     /// Get the value for a given key
-    fn try_get(&self, key: &[u8]) -> Result<Option<OwnedTreeValue>, S::Error> {
+    fn try_get(&self, key: &[u8]) -> Result<Option<TreeValue>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(&self.store, &self.node(), key, |r| {
             Ok(if let FindResult::Found(tree) = r {
@@ -974,13 +1082,25 @@ impl<S: BlobStore> Tree<S> {
         })
     }
 
+    /// True if key is contained in this set
+    fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
+        // if we find a tree at exactly the location, and it has a value, we have a hit
+        find(&self.store, &self.node(), key, |r| {
+            Ok(if let FindResult::Found(tree) = r {
+                tree.value.is_some()
+            } else {
+                false
+            })
+        })
+    }
+
     pub fn try_outer_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
     where
         S2: BlobStore,
         E: From<S::Error> + From<S2::Error> + From<NoError>,
-        F: Fn(&TreeValue<S>, &TreeValue<S2>) -> Result<Option<OwnedTreeValue>, E> + Copy,
+        F: Fn(&TreeValueRef<S>, &TreeValueRef<S2>) -> Result<Option<TreeValue>, E> + Copy,
     {
-        let mut nodes = OwnedNodeSeqBuilder::new();
+        let mut nodes = NodeSeqBuilder::new();
         outer_combine(
             &self.node.iter().next().unwrap()?,
             &self.store,
@@ -993,6 +1113,37 @@ impl<S: BlobStore> Tree<S> {
             node: nodes,
             store: NoStore,
         })
+    }
+
+    pub fn try_first_value(&self) -> Result<Option<TreeValue>, S::Error> {
+        self.node().first_value(&self.store)
+    }
+
+    pub fn try_last_value(&self) -> Result<Option<TreeValue>, S::Error> {
+        self.node().last_value(&self.store)
+    }
+
+    pub fn try_first_entry(
+        &self,
+        prefix: TreePrefix,
+    ) -> Result<Option<(TreePrefix, TreeValue)>, S::Error> {
+        self.node().first_entry(&self.store, prefix)
+    }
+
+    pub fn try_last_entry(
+        &self,
+        prefix: TreePrefix,
+    ) -> Result<Option<(TreePrefix, TreeValue)>, S::Error> {
+        self.node().last_entry(&self.store, prefix)
+    }
+
+    pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
+        self.node()
+            .filter_prefix(&self.store, prefix)
+            .map(|node| Tree {
+                node,
+                store: self.store.clone(),
+            })
     }
 }
 
@@ -1007,22 +1158,22 @@ fn outer_combine<A, B, E, F>(
     b: &TreeNode<B>,
     bb: &B,
     f: F,
-    target: &mut OwnedNodeSeqBuilder,
+    target: &mut NodeSeqBuilder,
 ) -> Result<(), E>
 where
     A: BlobStore,
     B: BlobStore,
     E: From<A::Error> + From<B::Error> + From<NoError>,
-    F: Fn(&TreeValue<A>, &TreeValue<B>) -> Result<Option<OwnedTreeValue>, E> + Copy,
+    F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<TreeValue>, E> + Copy,
 {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
     let av = || a.value.load(ab);
     let bv = || b.value.load(bb);
-    let prefix = OwnedSlice::from_slice(&ap[..n]);
-    let mut children: OwnedNodeSeqBuilder = OwnedNodeSeqBuilder::new();
-    let value: Option<OwnedTreeValue>;
+    let prefix = TreePrefix::from_slice(&ap[..n]);
+    let mut children: NodeSeqBuilder = NodeSeqBuilder::new();
+    let value: Option<TreeValue>;
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         value = match (a.value.value_opt(), b.value.value_opt()) {
@@ -1039,13 +1190,13 @@ where
         // value is value of a
         value = av()?;
         let ac = a.children.load(ab)?;
-        let bc = OwnedNodeSeqBuilder::shortened(b, bb, n)?;
+        let bc = NodeSeqBuilder::shortened(b, bb, n)?;
         children = outer_combine_children(ac.iter(), &ab, bc.iter(), &bb, f)?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         value = bv()?;
-        let ac = OwnedNodeSeqBuilder::shortened(a, ab, n)?;
+        let ac = NodeSeqBuilder::shortened(a, ab, n)?;
         let bc = b.children.load(bb)?;
         children = outer_combine_children(ac.iter(), &ab, bc.iter(), &bb, f)?;
     } else {
@@ -1071,14 +1222,14 @@ fn outer_combine_children<'a, A, B, E, F>(
     b: TreeChildrenIterator<'a, B>,
     bb: &B,
     f: F,
-) -> Result<OwnedNodeSeqBuilder, E>
+) -> Result<NodeSeqBuilder, E>
 where
     A: BlobStore,
     B: BlobStore,
     E: From<A::Error> + From<B::Error> + From<NoError>,
-    F: Fn(&TreeValue<A>, &TreeValue<B>) -> Result<Option<OwnedTreeValue>, E> + Copy,
+    F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<TreeValue>, E> + Copy,
 {
-    let mut res = OwnedNodeSeqBuilder::new();
+    let mut res = NodeSeqBuilder::new();
     for x in OuterJoin::<A, B, E>::new(a, b) {
         match x? {
             (Some(a), Some(b)) => {
@@ -1102,13 +1253,13 @@ fn inner_combine<A, B, E, F>(
     b: &TreeNode<B>,
     bb: &B,
     f: F,
-    target: &mut OwnedNodeSeqBuilder,
+    target: &mut NodeSeqBuilder,
 ) -> Result<(), E>
 where
     A: BlobStore,
     B: BlobStore,
     E: From<A::Error> + From<B::Error> + From<NoError>,
-    F: Fn(&TreeValueOpt<A>, &TreeValueOpt<B>) -> Result<Option<OwnedTreeValue>, E> + Copy,
+    F: Fn(&TreeValueOptRef<A>, &TreeValueOptRef<B>) -> Result<Option<TreeValue>, E> + Copy,
 {
     todo!()
 }
@@ -1119,14 +1270,14 @@ fn inner_combine_children<'a, A, B, E, F>(
     b: TreeChildrenIterator<'a, B>,
     bb: &B,
     f: F,
-) -> Result<OwnedNodeSeqBuilder, E>
+) -> Result<NodeSeqBuilder, E>
 where
     A: BlobStore,
     B: BlobStore,
     E: From<A::Error> + From<B::Error> + From<NoError>,
-    F: Fn(&TreeValueOpt<A>, &TreeValueOpt<B>) -> Result<Option<OwnedTreeValue>, E> + Copy,
+    F: Fn(&TreeValueOptRef<A>, &TreeValueOptRef<B>) -> Result<Option<TreeValue>, E> + Copy,
 {
-    let mut res = OwnedNodeSeqBuilder::new();
+    let mut res = NodeSeqBuilder::new();
     for x in OuterJoin::<A, B, E>::new(a, b) {
         match x? {
             (Some(a), Some(b)) => {
