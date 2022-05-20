@@ -1,15 +1,14 @@
 use std::{cmp::Ordering, marker::PhantomData, ops::Deref, sync::Arc};
 
 use crate::{
-    store::{unwrap_safe, BlobStore, NoError, NoStore},
+    store::{unwrap_safe, BlobStore, NoError, NoStore, Blob},
     Hex,
 };
 use std::fmt::Debug;
 
 use super::OwnedSlice;
 
-struct Flex<T>([u8; 16], PhantomData<T>);
-
+#[repr(C)]
 struct FlexRef<T>(u8, PhantomData<T>, [u8]);
 
 impl<T> Debug for FlexRef<T> {
@@ -46,14 +45,8 @@ impl<S: BlobStore> Debug for TreePrefix<S> {
 
 impl<S: BlobStore> TreePrefix<S> {
 
-    fn new_into(value: OwnedSlice<u8>, target: &mut Vec<u8>) {
-
-    }
-
     fn first_opt(&self) -> Option<u8> {
-        // todo: faster impl
-        todo!()
-        // self.as_ref().get(0).cloned()
+        self.1.first_u8_opt()
     }
 
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
@@ -100,15 +93,15 @@ impl AsRef<[u8]> for TreePrefix {
 }
 
 #[repr(transparent)]
-struct TreeValueRef<S: BlobStore = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
+struct TreeValue<S: BlobStore = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
 
-impl<S: BlobStore> Debug for TreeValueRef<S> {
+impl<S: BlobStore> Debug for TreeValue<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("TreeValue").finish()
+        write!(f, "TreeValue({:?})", &self.1)
     }
 }
 
-impl<S: BlobStore> TreeValueRef<S> {
+impl<S: BlobStore> TreeValue<S> {
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
@@ -127,7 +120,15 @@ impl<S: BlobStore> TreeValueRef<S> {
     }
 
     fn load(&self, store: &S) -> Result<Option<OwnedSlice<u8>>, S::Error> {
-        todo!()
+        Ok(if let Some(x) = self.1.inline_as_ref() {
+            Some(OwnedSlice::from_slice(x))
+        } else if let Some(x) = self.1.arc_as_clone() {
+            Some(OwnedSlice::from_arc_vec(x))
+        } else if let Some(id) = self.1.id_as_u64() {
+            Some(OwnedSlice::from_blob(store.read(id)?))
+        } else {
+            None
+        })
     }
 
     fn read_one<'a>(value: &'a [u8]) -> Result<(&'a Self, &'a [u8]), S::Error> {
@@ -142,22 +143,17 @@ impl<S: BlobStore> TreeValueRef<S> {
     }
 }
 
-impl TreeValueRef {
-    fn load2(&self) -> Option<OwnedSlice<u8>> {
-        if self.is_none() {
-            None
-        } else {
-            Some(self.1.peek(|x| OwnedSlice::from_slice(x)))
-        }
-    }
-}
-
 #[repr(transparent)]
-struct TreeChildren<S: BlobStore>(FlexRef<OwnedNodeSeq<S>>);
+struct TreeChildren<S: BlobStore>(PhantomData<S>, FlexRef<Vec<u8>>);
 
 impl<S: BlobStore> Debug for TreeChildren<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("TreeValue").finish()
+        match self.1.tpe() {
+            Type::Inline => write!(f, "TreeChildren::Empty"),
+            Type::Arc => write!(f, "TreeChildren::Arc({:?})", self.1.arc_as_clone().unwrap()),
+            Type::Id => write!(f, "TreeChildren::Id({:?})", self.1.id_as_u64().unwrap()),
+            Type::None => write!(f, "TreeChildren invalid"),
+        }
     }
 }
 
@@ -172,26 +168,51 @@ impl<S: BlobStore> TreeChildren<S> {
         Ok((Self::new(f), rest))
     }
 
-    fn load(&self, store: &S) -> Result<OwnedSlice<u8>, S::Error> {
-        todo!()
+    fn load(&self, store: &S) -> Result<CIW<S>, S::Error> {
+        Ok(if let Some(x) = self.1.inline_as_ref() {
+            assert!(x.is_empty());
+            CIW::empty()
+        } else if let Some(x) = self.1.arc_as_clone() {
+            CIW::from_arc_vec(x)
+        } else if let Some(id) = self.1.id_as_u64() {
+            CIW::from_blob(store.read(id)?)
+        } else {
+            panic!()
+        })
     }
 
     fn empty() -> &'static Self {
-        Self::new(FlexRef::<Vec<u8>>::empty())
+        Self::new(FlexRef::empty())
     }
 
     fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    fn iter(&self, s: &S) -> TreeChildrenIterator<'_, S> {
-        self.0.as_ref().iter()
+        self.1.is_empty()
     }
 
     fn drop(&self) {
-        self.0.with_arc(|arc| unsafe {
+        self.1.with_arc(|arc| unsafe {
             Arc::decrement_strong_count(Arc::as_ptr(arc));
         });
+    }
+}
+
+struct CIW<S: BlobStore>(OwnedSlice<u8>, PhantomData<S>);
+
+impl<S: BlobStore> CIW<S> {
+    fn empty() -> Self {
+        Self(OwnedSlice::empty(), PhantomData)
+    }
+
+    fn from_arc_vec(value: Arc<Vec<u8>>) -> Self {
+        Self(OwnedSlice::from_arc_vec(value), PhantomData)
+    }
+
+    fn from_blob(value: Blob) -> Self {
+        Self(OwnedSlice::from_blob(value), PhantomData)
+    }
+
+    fn iter(&self) -> TreeChildrenIterator<'_, S> {
+        TreeChildrenIterator(self.0.as_ref(), PhantomData)
     }
 }
 
@@ -238,7 +259,7 @@ impl<'a, S: BlobStore> Iterator for PairIterator<'a, S> {
 
 struct TreeNode<'a, S: BlobStore> {
     prefix: &'a TreePrefix<S>,
-    value: &'a TreeValueRef<S>,
+    value: &'a TreeValue<S>,
     children: &'a TreeChildren<S>,
 }
 
@@ -260,7 +281,7 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     fn empty() -> Self {
         Self {
             prefix: TreePrefix::empty(),
-            value: TreeValueRef::none(),
+            value: TreeValue::none(),
             children: TreeChildren::empty(),
         }
     }
@@ -270,11 +291,8 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     }
 
     fn read_one(buffer: &'a [u8]) -> Result<(Self, &'a [u8]), S::Error> {
-        println!("{}", &Hex::new(buffer));
         let (prefix, buffer) = TreePrefix::read_one(buffer)?;
-        println!("{}", &Hex::new(buffer));
-        let (value, buffer) = TreeValueRef::read_one(buffer)?;
-        println!("{}", &Hex::new(buffer));
+        let (value, buffer) = TreeValue::read_one(buffer)?;
         let (children, buffer) = TreeChildren::read_one(buffer)?;
         Ok((
             Self {
@@ -291,9 +309,32 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         self.value.drop();
         self.children.drop();
     }
+
+    fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error> {
+        let spacer = std::iter::repeat(" ").take(indent).collect::<String>();
+        println!("{}TreeNode", spacer);
+        println!("{}  prefix={:?}", spacer, self.prefix);
+        println!("{}  value={:?}", spacer, self.value);
+        println!("{}  children", spacer);
+        for child in self.children.load(store)?.iter() {
+            let child = child?;
+            child.dump(indent + 4, store)?;
+        }
+        Ok(())
+    }
 }
 
 impl FlexRef<Vec<u8>> {
+
+    fn first_u8_opt(&self) -> Option<u8> {
+        match self.tpe() {
+            Type::None => None,
+            Type::Inline => self.2.get(0).cloned(),
+            Type::Arc => self.with_arc(|x| x.as_ref().get(0).cloned()).unwrap(),
+            Type::Id => todo!("pack first byte into id"),
+        }        
+    }
+
     fn slice(data: &[u8], target: &mut Vec<u8>) {
         if data.len() < 128 {
             let l = (data.len() as u8) | 0x80;
@@ -308,7 +349,51 @@ impl FlexRef<Vec<u8>> {
     }
 }
 
+trait FlexRefExt {
+
+    fn push_flexref_none(&mut self);
+
+    fn push_flexref_arc<T>(&mut self, arc: Arc<T>);
+
+    fn push_flexref_inline(&mut self, data: &[u8]);
+
+    fn push_flexref_arc_or_inline(&mut self, data: OwnedSlice<u8>, max_inline: usize);
+}
+
+impl FlexRefExt for Vec<u8> {
+    fn push_flexref_arc<T>(&mut self, arc: Arc<T>) {
+        self.push(0x01);
+        let data: [u8; 8] = unsafe { std::mem::transmute(arc) };
+        self.extend_from_slice(&data);
+    }
+
+    fn push_flexref_inline(&mut self, data: &[u8]) {
+        assert!(data.len() < 128);
+        let l = (data.len() as u8) | 0x80;
+        self.push(l);
+        self.extend_from_slice(data);
+    }
+
+    fn push_flexref_arc_or_inline(&mut self, data: OwnedSlice<u8>, max_inline: usize) {
+        assert!(max_inline < 128);
+        if data.len() <= max_inline {
+            self.push_flexref_inline(data.as_ref())
+        } else {
+            self.push_flexref_arc(Arc::new(data.to_vec()))
+        }
+    }
+
+    fn push_flexref_none(&mut self) {
+        self.push(0u8);
+    }
+}
+
 impl<T> FlexRef<T> {
+
+    fn arc(data: Arc<T>, target: &mut Vec<u8>) {
+
+    }
+
     fn new(value: &[u8]) -> &Self {
         unsafe { std::mem::transmute(value) }
     }
@@ -363,8 +448,12 @@ impl<T> FlexRef<T> {
 
     fn with_arc<U>(&self, f: impl Fn(&Arc<T>) -> U) -> Option<U> {
         if self.tpe() == Type::Arc {
-            let arc: &Arc<T> = unsafe { std::mem::transmute(&self.0) };
-            Some(f(arc))
+            let mut t = [0u8; 8];
+            t.copy_from_slice(&self.2[0..8]);
+            let arc: Arc<T> = unsafe { std::mem::transmute(t) };
+            let res = Some(f(&arc));
+            std::mem::forget(arc);
+            res
         } else {
             None
         }
@@ -419,19 +508,6 @@ impl FlexRef<Vec<u8>> {
             panic!()
         }
     }
-
-    fn inline_or_arc_as_ref(&self) -> Option<&[u8]> {
-        self.inline_as_ref().or_else(|| self.arc_as_ref())
-    }
-
-    fn arc_as_ref(&self) -> Option<&[u8]> {
-        if self.tpe() == Type::Arc {
-            let arc: &Arc<Vec<u8>> = unsafe { std::mem::transmute(&self.0) };
-            Some(arc.as_ref())
-        } else {
-            None
-        }
-    }
 }
 
 fn len(value: u8) -> usize {
@@ -448,22 +524,10 @@ fn tpe(value: u8) -> Type {
         Type::None
     } else if value & 0x80 != 0 {
         Type::Inline
-    } else if value & 0x40 == 0 {
+    } else if value & 0x40 != 0 {
         Type::Id
     } else {
         Type::Arc
-    }
-}
-
-impl AsRef<[u8]> for FlexRef<Vec<u8>> {
-    fn as_ref(&self) -> &[u8] {
-        todo!()
-    }
-}
-
-impl<S: BlobStore> AsRef<NodeSeq<S>> for FlexRef<OwnedNodeSeq<S>> {
-    fn as_ref(&self) -> &NodeSeq<S> {
-        todo!()
     }
 }
 
@@ -488,9 +552,7 @@ struct OwnedNodeSeq<S: BlobStore = NoStore>(Vec<u8>, PhantomData<S>);
 
 impl<S: BlobStore> Debug for OwnedNodeSeq<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("OwnedNodeSeq")
-            .field(&Hex::new(&self.0))
-            .finish()
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -500,15 +562,23 @@ impl<S: BlobStore> OwnedNodeSeq<S> {
     }
 
     fn push_prefix(&mut self, prefix: OwnedSlice<u8>) {
-        todo!()
+        self.0.push_flexref_arc_or_inline(prefix, 32);
     }
 
     fn push_value(&mut self, value: Option<OwnedSlice<u8>>) {
-        todo!()
+        if let Some(value) = value {
+            self.0.push_flexref_arc_or_inline(value, 32);
+        } else {
+            self.0.push_flexref_none()
+        }
     }
     
     fn push_children(&mut self, value: OwnedNodeSeq<S>) {
-        todo!()
+        if !value.0.is_empty() {
+            self.0.push_flexref_arc(Arc::new(value))
+        } else {
+            self.0.push_flexref_none();
+        }
     }
 
     fn empty_tree() -> Self {
@@ -519,7 +589,7 @@ impl<S: BlobStore> OwnedNodeSeq<S> {
         let mut res = Self(Vec::new(), PhantomData);
         node.prefix.1.copy_to(&mut res.0);
         node.value.1.copy_to(&mut res.0);
-        node.children.0.copy_to(&mut res.0);
+        node.children.1.copy_to(&mut res.0);
         res
     }
 
@@ -539,7 +609,9 @@ impl<S: BlobStore> OwnedNodeSeq<S> {
         node: TreeNode<'_, S2>,
         store: &S2,
     ) -> Result<(), S2::Error> {
-        todo!()
+        /// TODO: get rid of this!
+        let t: &mut OwnedNodeSeq<S2> = unsafe { std::mem::transmute(self) };
+        Ok(t.push(node))
     }
 
     fn push_new_unsplit(
@@ -549,14 +621,14 @@ impl<S: BlobStore> OwnedNodeSeq<S> {
         children: OwnedNodeSeq<S>,
         store: &S,
     ) -> Result<(), S::Error> {
-        // todo!()
+        // todo
         Ok(self.push_new(prefix, value, children))
     }
 
     fn push(&mut self, node: TreeNode<'_, S>) {
         node.prefix.1.copy_to(&mut self.0);
         node.value.1.copy_to(&mut self.0);
-        node.children.0.copy_to(&mut self.0);
+        node.children.1.copy_to(&mut self.0);
     }
 
     fn push_shortened(
@@ -573,7 +645,7 @@ impl<S: BlobStore> OwnedNodeSeq<S> {
             node.prefix.1.copy_to(&mut self.0);
         }
         node.value.1.copy_to(&mut self.0);
-        node.children.0.copy_to(&mut self.0);
+        node.children.1.copy_to(&mut self.0);
         Ok(())
     }
 
@@ -656,18 +728,26 @@ impl Tree {
     pub fn outer_combine(
         &self,
         that: &Tree,
-        f: impl Fn(&TreeValueRef, &TreeValueRef) -> Option<OwnedSlice<u8>> + Copy,
+        f: impl Fn(&TreeValue, &TreeValue) -> Option<OwnedSlice<u8>> + Copy,
     ) -> Tree {
         unwrap_safe(self.try_outer_combine::<NoStore, NoError, _>(that, |a, b| Ok(f(a, b))))
     }
 }
 
 impl<S: BlobStore> Tree<S> {
+    fn node(&self) -> TreeNode<'_, S> {
+        self.node.iter().next().unwrap().unwrap()
+    }
+
+    fn dump(&self) -> Result<(), S::Error> {
+        self.node().dump(0, &self.store)
+    }
+
     pub fn try_outer_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
     where
         S2: BlobStore,
         E: From<S::Error> + From<S2::Error> + From<NoError>,
-        F: Fn(&TreeValueRef<S>, &TreeValueRef<S2>) -> Result<Option<OwnedSlice<u8>>, E> + Copy,
+        F: Fn(&TreeValue<S>, &TreeValue<S2>) -> Result<Option<OwnedSlice<u8>>, E> + Copy,
     {
         let mut nodes = OwnedNodeSeq::new();
         outer_combine(
@@ -702,7 +782,7 @@ where
     A: BlobStore,
     B: BlobStore,
     E: From<A::Error> + From<B::Error> + From<NoError>,
-    F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<OwnedSlice<u8>>, E> + Copy,
+    F: Fn(&TreeValue<A>, &TreeValue<B>) -> Result<Option<OwnedSlice<u8>>, E> + Copy,
 {
     let ap = a.prefix.load(ab)?;
     let bp = b.prefix.load(bb)?;
@@ -731,19 +811,23 @@ where
                 f(&a.value, &b.value)?
             }
         };
-        children = outer_combine_children(a.children.iter(ab), &ab, b.children.iter(bb), &bb, f)?;
+        let ac = a.children.load(ab)?;
+        let bc = b.children.load(bb)?;
+        children = outer_combine_children(ac.iter(), &ab, bc.iter(), &bb, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
         value = av()?;
+        let ac = a.children.load(ab)?;
         let bc = OwnedNodeSeq::shortened(b, bb, n)?;
-        children = outer_combine_children(a.children.iter(ab), &ab, bc.iter(), &bb, f)?;
+        children = outer_combine_children(ac.iter(), &ab, bc.iter(), &bb, f)?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         value = bv()?;
         let ac = OwnedNodeSeq::shortened(a, ab, n)?;
-        children = outer_combine_children(ac.iter(), &ab, b.children.iter(bb), &bb, f)?;
+        let bc = b.children.load(bb)?;
+        children = outer_combine_children(ac.iter(), &ab, bc.iter(), &bb, f)?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -772,7 +856,7 @@ where
     A: BlobStore,
     B: BlobStore,
     E: From<A::Error> + From<B::Error> + From<NoError>,
-    F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<OwnedSlice<u8>>, E> + Copy,
+    F: Fn(&TreeValue<A>, &TreeValue<B>) -> Result<Option<OwnedSlice<u8>>, E> + Copy,
 {
     let mut res = OwnedNodeSeq::new();
     for x in OuterJoin::<A, B, E>::new(a, b) {
@@ -873,13 +957,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn smoke() {
-        let a = Tree::single(b"a", b"b");
-        let b = Tree::single(b"c", b"d");
+    fn smoke() {        
+        let a = Tree::single(b"aaaa", b"b");
+        let b = Tree::single(b"aa", b"d");
         let r = a.outer_combine(&b, |a, b| Some(OwnedSlice::empty()));
         println!("{:?}", r);
-        for x in r.node.iter() {
-            println!("{:?}", x.unwrap());
+        println!("{:?}", r.node.iter().next().unwrap().unwrap());
+    
+        let mut t = Tree::empty();
+        for i in 0u64..1000 {
+            let txt = i.to_string();
+            let b = txt.as_bytes();
+            t = t.outer_combine(&Tree::single(b, b), |a, b| Some(OwnedSlice::empty()))
         }
+        println!("{:?}", t);
+        println!("{:?}", t.node.iter().next().unwrap().unwrap());
+        t.dump().unwrap();
     }
 }
