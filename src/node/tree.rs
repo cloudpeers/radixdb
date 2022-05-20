@@ -462,7 +462,9 @@ impl<S: BlobStore> TreeChildren<S> {
         if self.0.is_inline() || self.0.is_arc() {
             Ok(OwnedSlice::flex(self.0.clone()))
         } else if let Some(id) = self.0.id_value() {
-            let blob = store.read(id).map(|x| OwnedSlice::<TreeNode>::from_blob(x))?;
+            let blob = store
+                .read(id)
+                .map(|x| OwnedSlice::<TreeNode>::from_blob(x))?;
             Ok(blob.cast::<TreeNode<S>>()?)
         } else if self.0.is_none() {
             Ok(OwnedSlice::empty())
