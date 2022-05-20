@@ -210,9 +210,19 @@ impl<S: BlobStore> CIW<S> {
     fn from_blob(value: Blob) -> Self {
         Self(OwnedSlice::from_blob(value), PhantomData)
     }
+}
 
-    fn iter(&self) -> TreeChildrenIterator<'_, S> {
-        TreeChildrenIterator(self.0.as_ref(), PhantomData)
+impl<S: BlobStore> AsRef<NodeSeq<S>> for CIW<S> {
+    fn as_ref(&self) -> &NodeSeq<S> {
+        NodeSeq::new(&self.0)
+    }
+}
+
+impl<S: BlobStore> Deref for CIW<S> {
+    type Target = NodeSeq<S>;
+
+    fn deref(&self) -> &Self::Target {
+        NodeSeq::new(self.0.as_ref())
     }
 }
 
