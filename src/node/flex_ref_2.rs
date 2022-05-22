@@ -230,7 +230,6 @@ impl From<Arc<Vec<u8>>> for TreePrefix {
 }
 
 impl TreePrefix {
-
     fn append<S: BlobStore>(&mut self, that: &TreePrefixRef<S>, store: &S) -> Result<(), S::Error> {
         todo!()
     }
@@ -539,7 +538,6 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         Ok(())
     }
 
-
     /// get the first value
     fn first_value(&self, store: &S) -> Result<Option<TreeValue>, S::Error> {
         Ok(if self.children.is_empty() {
@@ -565,10 +563,13 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
             }
         } else {
             let children = self.children.load(store)?;
-            children.iter().next().unwrap()?.first_entry(store, prefix)?
+            children
+                .iter()
+                .next()
+                .unwrap()?
+                .first_entry(store, prefix)?
         })
     }
-
 
     /// get the first value
     fn last_value(&self, store: &S) -> Result<Option<TreeValue>, S::Error> {
@@ -595,7 +596,11 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
             }
         } else {
             let children = self.children.load(store)?;
-            children.iter().last().unwrap()?.first_entry(store, prefix)?
+            children
+                .iter()
+                .last()
+                .unwrap()?
+                .first_entry(store, prefix)?
         })
     }
 
@@ -852,6 +857,75 @@ impl<S: BlobStore> NodeSeqRef<S> {
     }
 }
 
+struct InPlaceNodeSeqBuilder<S: BlobStore = NoStore> {
+    vec: Vec<u8>,
+    /// end of the result
+    t1: usize,
+    /// start of the source
+    s0: usize,
+
+    p: PhantomData<S>,
+}
+
+impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
+    fn move_one(&mut self) -> Result<(), S::Error> {
+        // move one item from source to target
+        // we don't have to call drop or clone!
+        let n: usize = self.next_size()?;
+        if self.t1 == self.s0 {
+            self.t1 += n;
+            self.s0 += n;
+        } else {
+            self.vec.copy_within(self.t1..self.t1 + n, self.s0);
+            self.t1 += n;
+            self.s0 += n;
+        }
+        Ok(())
+    }
+
+    fn insert_one(&mut self, source: &[u8]) {
+        // copy from source at end of target, making room if needed
+        // needs to clone!
+        todo!()
+    }
+
+    fn replace_one(&mut self, source: &[u8]) {
+        // drop the first item from source, if it exists. Then copy from source.
+        // needs to clone!
+        todo!()
+    }
+
+    fn peek(&self) -> Result<Option<TreeNode<'_, S>>, S::Error> {
+        self.source_slice().iter().next().transpose()
+    }
+
+    fn next_size(&self) -> Result<usize, S::Error> {
+        todo!()
+    }
+
+    fn target_slice(&self) -> &NodeSeqRef<S> {
+        NodeSeqRef::new(&self.vec[..self.t1])
+    }
+
+    fn source_slice(&self) -> &NodeSeqRef<S> {
+        NodeSeqRef::new(&self.vec[self.s0..])
+    }
+
+    fn new(builder: NodeSeqBuilder<S>) -> Self {
+        Self {
+            vec: builder.into_inner(),
+            s0: 0,
+            t1: 0,
+            p: PhantomData,
+        }
+    }
+
+    fn into_builder(mut self) -> NodeSeqBuilder<S> {
+        self.vec.truncate(self.t1);
+        NodeSeqBuilder(self.vec, PhantomData)
+    }
+}
+
 struct NodeSeqBuilder<S: BlobStore = NoStore>(Vec<u8>, PhantomData<S>);
 
 impl<S: BlobStore> Debug for NodeSeqBuilder<S> {
@@ -863,6 +937,13 @@ impl<S: BlobStore> Debug for NodeSeqBuilder<S> {
 impl<S: BlobStore> NodeSeqBuilder<S> {
     fn new() -> Self {
         Self(Vec::new(), PhantomData)
+    }
+
+    fn into_inner(mut self) -> Vec<u8> {
+        let mut r = Vec::new();
+        std::mem::swap(&mut self.0, &mut r);
+        drop(self);
+        r
     }
 
     fn push_prefix(&mut self, prefix: TreePrefix) {
@@ -1034,7 +1115,6 @@ impl Tree {
     pub fn contains_key(&self, key: &[u8]) -> bool {
         unwrap_safe(self.try_contains_key(key))
     }
-
 
     pub fn first_value(&self) -> Option<TreeValue> {
         unwrap_safe(self.try_first_value())
