@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, marker::PhantomData, ops::Deref, sync::Arc};
 
 use crate::{
-    store::{unwrap_safe, Blob, BlobStore, NoError, NoStore},
+    store::{unwrap_safe, Blob, BlobStore2 as BlobStore, NoError, NoStore},
     Hex,
 };
 use std::fmt::Debug;
@@ -56,7 +56,7 @@ impl<S: BlobStore> TreePrefixRef<S> {
             TreePrefix::from_slice(x)
         } else if let Some(x) = self.1.arc_as_clone() {
             TreePrefix::from_arc_vec(x)
-        } else if let Some(id) = self.1.id_as_u64() {
+        } else if let Some(id) = self.1.id_as_slice() {
             TreePrefix::from_blob(store.read(id)?)
         } else {
             panic!()
@@ -285,7 +285,7 @@ impl<S: BlobStore> TreeValueRef<S> {
             TreeValue::from_slice(x)
         } else if let Some(x) = self.1.arc_as_clone() {
             TreeValue::from_arc_vec(x)
-        } else if let Some(id) = self.1.id_as_u64() {
+        } else if let Some(id) = self.1.id_as_slice() {
             TreeValue::from_blob(store.read(id)?)
         } else {
             panic!()
@@ -339,7 +339,7 @@ impl<S: BlobStore> TreeValueOptRef<S> {
             Some(TreeValue::from_slice(x))
         } else if let Some(x) = self.1.arc_as_clone() {
             Some(TreeValue::from_arc_vec(x))
-        } else if let Some(id) = self.1.id_as_u64() {
+        } else if let Some(id) = self.1.id_as_slice() {
             Some(TreeValue::from_blob(store.read(id)?))
         } else {
             None
@@ -366,7 +366,7 @@ impl<S: BlobStore> Debug for TreeChildrenRef<S> {
         match self.1.tpe() {
             Type::Inline => write!(f, "TreeChildren::Empty"),
             Type::Arc => write!(f, "TreeChildren::Arc({:?})", self.1.arc_as_clone().unwrap()),
-            Type::Id => write!(f, "TreeChildren::Id({:?})", self.1.id_as_u64().unwrap()),
+            Type::Id => write!(f, "TreeChildren::Id({:?})", self.1.id_as_slice().unwrap()),
             Type::None => write!(f, "TreeChildren invalid"),
         }
     }
@@ -389,7 +389,7 @@ impl<S: BlobStore> TreeChildrenRef<S> {
             NodeSeq::empty()
         } else if let Some(x) = self.1.arc_as_clone() {
             NodeSeq::from_arc_vec(x)
-        } else if let Some(id) = self.1.id_as_u64() {
+        } else if let Some(id) = self.1.id_as_slice() {
             NodeSeq::from_blob(store.read(id)?)
         } else {
             panic!()
@@ -739,8 +739,8 @@ impl<T> FlexRef<T> {
         self.with_arc(|x| x.clone())
     }
 
-    fn id_as_u64(&self) -> Option<u64> {
-        self.with_id(|x| x)
+    fn id_as_slice(&self) -> Option<&[u8]> {
+        self.with_id(|_| todo!())
     }
 
     fn with_arc<U>(&self, f: impl Fn(&Arc<T>) -> U) -> Option<U> {

@@ -7,6 +7,53 @@ use fnv::FnvHashMap;
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
 
+/// A generic blob store with variable id size
+pub trait BlobStore2: Debug + Send + Sync + 'static {
+    /// The error. Use NoError for a store that can never fail
+    type Error: From<NoError> + From<anyhow::Error> + Debug;
+
+    /// Read a blob with the given id. Since ids can be of arbitrary size, passed as a slice
+    fn read(&self, id: &[u8]) -> std::result::Result<Blob, Self::Error>;
+
+    /// Write a blob, returning an id into a target vec `tgt`.
+    ///
+    /// If this returns an error, the tgt vec is guaranteed to be unmodified.
+    fn write(&self, data: &[u8], tgt: &mut Vec<u8>) -> std::result::Result<(), Self::Error>;
+
+    /// Ensure all data is persisted
+    fn sync(&self) -> std::result::Result<(), Self::Error>;
+
+    /// True if the store needs deep detach. This is true for basically all stores except the special NoStore store
+    fn needs_deep_detach(&self) -> bool {
+        true
+    }
+}
+
+/// Type for a dynamic blob store
+///
+/// Uses Arc so the dynamic reference can be cheaply cloned.
+pub type DynBlobStore2 = Arc<dyn BlobStore2<Error = anyhow::Error>>;
+
+impl BlobStore2 for DynBlobStore2 {
+    type Error = anyhow::Error;
+
+    fn read(&self, id: &[u8]) -> std::result::Result<Blob, Self::Error> {
+        self.as_ref().read(id)
+    }
+
+    fn write(&self, data: &[u8], tgt: &mut Vec<u8>) -> std::result::Result<(), Self::Error> {
+        self.as_ref().write(data, tgt)
+    }
+
+    fn sync(&self) -> std::result::Result<(), Self::Error> {
+        self.as_ref().sync()
+    }
+
+    fn needs_deep_detach(&self) -> bool {
+        self.as_ref().needs_deep_detach()
+    }
+}
+
 /// A generic blob store
 pub trait BlobStore: Debug + Send + Sync + 'static {
     type Error: From<NoError> + From<anyhow::Error> + Debug;
@@ -69,6 +116,27 @@ impl BlobStore for NoStore {
 
     fn sync(&self) -> std::result::Result<(), Self::Error> {
         panic!("no store");
+    }
+
+    fn needs_deep_detach(&self) -> bool {
+        false
+    }
+}
+
+/// The implementation of NoStore will panic whenever it is used
+impl BlobStore2 for NoStore {
+    type Error = NoError;
+
+    fn read(&self, id: &[u8]) -> std::result::Result<Blob, Self::Error> {
+        todo!()
+    }
+
+    fn write(&self, data: &[u8], tgt: &mut Vec<u8>) -> std::result::Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn sync(&self) -> std::result::Result<(), Self::Error> {
+        todo!()
     }
 
     fn needs_deep_detach(&self) -> bool {
