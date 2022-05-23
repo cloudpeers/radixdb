@@ -46,6 +46,10 @@ impl<S: BlobStore> TreePrefixRef<S> {
         self.1.first_u8_opt()
     }
 
+    fn bytes_len(&self) -> usize {
+        self.1.bytes_len()
+    }
+
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
@@ -314,6 +318,10 @@ impl<S: BlobStore> TreeValueOptRef<S> {
         unsafe { std::mem::transmute(value) }
     }
 
+    fn bytes_len(&self) -> usize {
+        self.1.bytes_len()
+    }
+
     fn value_opt(&self) -> Option<&TreeValueRef<S>> {
         if self.is_none() {
             None
@@ -376,6 +384,10 @@ impl<S: BlobStore> TreeChildrenRef<S> {
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
+    }
+
+    fn bytes_len(&self) -> usize {
+        self.1.bytes_len()
     }
 
     fn read_one<'a>(value: &'a [u8]) -> Result<(&'a Self, &'a [u8]), S::Error> {
@@ -472,7 +484,7 @@ impl<'a, S: BlobStore> Iterator for TreeChildrenIterator<'a, S> {
     }
 }
 
-struct TreeNode<'a, S: BlobStore> {
+struct TreeNode<'a, S: BlobStore> {    
     prefix: &'a TreePrefixRef<S>,
     value: &'a TreeValueOptRef<S>,
     children: &'a TreeChildrenRef<S>,
@@ -499,6 +511,10 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
             value: TreeValueOptRef::none(),
             children: TreeChildrenRef::empty(),
         }
+    }
+
+    fn bytes_len(&self) -> usize {
+        self.prefix.bytes_len() + self.value.bytes_len() + self.children.bytes_len()
     }
 
     fn read(buffer: &'a [u8]) -> Result<Self, S::Error> {
@@ -722,7 +738,7 @@ impl<T> FlexRef<T> {
         tpe(self.0)
     }
 
-    fn len(&self) -> usize {
+    fn bytes_len(&self) -> usize {
         len(self.0) + 1
     }
 
@@ -858,10 +874,12 @@ impl<S: BlobStore> NodeSeqRef<S> {
 }
 
 struct InPlaceNodeSeqBuilder<S: BlobStore = NoStore> {
+    // place for the data. [..t1] and [s1..] contain valid node sequences.
+    // The rest is to be considered uninitialized
     vec: Vec<u8>,
-    /// end of the result
+    // end of the result
     t1: usize,
-    /// start of the source
+    // start of the source
     s0: usize,
 
     p: PhantomData<S>,
@@ -871,7 +889,7 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     fn move_one(&mut self) -> Result<(), S::Error> {
         // move one item from source to target
         // we don't have to call drop or clone!
-        let n: usize = self.next_size()?;
+        let n: usize = self.next_bytes_len()?;
         if self.t1 == self.s0 {
             self.t1 += n;
             self.s0 += n;
@@ -883,13 +901,18 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
         Ok(())
     }
 
-    fn insert_one(&mut self, source: &[u8]) {
+    fn insert_one(&mut self, node: &[u8]) -> Result<(), S::Error> {
         // copy from source at end of target, making room if needed
         // needs to clone!
-        todo!()
+        let bytes_len = TreeNode::<S>::read(node)?.bytes_len();
+        self.vec.splice(self.s0..self.s0, node.iter().cloned());
+        self.t1 += node.len();
+        self.s0 += node.len();
+        Ok(())
     }
 
     fn replace_one(&mut self, source: &[u8]) {
+
         // drop the first item from source, if it exists. Then copy from source.
         // needs to clone!
         todo!()
@@ -899,8 +922,8 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
         self.source_slice().iter().next().transpose()
     }
 
-    fn next_size(&self) -> Result<usize, S::Error> {
-        todo!()
+    fn next_bytes_len(&self) -> Result<usize, S::Error> {
+        Ok(self.source_slice().iter().next().transpose()?.map(|x| x.bytes_len()).unwrap_or_default())
     }
 
     fn target_slice(&self) -> &NodeSeqRef<S> {
