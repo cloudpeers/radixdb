@@ -1685,13 +1685,9 @@ fn outer_combine_with<T: TT>(
         // b is a prefix of a
         // value is value of b
         a.split(ab, n)?;
-        // prefixes are identical
+        // prefixes are now identical
         if b.value.is_some() {
-            if a.value.is_some() {
-                f(&mut a.value, &b.value)?;
-            } else {
-                a.value = c.convert_value(&b.value, bb)?;
-            }
+            a.value = c.convert_value(&b.value, bb)?;
         }
         let ac = a.children.get_mut(ab)?;
         let bc = b.children.load(bb)?;
