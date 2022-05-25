@@ -710,7 +710,7 @@ impl FlexRefExt for Vec<u8> {
     }
 
     fn push_flexref_arc<T>(&mut self, arc: Arc<T>) {
-        self.push(0x01);
+        self.push(ARC8);
         let data: usize = unsafe { std::mem::transmute(arc) };
         let data: u64 = data as u64;
         self.extend_from_slice(&data.to_be_bytes());
@@ -718,8 +718,7 @@ impl FlexRefExt for Vec<u8> {
 
     fn push_flexref_inline(&mut self, data: &[u8]) {
         assert!(data.len() < 128);
-        let l = (data.len() as u8) | 0x80;
-        self.push(l);
+        self.push(make_header_byte(Type::Inline, data.len()));
         self.extend_from_slice(data);
     }
 
@@ -734,7 +733,7 @@ impl FlexRefExt for Vec<u8> {
     }
 
     fn push_flexref_none(&mut self) {
-        self.push(0u8);
+        self.push(NONE);
     }
 }
 
@@ -751,22 +750,20 @@ impl<T> FlexRef<T> {
         });
     }
 
-    fn arc(data: Arc<T>, target: &mut Vec<u8>) {}
-
     fn new(value: &[u8]) -> &Self {
         unsafe { std::mem::transmute(value) }
     }
 
     fn none() -> &'static Self {
-        Self::read_one(&[0]).unwrap().0
+        Self::read_one(&[NONE]).unwrap().0
     }
 
     fn empty() -> &'static Self {
-        Self::read_one(&[0x80]).unwrap().0
+        Self::read_one(&[INLINE_EMPTY]).unwrap().0
     }
 
     fn is_empty(&self) -> bool {
-        self.0 == 0x80
+        self.0 == INLINE_EMPTY
     }
 
     fn read_one(value: &[u8]) -> anyhow::Result<(&Self, &[u8])> {
@@ -857,26 +854,34 @@ impl<T> FlexRef<T> {
     }
 }
 
-fn len(value: u8) -> usize {
-    match tpe(value) {
-        Type::None => 0,
-        Type::Id => 8,
-        Type::Arc => 8,
-        Type::Inline => ((value & 0x7f) as usize),
+const fn len(value: u8) -> usize {
+    (value & 0x3f) as usize
+}
+
+const fn tpe(value: u8) -> Type {
+    match value >> 6 {
+        0 => Type::None,
+        1 => Type::Inline,
+        2 => Type::Arc,
+        3 => Type::Id,
+        _ => panic!()
     }
 }
 
-fn tpe(value: u8) -> Type {
-    if value == 0 {
-        Type::None
-    } else if value & 0x80 != 0 {
-        Type::Inline
-    } else if value & 0x40 != 0 {
-        Type::Id
-    } else {
-        Type::Arc
-    }
+const fn make_header_byte(tpe: Type, len: usize) -> u8 {
+    assert!(len < 64);
+    (len as u8) |
+        match tpe {
+            Type::None => 0,
+            Type::Inline => 1,
+            Type::Arc => 2,
+            Type::Id => 3,
+        } << 6
 }
+
+const NONE: u8 = make_header_byte(Type::None, 0);
+const INLINE_EMPTY: u8 = make_header_byte(Type::Inline, 0);
+const ARC8: u8 = make_header_byte(Type::Arc, 8);
 
 #[repr(transparent)]
 struct NodeSeqRef<S: BlobStore>(PhantomData<S>, [u8]);
@@ -965,14 +970,14 @@ impl InPlaceFlexRefSeqBuilder {
 
     pub fn push_none(&mut self) {
         self.reserve(1);
-        self.push(&[0]);
+        self.push(&[NONE]);
     }
 
     pub fn push_arc<T>(&mut self, arc: Arc<T>) {
         let data: usize = unsafe { std::mem::transmute(arc) };
         let data: u64 = data as u64;
         self.reserve(9);
-        self.push(&[0x01]);
+        self.push(&[ARC8]);
         self.push(&data.to_be_bytes());
     }
 
@@ -988,9 +993,8 @@ impl InPlaceFlexRefSeqBuilder {
 
     fn push_inline(&mut self, data: &[u8]) {
         assert!(data.len() < 128);
-        let l = (data.len() as u8) | 0x80;
         self.reserve(data.len() + 1);
-        self.push(&[l]);
+        self.push(&[make_header_byte(Type::Inline, data.len())]);
         self.push(data);
     }
 
