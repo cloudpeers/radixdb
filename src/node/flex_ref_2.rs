@@ -7,11 +7,11 @@ use crate::{
 use std::fmt::Debug;
 
 #[repr(C)]
-struct FlexRef<T>(u8, PhantomData<T>, [u8]);
+struct FlexRef<T>(PhantomData<T>, [u8]);
 
 impl<T> Debug for FlexRef<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match tpe(self.0) {
+        match tpe(self.header()) {
             Type::None => write!(f, "FlexRef::None"),
             Type::Id => write!(f, "FlexRef::Id"),
             Type::Inline => write!(
@@ -675,7 +675,7 @@ impl FlexRef<Vec<u8>> {
     fn first_u8_opt(&self) -> Option<u8> {
         match self.tpe() {
             Type::None => None,
-            Type::Inline => self.2.get(0).cloned(),
+            Type::Inline => self.1.get(1).cloned(),
             Type::Arc => self.with_arc(|x| x.as_ref().get(0).cloned()).unwrap(),
             Type::Id => todo!("pack first byte into id"),
         }
@@ -683,61 +683,40 @@ impl FlexRef<Vec<u8>> {
 
     fn slice(data: &[u8], target: &mut Vec<u8>) {
         if data.len() < 128 {
-            target.push_flexref_inline(data);
+            target.push_inline(data);
         } else {
-            target.push_flexref_arc(Arc::new(data.to_vec()));
+            target.push_arc(Arc::new(data.to_vec()));
         }
     }
 }
 
-trait FlexRefExt {
-    fn take(&mut self) -> Vec<u8>;
-
-    fn push_flexref_none(&mut self);
-
-    fn push_flexref_arc<T>(&mut self, arc: Arc<T>);
-
-    fn push_flexref_inline(&mut self, data: &[u8]);
-
-    fn push_flexref_arc_or_inline(&mut self, data: impl AsRef<[u8]>, max_inline: usize);
+trait VecTakeExt<T> {
+    fn take(&mut self) -> Vec<T>;
 }
 
-impl FlexRefExt for Vec<u8> {
-    fn take(&mut self) -> Vec<u8> {
+impl<T> VecTakeExt<T> for Vec<T> {
+    fn take(&mut self) -> Vec<T> {
         let mut t = Vec::new();
         std::mem::swap(&mut t, self);
         t
     }
-
-    fn push_flexref_arc<T>(&mut self, arc: Arc<T>) {
-        self.push(ARC8);
-        let data: usize = unsafe { std::mem::transmute(arc) };
-        let data: u64 = data as u64;
-        self.extend_from_slice(&data.to_be_bytes());
-    }
-
-    fn push_flexref_inline(&mut self, data: &[u8]) {
-        assert!(data.len() < 128);
-        self.push(make_header_byte(Type::Inline, data.len()));
-        self.extend_from_slice(data);
-    }
-
-    fn push_flexref_arc_or_inline(&mut self, data: impl AsRef<[u8]>, max_inline: usize) {
-        assert!(max_inline < 128);
-        let data = data.as_ref();
-        if data.len() <= max_inline {
-            self.push_flexref_inline(data.as_ref())
-        } else {
-            self.push_flexref_arc(Arc::new(data.to_vec()))
-        }
-    }
-
-    fn push_flexref_none(&mut self) {
-        self.push(NONE);
-    }
 }
 
 impl<T> FlexRef<T> {
+    fn header(&self) -> u8 {
+        self.1[0]
+    }
+
+    fn data(&self) -> &[u8] {
+        let len = len(self.header());
+        &self.1[1..len + 1]
+    }
+
+    fn bytes(&self) -> &[u8] {
+        let len = len(self.header());
+        &self.1[0..len + 1]
+    }
+
     fn manual_drop(&self) {
         self.with_arc(|arc| unsafe {
             Arc::decrement_strong_count(Arc::as_ptr(arc));
@@ -763,7 +742,7 @@ impl<T> FlexRef<T> {
     }
 
     fn is_empty(&self) -> bool {
-        self.0 == INLINE_EMPTY
+        self.header() == INLINE_EMPTY
     }
 
     fn read_one(value: &[u8]) -> anyhow::Result<(&Self, &[u8])> {
@@ -778,17 +757,16 @@ impl<T> FlexRef<T> {
     }
 
     fn tpe(&self) -> Type {
-        tpe(self.0)
+        tpe(self.header())
     }
 
     fn bytes_len(&self) -> usize {
-        len(self.0) + 1
+        len(self.header()) + 1
     }
 
     fn inline_as_ref(&self) -> Option<&[u8]> {
         if self.tpe() == Type::Inline {
-            let len = len(self.0);
-            Some(&self.2[0..len])
+            Some(self.data())
         } else {
             None
         }
@@ -804,7 +782,7 @@ impl<T> FlexRef<T> {
 
     fn with_arc<U>(&self, f: impl Fn(&Arc<T>) -> U) -> Option<U> {
         if self.tpe() == Type::Arc {
-            let value = u64::from_be_bytes(self.2[0..8].try_into().unwrap());
+            let value = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
             let value = usize::try_from(value).unwrap();
             let arc: Arc<T> = unsafe { std::mem::transmute(value) };
             let res = Some(f(&arc));
@@ -817,7 +795,7 @@ impl<T> FlexRef<T> {
 
     fn with_inline<U>(&self, f: impl Fn(&[u8]) -> U) -> Option<U> {
         if self.tpe() == Type::Inline {
-            Some(f(&self.2))
+            Some(f(self.data()))
         } else {
             None
         }
@@ -825,7 +803,7 @@ impl<T> FlexRef<T> {
 
     fn with_id<U>(&self, f: impl Fn(u64) -> U) -> Option<U> {
         if self.tpe() == Type::Id {
-            let id = u64::from_be_bytes(self.2[0..8].try_into().unwrap());
+            let id = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
             Some(f(id))
         } else {
             None
@@ -848,9 +826,7 @@ impl<T> FlexRef<T> {
     }
 
     fn move_to(&self, target: &mut Vec<u8>) {
-        let len = len(self.0);
-        target.push(self.0);
-        target.extend_from_slice(&self.2[..len]);
+        target.extend_from_slice(self.bytes());
     }
 }
 
@@ -864,14 +840,14 @@ const fn tpe(value: u8) -> Type {
         1 => Type::Inline,
         2 => Type::Arc,
         3 => Type::Id,
-        _ => panic!()
+        _ => panic!(),
     }
 }
 
 const fn make_header_byte(tpe: Type, len: usize) -> u8 {
     assert!(len < 64);
-    (len as u8) |
-        match tpe {
+    (len as u8)
+        | match tpe {
             Type::None => 0,
             Type::Inline => 1,
             Type::Arc => 2,
@@ -912,6 +888,8 @@ impl<S: BlobStore> NodeSeqRef<S> {
     }
 }
 
+#[derive(Default)]
+
 struct InPlaceFlexRefSeqBuilder {
     // place for the data. [..t1] and [s1..] contain valid sequences of flexrefs.
     // The rest is to be considered uninitialized
@@ -922,14 +900,100 @@ struct InPlaceFlexRefSeqBuilder {
     s0: usize,
 }
 
+trait Extendable {
+    fn reserve(&mut self, n: usize);
+
+    fn extend_from_slice(&mut self, data: &[u8]);
+
+    fn push_id(&mut self, id: &[u8]) {
+        self.reserve(1 + id.len());
+        self.extend_from_slice(&[0]);
+    }
+
+    fn push_none(&mut self) {
+        self.reserve(1);
+        self.extend_from_slice(&[NONE]);
+    }
+
+    fn push_arc<T>(&mut self, arc: Arc<T>) {
+        let data: usize = unsafe { std::mem::transmute(arc) };
+        let data: u64 = data as u64;
+        self.reserve(9);
+        self.extend_from_slice(&[ARC8]);
+        self.extend_from_slice(&data.to_be_bytes());
+    }
+
+    fn push_arc_or_inline(&mut self, data: impl AsRef<[u8]>) {
+        let data = data.as_ref();
+        if data.len() <= 64 {
+            self.push_inline(data.as_ref())
+        } else {
+            self.push_arc(Arc::new(data.to_vec()))
+        }
+    }
+
+    fn push_inline(&mut self, data: &[u8]) {
+        assert!(data.len() < 128);
+        self.reserve(data.len() + 1);
+        self.extend_from_slice(&[make_header_byte(Type::Inline, data.len())]);
+        self.extend_from_slice(data);
+    }
+}
+
+impl Extendable for Vec<u8> {
+    fn reserve(&mut self, n: usize) {
+        let free = self.capacity() - self.len();
+        if free < n {
+            self.reserve(n - free);
+        }
+    }
+
+    fn extend_from_slice(&mut self, data: &[u8]) {
+        self.extend_from_slice(data)
+    }
+}
+
+impl Extendable for InPlaceFlexRefSeqBuilder {
+    fn reserve(&mut self, n: usize) {
+        let gap = self.gap();
+        if gap < n {
+            let missing = n - gap;
+            self.vec
+                .splice(self.s0..self.s0, std::iter::repeat(0).take(missing));
+            self.s0 += missing;
+        }
+    }
+
+    fn extend_from_slice(&mut self, data: &[u8]) {
+        let len = data.len();
+        self.reserve(len);
+        self.vec[self.t1..self.t1 + len].copy_from_slice(data);
+        self.t1 += len;
+    }
+}
+
 impl InPlaceFlexRefSeqBuilder {
     /// Create a new builder by taking over the data from a vec
     pub fn new(vec: Vec<u8>) -> Self {
         Self { vec, t1: 0, s0: 0 }
     }
 
-    pub fn into_inner(self) -> Vec<u8> {
+    fn into_inner(self) -> Vec<u8> {
+        debug_assert!(self.source_count() == 0);
+        debug_assert!(self.target_count() % 3 == 0);
         self.vec
+    }
+
+    pub fn source_count(&self) -> usize {
+        FlexRefIter(self.source_slice()).count()
+    }
+
+    pub fn target_count(&self) -> usize {
+        FlexRefIter(self.target_slice()).count()
+    }
+
+    pub fn total_count(&self) -> usize {
+        self.source_count() + self.target_count()
     }
 
     fn drop(&mut self, n: usize) {
@@ -951,57 +1015,6 @@ impl InPlaceFlexRefSeqBuilder {
 
     fn gap(&self) -> usize {
         self.s0 - self.t1
-    }
-
-    fn reserve(&mut self, n: usize) {
-        let gap = self.gap();
-        if gap < n {
-            let missing = n - gap;
-            self.vec
-                .splice(self.s0..self.s0, std::iter::repeat(0).take(missing));
-            self.s0 += missing;
-        }
-    }
-
-    pub fn push_id(&mut self, id: &[u8]) {
-        self.reserve(1);
-        self.push(&[0]);
-    }
-
-    pub fn push_none(&mut self) {
-        self.reserve(1);
-        self.push(&[NONE]);
-    }
-
-    pub fn push_arc<T>(&mut self, arc: Arc<T>) {
-        let data: usize = unsafe { std::mem::transmute(arc) };
-        let data: u64 = data as u64;
-        self.reserve(9);
-        self.push(&[ARC8]);
-        self.push(&data.to_be_bytes());
-    }
-
-    pub fn push_arc_or_inline(&mut self, data: impl AsRef<[u8]>, max_inline: usize) {
-        assert!(max_inline < 128);
-        let data = data.as_ref();
-        if data.len() <= max_inline {
-            self.push_inline(data.as_ref())
-        } else {
-            self.push_arc(Arc::new(data.to_vec()))
-        }
-    }
-
-    fn push_inline(&mut self, data: &[u8]) {
-        assert!(data.len() < 128);
-        self.reserve(data.len() + 1);
-        self.push(&[make_header_byte(Type::Inline, data.len())]);
-        self.push(data);
-    }
-
-    fn push(&mut self, data: &[u8]) {
-        let len = data.len();
-        self.reserve(len);
-        self.vec[self.t1..self.t1 + len].copy_from_slice(data);
     }
 
     fn target_slice(&self) -> &[u8] {
@@ -1071,9 +1084,9 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.next()
     }
 
-    pub fn set_prefix(
+    pub fn push_prefix(
         mut self,
-        prefix: &[u8],
+        prefix: &TreePrefixRef<S>,
     ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
         self.drop_current()?;
         todo!();
@@ -1344,31 +1357,31 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn push_prefix(&mut self, prefix: TreePrefix) {
-        self.0.push_flexref_arc_or_inline(prefix, 32);
+        self.0.push_arc_or_inline(prefix);
     }
 
     fn push_value(&mut self, value: Option<TreeValue>) {
         if let Some(value) = value {
-            self.0.push_flexref_arc_or_inline(value, 32);
+            self.0.push_arc_or_inline(value);
         } else {
-            self.0.push_flexref_none()
+            self.0.push_none()
         }
     }
 
     fn push_children(&mut self, value: NodeSeqBuilder<S>) {
         if !value.0.is_empty() {
-            self.0.push_flexref_arc(Arc::new(value))
+            self.0.push_arc(Arc::new(value))
         } else {
-            self.0.push_flexref_inline(&[]);
+            self.0.push_inline(&[]);
         }
     }
 
     fn empty_tree() -> Self {
-        let mut res = Self::new();
-        res.push_prefix(TreePrefix::empty());
-        res.push_value(None);
-        res.push_children(NodeSeqBuilder::new());
-        res
+        let mut res = InPlaceFlexRefSeqBuilder::default();
+        res.push_arc_or_inline(&[]);
+        res.push_none();
+        res.push_arc_or_inline(&[]);
+        Self(res.into_inner(), PhantomData)
     }
 
     fn from_node(node: TreeNode<'_, S>) -> Self {
@@ -1385,6 +1398,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         value: Option<TreeValue>,
         children: NodeSeqBuilder<S>,
     ) {
+        let mut t = InPlaceFlexRefSeqBuilder::default();
         self.push_prefix(prefix);
         self.push_value(value);
         self.push_children(children);
@@ -1453,11 +1467,11 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn single(key: &[u8], value: &[u8]) -> Self {
-        let mut t = Vec::new();
-        FlexRef::<Vec<u8>>::slice(key, &mut t);
-        FlexRef::<Vec<u8>>::slice(value, &mut t);
-        FlexRef::<Vec<u8>>::empty().copy_to(&mut t);
-        Self(t, PhantomData)
+        let mut t = InPlaceFlexRefSeqBuilder::default();
+        t.push_arc_or_inline(key);
+        t.push_arc_or_inline(value);
+        t.push_arc_or_inline(&[]);
+        Self(t.into_inner(), PhantomData)
     }
 }
 
