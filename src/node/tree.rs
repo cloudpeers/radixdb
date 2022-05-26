@@ -1027,7 +1027,7 @@ impl Tree {
         unwrap_safe(self.try_get(key))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> {
         self.try_iter().map(unwrap_safe)
     }
 
