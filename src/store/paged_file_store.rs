@@ -59,7 +59,7 @@ impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
         let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         &data[base..base + length]
     }
-    fn inc(&self, offset: usize) -> bool {
+    fn validate(&self, offset: usize) -> bool {
         let data = self.mmap.as_ref();
         if offset + 4 <= data.len() {
             let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;

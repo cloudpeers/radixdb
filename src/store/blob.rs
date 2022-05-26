@@ -17,12 +17,6 @@ impl PartialEq for Blob {
     }
 }
 
-impl Drop for Blob {
-    fn drop(&mut self) {
-        self.owner.dec(self.extra);
-    }
-}
-
 impl Blob {
     fn as_slice(&self) -> &[u8] {
         self.owner.get_slice(self.extra)
@@ -36,7 +30,7 @@ impl Blob {
 
     /// Create a new blob with a given BlobOwner and extra
     pub fn new(owner: Arc<dyn BlobOwner>, extra: usize) -> anyhow::Result<Self> {
-        anyhow::ensure!(owner.inc(extra));
+        anyhow::ensure!(owner.validate(extra));
         Ok(Self { owner, extra })
     }
 }
@@ -66,11 +60,9 @@ impl Borrow<[u8]> for Blob {
 /// A blob owner can own a single blob, or it can be a "Page" containing multiple blobs, identified by the id
 pub trait BlobOwner: Send + Sync + std::fmt::Debug + 'static {
     /// Called when a blob is being cloned
-    fn inc(&self, _extra: usize) -> bool {
+    fn validate(&self, _extra: usize) -> bool {
         true
     }
-    /// Called when a blob is being dropped
-    fn dec(&self, _extra: usize) {}
     /// Given an extra, get a slice
     fn get_slice(&self, extra: usize) -> &[u8];
 }
@@ -81,7 +73,7 @@ impl BlobOwner for Vec<u8> {
         self.as_ref()
     }
 
-    fn inc(&self, _: usize) -> bool {
+    fn validate(&self, _: usize) -> bool {
         true
     }
 }

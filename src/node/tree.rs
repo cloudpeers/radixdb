@@ -1028,12 +1028,10 @@ impl Tree {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValue)> + '_ {
-        // all this unwrap is safe because we have a NoStore store, which does not ever fail
         self.try_iter().map(unwrap_safe)
     }
 
     pub fn values(&self) -> impl Iterator<Item = TreeValue> + '_ {
-        // all this unwrap is safe because we have a NoStore store, which does not ever fail
         self.try_values().map(unwrap_safe)
     }
 
@@ -1041,7 +1039,6 @@ impl Tree {
         &'a self,
         f: impl Fn(&[u8], &TreeNode) -> bool + 'a,
     ) -> impl Iterator<Item = Tree> + 'a {
-        // all this unwrap is safe because we have a NoStore store, which does not ever fail
         self.try_group_by(f).map(|r| Tree {
             node: unwrap_safe(r),
             store: self.store.clone(),

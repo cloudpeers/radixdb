@@ -1,7 +1,7 @@
-use std::{borrow::BorrowMut, cmp::Ordering, marker::PhantomData, ops::Deref, sync::Arc};
+use std::{borrow::{BorrowMut, Borrow}, cmp::Ordering, marker::PhantomData, ops::Deref, sync::Arc};
 
 use crate::{
-    store::{unwrap_safe, Blob, BlobStore2 as BlobStore, NoError, NoStore},
+    store::{unwrap_safe, Blob, BlobStore2 as BlobStore, NoError, NoStore, BlobOwner},
     Hex,
 };
 use std::fmt::Debug;
@@ -484,9 +484,14 @@ impl<S: BlobStore> Deref for NodeSeq<S> {
 }
 
 #[repr(transparent)]
-struct TreeChildrenIterator<'a, S>(&'a [u8], PhantomData<S>);
+struct NodeSeqIter<'a, S>(&'a [u8], PhantomData<S>);
 
-impl<'a, S: BlobStore> TreeChildrenIterator<'a, S> {
+impl<'a, S: BlobStore> NodeSeqIter<'a, S> {
+
+    fn empty() -> Self {
+        Self(&[], PhantomData)
+    }
+
     fn peek(&self) -> Option<Result<Option<u8>, S::Error>> {
         if self.0.is_empty() {
             None
@@ -494,9 +499,13 @@ impl<'a, S: BlobStore> TreeChildrenIterator<'a, S> {
             Some(TreePrefixRef::<S>::read(&self.0).map(|x| x.first_opt()))
         }
     }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
-impl<'a, S: BlobStore> Iterator for TreeChildrenIterator<'a, S> {
+impl<'a, S: BlobStore> Iterator for NodeSeqIter<'a, S> {
     type Item = Result<TreeNode<'a, S>, S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -584,7 +593,7 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         println!("{}TreeNode", spacer);
         println!("{}  prefix={:?}", spacer, self.prefix());
         println!("{}  value={:?}", spacer, self.value());
-        println!("{}  children", spacer);
+        println!("{}  children={:?}", spacer, self.children());
         for child in self.children().load(store)?.iter() {
             let child = child?;
             child.dump(indent + 4, store)?;
@@ -879,8 +888,8 @@ impl<S: BlobStore> NodeSeqRef<S> {
         unsafe { std::mem::transmute(value) }
     }
 
-    fn iter(&self) -> TreeChildrenIterator<'_, S> {
-        TreeChildrenIterator(&self.1, PhantomData)
+    fn iter(&self) -> NodeSeqIter<'_, S> {
+        NodeSeqIter(&self.1, PhantomData)
     }
 
     fn find(&self, first: u8) -> Result<Option<TreeNode<'_, S>>, S::Error> {
@@ -1220,17 +1229,17 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         self.done()
     }
 
-    pub fn insert_converted<S2: BlobStore>(
+    pub fn push_converted<S2: BlobStore>(
         mut self,
         value: &TreeValueOptRef<S2>,
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
-        // todo fix
+        self.drop_current();
         self.0.extend_from_slice(value.bytes());
         self.done()
     }
 
-    pub fn insert_opt_converted<S2: BlobStore>(
+    pub fn push_opt_converted<S2: BlobStore>(
         mut self,
         value: &TreeValueOptRef<S2>,
         store: &S2,
@@ -1364,7 +1373,7 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     ) -> Result<(), S::Error> {
         self.cursor()
             .insert_converted(node.prefix(), store)?
-            .insert_opt_converted(node.value(), store)?
+            .push_opt_converted(node.value(), store)?
             .insert_converted(node.children(), store)?;
         Ok(())
     }
@@ -1416,6 +1425,23 @@ impl<'a, S: BlobStore> Deref for TreeNodeMut<'a, S> {
     }
 }
 
+impl<S: BlobStore> BlobOwner for NodeSeqBuilder<S> {
+
+    fn validate(&self, offset: usize) -> bool {
+        if self.0.len() > offset {
+            let len = len(self.0[offset]);
+            self.0.len() >= offset + len + 1
+        } else {
+            false
+        }
+    }
+
+    fn get_slice(&self, offset: usize) -> &[u8] {
+        let len = len(self.0[offset]);
+        &self.0[offset .. offset + len + 1]
+    }
+}
+
 struct NodeSeqBuilder<S: BlobStore = NoStore>(Vec<u8>, PhantomData<S>);
 
 impl<S: BlobStore> Debug for NodeSeqBuilder<S> {
@@ -1461,6 +1487,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn push_children_ref(&mut self, value: &TreeChildrenRef<S>) {
+        println!("{}", Hex::new(value.bytes()));
         self.0.extend_from_slice(value.bytes());
     }
 
@@ -1836,9 +1863,9 @@ where
 }
 
 fn outer_combine_children<'a, A, B, E, F>(
-    a: TreeChildrenIterator<'a, A>,
+    a: NodeSeqIter<'a, A>,
     ab: &A,
-    b: TreeChildrenIterator<'a, B>,
+    b: NodeSeqIter<'a, B>,
     bb: &B,
     f: F,
 ) -> Result<NodeSeqBuilder, E>
@@ -1884,9 +1911,9 @@ where
 }
 
 fn inner_combine_children<'a, A, B, E, F>(
-    a: TreeChildrenIterator<'a, A>,
+    a: NodeSeqIter<'a, A>,
     ab: &A,
-    b: TreeChildrenIterator<'a, B>,
+    b: NodeSeqIter<'a, B>,
     bb: &B,
     f: F,
 ) -> Result<NodeSeqBuilder, E>
@@ -1911,8 +1938,8 @@ where
 }
 
 struct OuterJoin<'a, A: BlobStore, B: BlobStore, E> {
-    a: TreeChildrenIterator<'a, A>,
-    b: TreeChildrenIterator<'a, B>,
+    a: NodeSeqIter<'a, A>,
+    b: NodeSeqIter<'a, B>,
     p: PhantomData<E>,
 }
 
@@ -1922,7 +1949,7 @@ where
     B: BlobStore,
     E: From<A::Error> + From<B::Error>,
 {
-    pub fn new(a: TreeChildrenIterator<'a, A>, b: TreeChildrenIterator<'a, B>) -> Self {
+    pub fn new(a: NodeSeqIter<'a, A>, b: NodeSeqIter<'a, B>) -> Self {
         Self {
             a,
             b,
@@ -1986,7 +2013,7 @@ where
 
 struct Combiner<'a, A: BlobStore, B: BlobStore> {
     a: &'a mut InPlaceNodeSeqBuilder<A>,
-    b: TreeChildrenIterator<'a, B>,
+    b: NodeSeqIter<'a, B>,
 }
 
 impl<'a, A, B> Combiner<'a, A, B>
@@ -1995,7 +2022,7 @@ where
     B: BlobStore,
     A::Error: From<B::Error>,
 {
-    pub fn new(a: &'a mut InPlaceNodeSeqBuilder<A>, b: TreeChildrenIterator<'a, B>) -> Self {
+    pub fn new(a: &'a mut InPlaceNodeSeqBuilder<A>, b: NodeSeqIter<'a, B>) -> Self {
         Self { a, b }
     }
 
@@ -2047,7 +2074,7 @@ where
                 a.push_value_opt(r)?
             }
             (Some(_), None) => a.move_value()?,
-            (None, _) => a.insert_converted(b.value, bb)?,
+            (None, _) => a.push_converted(b.value, bb)?,
         };
         let bc = b.children().load(bb)?;
         let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
@@ -2067,13 +2094,13 @@ where
         // split a at n
         let mut child = NodeSeqBuilder::<A>::new();
         // store the last part of the prefix
-        child.push_prefix(&bp[n..]);
+        child.push_prefix(&ap[n..]);
         // store the first part of the prefix
         let a = a.push_prefix_ref(&ap[..n])?;
         // store value from a in child, if it exists
         child.push_value_ref(a.peek());
         // store the value from b, if it exists
-        let a = a.insert_converted(b.value(), bb)?;
+        let a = a.push_converted(b.value(), bb)?;
         // take the children
         child.push_children_ref(a.peek()?);
         let a = a.set_arc(Arc::new(child))?;
@@ -2107,7 +2134,7 @@ where
 fn outer_combine_children_with<'a, A, B, F>(
     mut a: InPlaceBuilderRef<'a, A, AtChildren>,
     ab: &A,
-    bc: TreeChildrenIterator<'a, B>,
+    bc: NodeSeqIter<'a, B>,
     bb: &B,
     f: F,
 ) -> Result<InPlaceBuilderRef<'a, A, AtPrefix>, A::Error>
@@ -2117,6 +2144,9 @@ where
     A::Error: From<B::Error>,
     F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<TreeValue>, A::Error> + Copy,
 {
+    if a.peek()?.is_empty() && bc.is_empty() {
+        return a.move_children()
+    }
     let mut a_arc = a.take_arc(ab)?;
     let mut a_values = Arc::make_mut(&mut a_arc);
     let mut ac = InPlaceNodeSeqBuilder::<A>::new(&mut a_values);
@@ -2194,9 +2224,201 @@ fn find<S: BlobStore, T>(
     f(fr)
 }
 
+
+#[derive(Debug, Clone, Default)]
+pub struct IterKey(Arc<Vec<u8>>);
+
+impl IterKey {
+    fn new(root: &[u8]) -> Self {
+        Self(Arc::new(root.to_vec()))
+    }
+
+    fn append(&mut self, data: &[u8]) {
+        // for typical iterator use, a reference is not kept for a long time, so this will be very cheap
+        //
+        // in the case a reference is kept, this will make a copy.
+        let elems = Arc::make_mut(&mut self.0);
+        elems.extend_from_slice(data);
+    }
+
+    fn pop(&mut self, n: usize) {
+        let elems = Arc::make_mut(&mut self.0);
+        elems.truncate(elems.len().saturating_sub(n));
+    }
+}
+
+impl AsRef<[u8]> for IterKey {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl Borrow<[u8]> for IterKey {
+    fn borrow(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl core::ops::Deref for IterKey {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+pub struct Iter<'a, S: BlobStore> {
+    path: IterKey,
+    stack: Vec<(&'a TreePrefixRef<S>, &'a TreeValueOptRef<S>, NodeSeqIter<'a, S>)>,
+    store: S,
+}
+
+impl<'a, S: BlobStore> Iter<'a, S> {
+    fn empty(store: S) -> Self {
+        Self {
+            stack: Vec::new(),
+            path: IterKey::default(),
+            store,
+        }
+    }
+
+    fn new(tree: TreeNode<S>, store: S, prefix: IterKey) -> Self {
+        Self {
+            stack: vec![(TreePrefixRef::empty(), TreeValueOptRef::none() ,NodeSeqIter::empty())],
+            path: prefix,
+            store,
+        }
+    }
+
+    fn top_iter(&mut self) -> &mut NodeSeqIter<'a, S> {
+        &mut self.stack.last_mut().unwrap().2
+    }
+
+    fn top_value(&self) -> &'a TreeValueOptRef<S> {
+        &self.stack.last().unwrap().1
+    }
+
+    fn top_prefix(&self) -> &TreePrefixRef<S> {
+        &self.stack.last().unwrap().0
+    }
+
+    fn next0(&mut self) -> Result<Option<(IterKey, TreeValue)>, S::Error> {
+        while !self.stack.is_empty() {
+            if let Some(node) = self.top_iter().next() {
+                let node = node?;
+                let children = node.children.load(&self.store)?.iter();
+                self.path.append(node.prefix.load(&self.store)?.as_ref());
+                self.stack.push((node.prefix(), node.value(), children));
+            } else {
+                let value = self.top_value();
+                if value.is_some() {
+                    let res = value.value_opt().unwrap().load(&self.store)?;
+                    self.stack.last_mut().unwrap().1 = TreeValueOptRef::none();
+                    return Ok(Some((self.path.clone(), res)))
+                } else {
+                    let prefix = self.top_prefix().load(&self.store)?;
+                    self.path.pop(prefix.len());
+                    self.stack.pop();
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl<'a, S: BlobStore> Iterator for Iter<'a, S> {
+    type Item = Result<(IterKey, TreeValue), S::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next0() {
+            Ok(Some(x)) => Some(Ok(x)),
+            Ok(None) => None,
+            Err(cause) => {
+                // ensure that the next call to next will terminate
+                self.stack.clear();
+                Some(Err(cause))
+            }
+        }
+    }
+}
+
+impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let mut tree = Tree::empty();
+        for (k, v) in iter.into_iter() {
+            tree.outer_combine_with(&Tree::single(k.into().as_ref(), v.into().as_ref()), |a, b| Some(b.to_owned()));
+        }
+        tree
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> Tree {
+        v.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect()
+    }
+
+    fn to_btree_map(t: &Tree) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        todo!()
+        // t.iter()
+        //     .map(|(k, v)| {
+        //         let data = v.load(&NoStore).unwrap().unwrap();
+        //         (k.to_vec(), data.to_vec())
+        //     })
+        //     .collect()
+    }
+        
+    #[test]
+    fn union_with1() {
+        let a = btreemap! { vec![1] => vec![], vec![2] => vec![] };
+        let b = btreemap! { vec![1, 2] => vec![], vec![2] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.outer_combine_with(&bt, |a, b| Some(b.to_owned()));
+        let rbu = to_btree_map(&at);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            rbu_reference.insert(k, v);
+        }
+        assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
+    fn union_smoke() -> anyhow::Result<()> {
+        println!("disjoint");
+        let a = Tree::single(b"a".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"b".as_ref(), b"2".as_ref());
+        let mut r = a;
+        r.outer_combine_with(&b, |_, b| Some(b.to_owned()));
+        r.dump()?;
+
+        println!("same prefix");
+        let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
+        let mut r = a;
+        r.outer_combine_with(&b, |_, b| Some(b.to_owned()));
+        r.dump()?;
+
+        println!("a prefix of b");
+        let a = Tree::single(b"a".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"ab".as_ref(), b"2".as_ref());
+        let mut r = a;
+        r.outer_combine_with(&b, |_, b| Some(b.to_owned()));
+        r.dump()?;
+    
+        println!("b prefix of a");
+        let a = Tree::single(b"ab".as_ref(), b"1".as_ref());
+        let b = Tree::single(b"a".as_ref(), b"2".as_ref());
+        let mut r = a;
+        r.outer_combine_with(&b, |_, b| Some(b.to_owned()));
+        r.dump()?;
+
+        Ok(())
+    }
 
     #[test]
     fn smoke() {
