@@ -2403,6 +2403,36 @@ mod tests {
     }
 
     #[test]
+    fn union_with2() {
+        let a = btreemap! { vec![] => vec![] };
+        let b = btreemap! { vec![] => vec![0] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.outer_combine_with(&bt, |a, b| Some(b.to_owned()));
+        let rbu = to_btree_map(&at);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            rbu_reference.insert(k, v);
+        }
+        assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
+    fn union_with3() {
+        let a = btreemap! { vec![] => vec![] };
+        let b = btreemap! { vec![] => vec![], vec![1] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.outer_combine_with(&bt, |a, b| Some(b.to_owned()));
+        let rbu = to_btree_map(&at);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            rbu_reference.insert(k, v);
+        }
+        assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
     fn union_smoke() -> anyhow::Result<()> {
         println!("disjoint");
         let a = Tree::single(b"a".as_ref(), b"1".as_ref());
