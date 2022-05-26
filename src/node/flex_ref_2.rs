@@ -2372,8 +2372,25 @@ impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use proptest::prelude::*;
 
     use super::*;
+
+    fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
+        proptest::collection::vec(b'0'..b'9', 0..9)
+    }
+
+    fn arb_value() -> impl Strategy<Value = Vec<u8>> {
+        proptest::collection::vec(any::<u8>(), 0..9)
+    }
+
+    fn arb_tree_contents() -> impl Strategy<Value = BTreeMap<Vec<u8>, Vec<u8>>> {
+        proptest::collection::btree_map(arb_prefix(), arb_value(), 0..10)
+    }
+
+    fn arb_owned_tree() -> impl Strategy<Value = Tree> {
+        arb_tree_contents().prop_map(|x| mk_owned_tree(&x))
+    }
 
     fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> Tree {
         v.iter().map(|(k, v)| (k.as_ref(), v.as_ref())).collect()
@@ -2385,6 +2402,17 @@ mod tests {
                 (k.to_vec(), v.to_vec())
             })
             .collect()
+    }
+
+    proptest! {
+
+        #[test]
+        fn btreemap_tree_roundtrip(x in arb_tree_contents()) {
+            let reference = x;
+            let tree = mk_owned_tree(&reference);
+            let actual = to_btree_map(&tree);
+            prop_assert_eq!(reference, actual);
+        }
     }
 
     #[test]
@@ -2496,15 +2524,19 @@ mod tests {
         println!("---");
 
         let mut t = Tree::empty();
-        for i in 0u64..100000 {
+        for i in 0u64..1000000 {
             let txt = i.to_string();
             let b = txt.as_bytes();
             t.outer_combine_with(&Tree::single(b, b), |_, b| Some(b.to_owned()))
         }
 
-        for i in 0..100000 {
+        for i in 0..1000000 {
             let res = t.try_get(i.to_string().as_bytes()).unwrap();
             println!("{:?}", res);
+        }
+    
+        for (k, v) in t.iter() {
+            println!("{:?} {:?}", k, v);
         }
 
         // println!("{:?}", t);
