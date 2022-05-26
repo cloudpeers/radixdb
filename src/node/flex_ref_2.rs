@@ -2380,13 +2380,11 @@ mod tests {
     }
 
     fn to_btree_map(t: &Tree) -> BTreeMap<Vec<u8>, Vec<u8>> {
-        todo!()
-        // t.iter()
-        //     .map(|(k, v)| {
-        //         let data = v.load(&NoStore).unwrap().unwrap();
-        //         (k.to_vec(), data.to_vec())
-        //     })
-        //     .collect()
+        t.iter()
+            .map(|(k, v)| {
+                (k.to_vec(), v.to_vec())
+            })
+            .collect()
     }
 
     #[test]
