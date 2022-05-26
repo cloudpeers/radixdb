@@ -33,6 +33,11 @@ impl Blob {
         anyhow::ensure!(owner.validate(extra));
         Ok(Self { owner, extra })
     }
+
+    pub fn empty() -> Self {
+        // todo static empty blob?
+        Self::from_slice(&[])
+    }
 }
 
 impl AsRef<[u8]> for Blob {
