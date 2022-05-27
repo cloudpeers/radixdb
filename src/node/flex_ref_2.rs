@@ -1,11 +1,4 @@
-use std::{
-    borrow::{Borrow, BorrowMut},
-    cmp::Ordering,
-    fmt,
-    marker::PhantomData,
-    ops::Deref,
-    sync::Arc,
-};
+use std::{borrow::Borrow, cmp::Ordering, fmt, marker::PhantomData, ops::Deref, sync::Arc};
 
 use crate::{
     store::{unwrap_safe, Blob, BlobOwner, BlobStore2 as BlobStore, NoError, NoStore},
@@ -891,10 +884,6 @@ impl<T> FlexRef<T> {
         self.with_arc(|arc| {
             std::mem::forget(arc.clone());
         });
-        self.move_to(target)
-    }
-
-    fn move_to(&self, target: &mut Vec<u8>) {
         target.extend_from_slice(self.bytes());
     }
 }
@@ -1131,6 +1120,14 @@ impl InPlaceFlexRefSeqBuilder {
         self.s0 += n;
     }
 
+    fn forward_all(&mut self) {
+        self.forward(self.source_slice().len())
+    }
+
+    fn rewind_all(&mut self) {
+        self.rewind(self.target_slice().len())
+    }
+
     fn forward(&mut self, n: usize) {
         debug_assert!(n <= self.source_slice().len());
         if self.gap() == 0 {
@@ -1304,31 +1301,6 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         InPlaceBuilderRef(self.0, PhantomData)
     }
 
-    fn canonicalize(self, store: &S) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
-        let a = self;   
-        // do nothing for now!
-        let n = a.mark();
-        let prefix_is_empty = a.peek().is_empty();
-        let a = a.move_prefix();
-        let value_is_none = a.peek().is_none();
-        let mut a = a.move_value();
-        let children_is_empty = a.peek().is_empty();
-        let a = if !children_is_empty {
-            let x = a.take_arc(store).unwrap();
-            a.set_arc(x).move_children()
-        } else {
-            a.move_children()
-        };
-        let a = a.rewind(n);
-        let node = TreeNode::<S>::read(a.0.source_slice()).unwrap();
-        Ok(if node.is_empty() {
-            // canonicalize the prefix for empty nodes
-            a.push_prefix_ref(&[]).move_value().move_children()
-        } else {
-            a.move_prefix().move_value().move_children()
-        })
-    }
-
     fn done(self) -> InPlaceBuilderRef<'a, S, AtValue> {
         InPlaceBuilderRef(self.0, PhantomData)
     }
@@ -1369,7 +1341,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         }
     }
 
-    pub fn push_value(mut self, value: TreeValue) -> InPlaceBuilderRef<'a, S, AtChildren> {
+    fn push_value(mut self, value: TreeValue) -> InPlaceBuilderRef<'a, S, AtChildren> {
         self.drop_current();
         self.0.push_arc_or_inline(value);
         self.done()
@@ -1381,13 +1353,11 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
         self.drop_current();
-        value.manual_clone();
-        self.0.extend_from_slice(value.bytes());
-        Ok(self.done())
+        self.insert_converted(value, store)
     }
 
     pub fn insert_converted<S2: BlobStore>(
-        mut self,
+        self,
         value: &TreeValueOptRef<S2>,
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
@@ -1415,8 +1385,15 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         let mut builder = InPlaceNodeSeqBuilder::<S>::new(&mut values);
         match f(&mut builder) {
             Ok(_) => {
+                // todo: don't do this always?
+                builder.inner.rewind_all();
+                builder.canonicalize_all();
                 *values = builder.into_inner();
-                Ok(self.push_arc(arc))
+                Ok(if !values.0.is_empty() {
+                    self.push_arc(arc)
+                } else {
+                    self.push_empty()
+                })
             }
             Err(cause) => {
                 self.move_children();
@@ -1425,8 +1402,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         }
     }
 
-    pub fn take_arc(&mut self, store: &S) -> Result<Arc<NodeSeqBuilder<S>>, S::Error> {
-        // replace current value with "no children" paceholder
+    fn take_arc(&mut self, store: &S) -> Result<Arc<NodeSeqBuilder<S>>, S::Error> {
         let v = self.peek();
         let len = v.bytes().len();
         let res = if let Some(arc) = v.1.arc_as_clone() {
@@ -1435,6 +1411,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
             // todo: load data if needed
             Arc::new(NodeSeqBuilder::new())
         };
+        // replace current value with "no children" paceholder
         self.0.s0 += len - 1;
         self.0.vec[self.0.s0] = NONE;
         Ok(res)
@@ -1464,17 +1441,23 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         self.done()
     }
 
+    pub fn push_empty(mut self) -> InPlaceBuilderRef<'a, S, AtPrefix> {
+        self.drop_current();
+        self.0.push_none();
+        self.done()
+    }
+
     fn done(self) -> InPlaceBuilderRef<'a, S, AtPrefix> {
         InPlaceBuilderRef(self.0, PhantomData)
     }
 
     pub fn move_children(self) -> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.0.forward(self.peek().bytes().len());
-        InPlaceBuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn insert_converted<S2: BlobStore>(
-        mut self,
+        self,
         children: &TreeChildrenRef<S2>,
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
@@ -1508,6 +1491,7 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     }
 
     /// A cursor, assuming we are currently at the start of a triple
+    #[inline]
     fn cursor(&mut self) -> InPlaceBuilderRef<'_, S, AtPrefix> {
         InPlaceBuilderRef(&mut self.inner, PhantomData)
     }
@@ -1524,6 +1508,40 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     /// move one triple from the source to the target
     fn move_one(&mut self) {
         self.cursor().move_prefix().move_value().move_children();
+    }
+
+    fn move_all(&mut self) {
+        while !self.inner.source_slice().is_empty() {
+            self.move_one()
+        }
+    }
+
+    /// move one triple from the source to the target, canonicalizing
+    fn canonicalize_one(&mut self) {
+        let p = self.cursor();
+        let start = p.mark();
+        let pe = p.peek().is_empty();
+        let v = p.move_prefix();
+        let ve = v.peek().is_none();
+        let c = v.move_value();
+        let ce = c.peek().is_empty();
+        let p1 = c.move_children();
+        if ve && ce && !pe {
+            p1.rewind(start)
+                .push_prefix_ref(&[])
+                .push_value_none()
+                .push_empty();
+        }
+    }
+
+    fn rewind_all(&mut self) {
+        self.inner.rewind_all();
+    }
+
+    fn canonicalize_all(&mut self) {
+        while !self.inner.source_slice().is_empty() {
+            self.canonicalize_one()
+        }
     }
 
     /// converts and inserts! a tree node, without dropping anything
@@ -1609,6 +1627,10 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         Self(Vec::new(), PhantomData)
     }
 
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     fn as_blob(self: Arc<NodeSeqBuilder<S>>) -> Blob {
         Blob::new(self, 0).unwrap()
     }
@@ -1633,6 +1655,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn push_value_ref(&mut self, value: &TreeValueOptRef<S>) {
+        value.manual_clone();
         self.0.extend_from_slice(value.bytes());
     }
 
@@ -1645,6 +1668,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn push_children_ref(&mut self, value: &TreeChildrenRef<S>) {
+        value.manual_clone();
         self.0.extend_from_slice(value.bytes());
     }
 
@@ -1654,14 +1678,6 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         res.push_none();
         res.push_none();
         Self(res.into_inner(), PhantomData)
-    }
-
-    fn from_node(node: TreeNode<'_, S>) -> Self {
-        let mut res = Self(Vec::new(), PhantomData);
-        node.prefix().1.copy_to(&mut res.0);
-        node.value().1.copy_to(&mut res.0);
-        node.children().1.copy_to(&mut res.0);
-        res
     }
 
     fn push_new(
@@ -2207,7 +2223,6 @@ where
     A::Error: From<B::Error>,
     F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<TreeValue>, A::Error> + Copy,
 {
-    let at = a.mark();
     let ap = a.peek().load(ab)?;
     let bp = b.prefix().load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
@@ -2224,8 +2239,7 @@ where
             (None, _) => a.push_converted(b.value, bb)?,
         };
         let bc = b.children().load(bb)?;
-        let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
-        a.rewind(at).canonicalize(&ab)?;
+        outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
@@ -2233,8 +2247,7 @@ where
         let a = a.move_prefix().move_value();
         let mut bc = NodeSeqBuilder::<B>::new();
         bc.push_shortened(b, bb, n)?;
-        let a = outer_combine_children_with(a, &ab, bc.iter(), &bb, f)?;
-        a.rewind(at).canonicalize(&ab)?;
+        outer_combine_children_with(a, &ab, bc.iter(), &bb, f)?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
@@ -2252,8 +2265,7 @@ where
         child.push_children_ref(a.peek());
         let a = a.set_arc(Arc::new(child));
         let bc = b.children().load(bb)?;
-        let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
-        a.rewind(at).canonicalize(&ab)?;
+        outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -2272,8 +2284,7 @@ where
             children.push_shortened_converted(b, bb, n)?;
             children.push(child.iter().next().unwrap());
         }
-        let a = a.push_arc(Arc::new(children));
-        a.rewind(at).canonicalize(&ab)?;
+        a.push_arc(Arc::new(children));
     }
     Ok(())
 }
@@ -2316,29 +2327,6 @@ where
             Ok(())
         })
     }
-    // let mut a_arc = a.take_arc(ab)?;
-    // let mut a_values = Arc::make_mut(&mut a_arc);
-    // let mut ac = InPlaceNodeSeqBuilder::<A>::new(&mut a_values);
-    // let mut c = Combiner::<A, B>::new(&mut ac, bc);
-    // while let Some(ordering) = c.cmp()? {
-    //     match ordering {
-    //         Ordering::Equal => {
-    //             // the .unwrap().unwrap() is safe because cmp guarantees that there is a value, and it is not an error
-    //             let b = c.b.next().unwrap();
-    //             outer_combine_with(c.a.cursor(), ab, &b, bb, f)?;
-    //         }
-    //         Ordering::Less => {
-    //             c.a.move_one();
-    //         }
-    //         Ordering::Greater => {
-    //             // the .unwrap().unwrap() is safe because cmp guarantees that there is a value, and it is not an error
-    //             let b = c.b.next().unwrap();
-    //             c.a.insert_converted(b, bb)?;
-    //         }
-    //     }
-    // }
-    // *a_values = ac.into_inner();
-    // Ok(a.push_arc(a_arc))
 }
 
 enum FindResult<T> {
@@ -2556,6 +2544,42 @@ mod tests {
             let actual = to_btree_map(&tree);
             prop_assert_eq!(reference, actual);
         }
+
+        #[test]
+        fn union(a in arb_tree_contents(), b in arb_tree_contents()) {
+            let at = mk_owned_tree(&a);
+            let bt = mk_owned_tree(&b);
+            // check right biased union
+            let rbut = at.outer_combine(&bt, |_, b| Some(b.to_owned()));
+            let rbu = to_btree_map(&rbut);
+            let mut rbu_reference = a.clone();
+            for (k, v) in b.clone() {
+                rbu_reference.insert(k, v);
+            }
+            prop_assert_eq!(rbu, rbu_reference);
+            // check left biased union
+            let lbut = at.outer_combine(&bt, |a, _| Some(a.to_owned()));
+            let lbu = to_btree_map(&lbut);
+            let mut lbu_reference = b.clone();
+            for (k, v) in a.clone() {
+                lbu_reference.insert(k, v);
+            }
+            prop_assert_eq!(lbu, lbu_reference);
+        }
+
+        #[test]
+        fn union_with(a in arb_owned_tree(), b in arb_owned_tree()) {
+            // check right biased union
+            // let r1 = a.outer_combine(&b, |_, b| Some(b.to_owned()));
+            let mut r2 = a.clone();
+            r2.outer_combine_with(&b, |a, b| Some(b.to_owned()));
+            // prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+            // check left biased union
+            // let r1 = a.outer_combine(&b, |a, _| Some(a.to_owned()));
+            let mut r2 = a.clone();
+            r2.outer_combine_with(&b, |a, _| Some(a.to_owned()));
+            // prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+        }
     }
 
     #[test]
@@ -2667,13 +2691,13 @@ mod tests {
         println!("---");
 
         let mut t = Tree::empty();
-        for i in 0u64..1000000 {
+        for i in 0u64..10000 {
             let txt = i.to_string();
             let b = txt.as_bytes();
             t.outer_combine_with(&Tree::single(b, b), |_, b| Some(b.to_owned()))
         }
 
-        for i in 0..1000000 {
+        for i in 0..10000 {
             let res = t.try_get(i.to_string().as_bytes()).unwrap();
             println!("{:?}", res);
         }
