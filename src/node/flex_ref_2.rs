@@ -4,6 +4,7 @@ use std::{
     marker::PhantomData,
     ops::Deref,
     sync::Arc,
+    fmt,
 };
 
 use crate::{
@@ -59,6 +60,10 @@ impl<S: BlobStore> TreePrefixRef<S> {
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.bytes().len() > 0 && self.1.tpe() != Type::None
     }
 
     fn load(&self, store: &S) -> Result<TreePrefix, S::Error> {
@@ -161,6 +166,13 @@ impl Deref for OwnedSlice {
     }
 }
 
+impl fmt::Debug for OwnedSlice {
+
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", Hex::new(self.as_ref()))
+    }
+}
+
 pub struct TreeValue(OwnedSlice);
 
 impl Debug for TreeValue {
@@ -220,6 +232,8 @@ impl Deref for TreeValue {
         self.as_ref()
     }
 }
+
+#[derive(Debug)]
 
 struct TreePrefix(OwnedSlice);
 
@@ -296,6 +310,10 @@ impl<S: BlobStore> TreeValueRef<S> {
         self.1.bytes()
     }
 
+    fn is_valid(&self) -> bool {
+        self.bytes().len() > 0 && self.1.tpe() != Type::None
+    }
+
     fn load(&self, store: &S) -> Result<TreeValue, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
             TreeValue::from_slice(x)
@@ -328,6 +346,10 @@ impl<S: BlobStore> TreeValueOptRef<S> {
     fn new(value: &FlexRef<Vec<u8>>) -> &Self {
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.bytes().len() > 0
     }
 
     fn bytes(&self) -> &[u8] {
@@ -402,6 +424,10 @@ impl<S: BlobStore> TreeChildrenRef<S> {
 
     fn bytes(&self) -> &[u8] {
         self.1.bytes()
+    }
+
+    fn is_valid(&self) -> bool {
+        self.bytes().len() > 0 && self.1.tpe() != Type::Inline
     }
 
     fn read_one<'a>(value: &'a [u8]) -> Option<(&'a Self, &'a [u8])> {
@@ -931,6 +957,13 @@ struct InPlaceFlexRefSeqBuilder {
     s0: usize,
 }
 
+impl fmt::Debug for InPlaceFlexRefSeqBuilder {
+
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}, {}]", Hex::new(self.target_slice()), Hex::new(self.source_slice()))
+    }
+}
+
 trait Extendable {
     fn reserve(&mut self, n: usize);
 
@@ -1003,24 +1036,75 @@ impl Extendable for InPlaceFlexRefSeqBuilder {
     }
 }
 
+fn validate_flexref_slice(value: &[u8]) -> usize {
+    let mut iter = FlexRefIter(value);
+    let mut n = 0;
+    while let Some(item) = iter.next() {
+        debug_assert!(!item.is_empty());
+        n += 1;
+    }
+    debug_assert!(iter.is_empty());
+    n
+}
+
+fn validate_nodeseq_slice<S: BlobStore>(value: &[u8]) -> usize {
+    let mut iter = NodeSeqIter::<S>(value, PhantomData);
+    let mut n = 0;
+    while let Some(item) = iter.next() {
+        debug_assert!(item.prefix().is_valid());
+        debug_assert!(item.value().is_valid());
+        debug_assert!(item.children().is_valid());
+        println!("{}", Hex::new(item.children().bytes()));
+        n += 1;
+    }
+    println!("{:?}", Hex::new(iter.0));
+    if !iter.is_empty() {
+        println!("{:?}", Hex::new(value));
+        let mut iter = NodeSeqIter::<S>(value, PhantomData);
+        let mut n = 0;
+        while let Some(item) = iter.next() {
+            debug_assert!(item.prefix().is_valid());
+            debug_assert!(item.value().is_valid());
+            debug_assert!(item.children().is_valid());
+            println!("{}", Hex::new(item.children().bytes()));
+            n += 1;
+        }
+        panic!();
+    }
+    debug_assert!(iter.is_empty());
+    n
+}
+
 impl InPlaceFlexRefSeqBuilder {
     /// Create a new builder by taking over the data from a vec
     pub fn new(vec: Vec<u8>) -> Self {
         Self { vec, t1: 0, s0: 0 }
     }
 
-    fn into_inner(self) -> Vec<u8> {
+    fn into_inner(mut self) -> Vec<u8> {
         debug_assert!(self.source_count() == 0);
         debug_assert!(self.target_count() % 3 == 0);
+        self.vec.truncate(self.t1);
         self.vec
     }
 
+    fn take_result(&mut self) -> Vec<u8> {
+        debug_assert!(self.source_count() == 0);
+        debug_assert!(self.target_count() % 3 == 0);
+        self.vec.truncate(self.t1);
+        let mut res = Vec::new();
+        std::mem::swap(&mut self.vec, &mut res);
+        self.t1 = 0;
+        self.s0 = 0;
+        res
+    }
+
     pub fn source_count(&self) -> usize {
-        FlexRefIter(self.source_slice()).count()
+        validate_flexref_slice(self.source_slice())
     }
 
     pub fn target_count(&self) -> usize {
-        FlexRefIter(self.target_slice()).count()
+        validate_flexref_slice(self.source_slice())
     }
 
     pub fn total_count(&self) -> usize {
@@ -1038,7 +1122,7 @@ impl InPlaceFlexRefSeqBuilder {
             self.t1 += n;
             self.s0 += n;
         } else {
-            self.vec.copy_within(self.t1..self.t1 + n, self.s0);
+            self.vec.copy_within(self.s0..self.s0 + n,  self.t1);
             self.t1 += n;
             self.s0 += n;
         }
@@ -1071,6 +1155,12 @@ impl InPlaceFlexRefSeqBuilder {
 }
 
 struct FlexRefIter<'a>(&'a [u8]);
+
+impl<'a> FlexRefIter<'a> {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 impl<'a> Iterator for FlexRefIter<'a> {
     type Item = &'a [u8];
@@ -1123,11 +1213,14 @@ impl FlexRefIter2 {
     }
 }
 
+#[derive(Debug)]
 struct AtPrefix;
+#[derive(Debug)]
 struct AtValue;
+#[derive(Debug)]
 struct AtChildren;
 
-trait IterPosition {}
+trait IterPosition: Debug {}
 impl IterPosition for AtPrefix {}
 impl IterPosition for AtValue {}
 impl IterPosition for AtChildren {}
@@ -1143,6 +1236,7 @@ macro_rules! unwrap_or_break {
     };
 }
 
+#[derive(Debug)]
 #[repr(transparent)]
 struct InPlaceBuilderRef<'a, S: BlobStore, P: IterPosition>(
     &'a mut InPlaceFlexRefSeqBuilder,
@@ -1207,7 +1301,15 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
 
     fn unsplit(self, store: &S) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
         // do nothing for now!
-        self.move_prefix()?.move_value()?.move_children()
+        let a = self;
+        println!("{:?}", a);
+        let a = a.move_prefix()?;
+        println!("{:?}", a);
+        let a = a.move_value()?;
+        println!("{:?}", a);
+        let a = a.move_children()?;
+        println!("{:?}", a);
+        Ok(a)
     }
 
     fn next(self) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
@@ -1378,10 +1480,9 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
 
     /// consumes an InPlaceNodeSeqBuilder by storing the result in a NodeSeqBuilder
     fn into_inner(mut self) -> NodeSeqBuilder<S> {
-        let mut t = Vec::new();
-        std::mem::swap(&mut self.inner.vec, &mut t);
-        self.inner.t1 = 0;
-        self.inner.s0 = 0;
+        println!("into_inner {:?}", self.inner);
+        let t = self.inner.take_result();
+        validate_nodeseq_slice::<S>(&t);
         NodeSeqBuilder(t, PhantomData)
     }
 
@@ -1653,7 +1754,7 @@ impl<S: BlobStore> Drop for NodeSeqBuilder<S> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Tree<S: BlobStore = NoStore> {
     /// This contains exactly one node, even in the case of an empty tree
     node: NodeSeqBuilder<S>,
@@ -2086,10 +2187,12 @@ where
     let ap = a.peek().load(ab)?;
     let bp = b.prefix().load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
+    println!("{:?} {:?}", ap, bp);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         // move prefix and value
         let a = a.move_prefix()?;
+        println!("after add prefix {:?}", a);
         let a = match (a.peek().value_opt(), b.value.value_opt()) {
             (Some(av), Some(bv)) => {
                 let r = f(av, bv)?;
@@ -2098,8 +2201,10 @@ where
             (Some(_), None) => a.move_value()?,
             (None, _) => a.push_converted(b.value, bb)?,
         };
+        println!("after add value {:?}", a);
         let bc = b.children().load(bb)?;
         let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
+        println!("after add children {:?}", a);
         a.rewind(at).unsplit(&ab)?;
     } else if n == ap.len() {
         // a is a prefix of b
@@ -2458,6 +2563,24 @@ mod tests {
             rbu_reference.insert(k, v);
         }
         assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
+    fn union_with4() {
+        let a = btreemap! {
+            vec![53, 48, 48, 48] => vec![0, 0, 0, 0, 0, 0],
+        };
+        let b = btreemap! {
+            vec![53, 49] => vec![],
+        };
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let mut rt = at.clone();
+        rt.outer_combine_with(&bt, |a, b| Some(b.to_owned()));
+        at.dump().unwrap();
+        bt.dump().unwrap();
+        rt.dump().unwrap();
+        let _r = to_btree_map(&at);
     }
 
     #[test]
