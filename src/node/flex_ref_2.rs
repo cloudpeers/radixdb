@@ -1,10 +1,10 @@
 use std::{
     borrow::{Borrow, BorrowMut},
     cmp::Ordering,
+    fmt,
     marker::PhantomData,
     ops::Deref,
     sync::Arc,
-    fmt,
 };
 
 use crate::{
@@ -167,7 +167,6 @@ impl Deref for OwnedSlice {
 }
 
 impl fmt::Debug for OwnedSlice {
-
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", Hex::new(self.as_ref()))
     }
@@ -958,9 +957,13 @@ struct InPlaceFlexRefSeqBuilder {
 }
 
 impl fmt::Debug for InPlaceFlexRefSeqBuilder {
-
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}, {}]", Hex::new(self.target_slice()), Hex::new(self.source_slice()))
+        write!(
+            f,
+            "[{}, {}]",
+            Hex::new(self.target_slice()),
+            Hex::new(self.source_slice())
+        )
     }
 }
 
@@ -1122,7 +1125,7 @@ impl InPlaceFlexRefSeqBuilder {
             self.t1 += n;
             self.s0 += n;
         } else {
-            self.vec.copy_within(self.s0..self.s0 + n,  self.t1);
+            self.vec.copy_within(self.s0..self.s0 + n, self.t1);
             self.t1 += n;
             self.s0 += n;
         }
@@ -1248,28 +1251,25 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         TreePrefixRef::new(FlexRef::new(self.0.source_slice()))
     }
 
-    pub fn move_prefix(self) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
+    pub fn move_prefix(self) -> InPlaceBuilderRef<'a, S, AtValue> {
         let len = self.peek().bytes().len();
         self.0.forward(len);
-        self.next()
+        self.done()
     }
 
-    pub fn push_prefix(
-        mut self,
-        prefix: &TreePrefixRef<S>,
-    ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
-        self.drop_current()?;
+    pub fn push_prefix(mut self, prefix: &TreePrefixRef<S>) -> InPlaceBuilderRef<'a, S, AtValue> {
+        self.drop_current();
         self.0.extend_from_slice(prefix.bytes());
-        self.next()
+        self.done()
     }
 
     pub fn push_prefix_ref(
         mut self,
         prefix: impl AsRef<[u8]>,
-    ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
-        self.drop_current()?;
+    ) -> InPlaceBuilderRef<'a, S, AtValue> {
+        self.drop_current();
         self.0.push_arc_or_inline(prefix.as_ref());
-        self.next()
+        self.done()
     }
 
     pub fn insert_converted<S2: BlobStore>(
@@ -1279,15 +1279,14 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
     ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
         // todo fix
         self.0.extend_from_slice(prefix.bytes());
-        self.next()
+        Ok(self.done())
     }
 
-    fn drop_current(&mut self) -> Result<(), S::Error> {
+    fn drop_current(&mut self) {
         let peek = self.peek();
         let len = peek.bytes().len();
         peek.manual_drop();
         self.0.drop(len);
-        Ok(())
     }
 
     fn mark(&self) -> usize {
@@ -1301,25 +1300,17 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
 
     fn unsplit(self, store: &S) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
         // do nothing for now!
-        let a = self;
-        println!("{:?}", a);
-        let a = a.move_prefix()?;
-        println!("{:?}", a);
-        let a = a.move_value()?;
-        println!("{:?}", a);
-        let a = a.move_children()?;
-        println!("{:?}", a);
-        Ok(a)
+        Ok(self.move_prefix().move_value().move_children())
     }
 
-    fn next(self) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
-        Ok(InPlaceBuilderRef(self.0, PhantomData))
+    fn done(self) -> InPlaceBuilderRef<'a, S, AtValue> {
+        InPlaceBuilderRef(self.0, PhantomData)
     }
 }
 
 impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
-    fn done(self) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
-        Ok(InPlaceBuilderRef(self.0, PhantomData))
+    fn done(self) -> InPlaceBuilderRef<'a, S, AtChildren> {
+        InPlaceBuilderRef(self.0, PhantomData)
     }
 
     fn drop_current(&mut self) {
@@ -1332,22 +1323,19 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         TreeValueOptRef::new(FlexRef::new(self.0.source_slice()))
     }
 
-    pub fn move_value(self) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+    pub fn move_value(self) -> InPlaceBuilderRef<'a, S, AtChildren> {
         let len = self.peek().bytes().len();
         self.0.forward(len);
         self.done()
     }
 
-    fn push_value_none(mut self) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+    fn push_value_none(mut self) -> InPlaceBuilderRef<'a, S, AtChildren> {
         self.drop_current();
         self.0.push_none();
         self.done()
     }
 
-    pub fn push_value_opt(
-        mut self,
-        value: Option<TreeValue>,
-    ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+    pub fn push_value_opt(self, value: Option<TreeValue>) -> InPlaceBuilderRef<'a, S, AtChildren> {
         if let Some(value) = value {
             self.push_value(value)
         } else {
@@ -1355,10 +1343,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         }
     }
 
-    pub fn push_value(
-        mut self,
-        value: TreeValue,
-    ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+    pub fn push_value(mut self, value: TreeValue) -> InPlaceBuilderRef<'a, S, AtChildren> {
         self.drop_current();
         self.0.push_arc_or_inline(value);
         self.done()
@@ -1367,7 +1352,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
     pub fn push_value_ref(
         mut self,
         value: &TreeValueRef<S>,
-    ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+    ) -> InPlaceBuilderRef<'a, S, AtChildren> {
         self.drop_current();
         self.0.extend_from_slice(value.bytes());
         self.done()
@@ -1380,7 +1365,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
     ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
         self.drop_current();
         self.0.extend_from_slice(value.bytes());
-        self.done()
+        Ok(self.done())
     }
 
     pub fn push_opt_converted<S2: BlobStore>(
@@ -1389,7 +1374,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
         self.0.extend_from_slice(value.bytes());
-        self.done()
+        Ok(self.done())
     }
 }
 
@@ -1418,38 +1403,34 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
     pub fn set_arc(
         mut self,
         value: Arc<NodeSeqBuilder<S>>,
-    ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+    ) -> InPlaceBuilderRef<'a, S, AtChildren> {
         let t1 = self.0.t1;
-        self.drop_current()?;
+        self.drop_current();
         self.0.push_arc(value);
         self.0.rewind(t1);
-        Ok(InPlaceBuilderRef(self.0, PhantomData))
+        InPlaceBuilderRef(self.0, PhantomData)
     }
 
-    fn drop_current(&mut self) -> Result<(), S::Error> {
+    fn drop_current(&mut self) {
         let peek = self.peek();
         let len = peek.bytes().len();
         peek.manual_drop();
         self.0.drop(len);
-        Ok(())
     }
 
-    pub fn push_arc(
-        mut self,
-        value: Arc<NodeSeqBuilder<S>>,
-    ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
-        self.drop_current()?;
+    pub fn push_arc(mut self, value: Arc<NodeSeqBuilder<S>>) -> InPlaceBuilderRef<'a, S, AtPrefix> {
+        self.drop_current();
         self.0.push_arc(value);
         self.done()
     }
 
-    fn done(self) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
-        Ok(InPlaceBuilderRef(self.0, PhantomData))
+    fn done(self) -> InPlaceBuilderRef<'a, S, AtPrefix> {
+        InPlaceBuilderRef(self.0, PhantomData)
     }
 
-    pub fn move_children(self) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
+    pub fn move_children(self) -> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.0.forward(self.peek().bytes().len());
-        self.done()
+        InPlaceBuilderRef(self.0, PhantomData)
     }
 
     pub fn insert_converted<S2: BlobStore>(
@@ -1459,7 +1440,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
     ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
         // todo fix
         self.0.extend_from_slice(children.bytes());
-        self.done()
+        Ok(self.done())
     }
 }
 
@@ -1480,7 +1461,6 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
 
     /// consumes an InPlaceNodeSeqBuilder by storing the result in a NodeSeqBuilder
     fn into_inner(mut self) -> NodeSeqBuilder<S> {
-        println!("into_inner {:?}", self.inner);
         let t = self.inner.take_result();
         validate_nodeseq_slice::<S>(&t);
         NodeSeqBuilder(t, PhantomData)
@@ -1501,9 +1481,8 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     }
 
     /// move one triple from the source to the target
-    fn move_one(&mut self) -> Result<(), S::Error> {
-        self.cursor().move_prefix()?.move_value()?.move_children()?;
-        Ok(())
+    fn move_one(&mut self) {
+        self.cursor().move_prefix().move_value().move_children();
     }
 
     fn insert_converted<S2: BlobStore>(
@@ -1620,7 +1599,6 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn push_children_ref(&mut self, value: &TreeChildrenRef<S>) {
-        println!("{}", Hex::new(value.bytes()));
         self.0.extend_from_slice(value.bytes());
     }
 
@@ -2187,30 +2165,26 @@ where
     let ap = a.peek().load(ab)?;
     let bp = b.prefix().load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    println!("{:?} {:?}", ap, bp);
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         // move prefix and value
-        let a = a.move_prefix()?;
-        println!("after add prefix {:?}", a);
+        let a = a.move_prefix();
         let a = match (a.peek().value_opt(), b.value.value_opt()) {
             (Some(av), Some(bv)) => {
                 let r = f(av, bv)?;
-                a.push_value_opt(r)?
+                a.push_value_opt(r)
             }
-            (Some(_), None) => a.move_value()?,
+            (Some(_), None) => a.move_value(),
             (None, _) => a.push_converted(b.value, bb)?,
         };
-        println!("after add value {:?}", a);
         let bc = b.children().load(bb)?;
         let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
-        println!("after add children {:?}", a);
         a.rewind(at).unsplit(&ab)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
         // move prefix and value
-        let a = a.move_prefix()?.move_value()?;
+        let a = a.move_prefix().move_value();
         let mut bc = NodeSeqBuilder::<B>::new();
         bc.push_shortened(b, bb, n)?;
         let a = outer_combine_children_with(a, &ab, bc.iter(), &bb, f)?;
@@ -2223,14 +2197,14 @@ where
         // store the last part of the prefix
         child.push_prefix(&ap[n..]);
         // store the first part of the prefix
-        let a = a.push_prefix_ref(&ap[..n])?;
+        let a = a.push_prefix_ref(&ap[..n]);
         // store value from a in child, if it exists
         child.push_value_ref(a.peek());
         // store the value from b, if it exists
         let a = a.push_converted(b.value(), bb)?;
         // take the children
         child.push_children_ref(a.peek());
-        let a = a.set_arc(Arc::new(child))?;
+        let a = a.set_arc(Arc::new(child));
         let bc = b.children().load(bb)?;
         let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
         a.rewind(at).unsplit(&ab)?;
@@ -2239,9 +2213,9 @@ where
         // value is none
         let mut child = NodeSeqBuilder::<A>::new();
         child.push_prefix(&ap[n..]);
-        let a = a.push_prefix_ref(&ap[..n])?;
+        let a = a.push_prefix_ref(&ap[..n]);
         child.push_value_ref(a.peek());
-        let a = a.push_value_none()?;
+        let a = a.push_value_none();
         child.push_children_ref(a.peek());
         let mut children = NodeSeqBuilder::<A>::new();
         // children is just the shortened children a and b in the right order
@@ -2252,7 +2226,7 @@ where
             children.push_shortened_converted(b, bb, n)?;
             children.push(child.iter().next().unwrap());
         }
-        let a = a.push_arc(Arc::new(children))?;
+        let a = a.push_arc(Arc::new(children));
         a.rewind(at).unsplit(&ab)?;
     }
     Ok(())
@@ -2272,7 +2246,7 @@ where
     F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<TreeValue>, A::Error> + Copy,
 {
     if a.peek().is_empty() && bc.is_empty() {
-        return a.move_children();
+        return Ok(a.move_children());
     }
     let mut a_arc = a.take_arc(ab)?;
     let mut a_values = Arc::make_mut(&mut a_arc);
@@ -2286,7 +2260,7 @@ where
                 outer_combine_with(c.a.cursor(), ab, &b, bb, f)?;
             }
             Ordering::Less => {
-                c.a.move_one()?;
+                c.a.move_one();
             }
             Ordering::Greater => {
                 // the .unwrap().unwrap() is safe because cmp guarantees that there is a value, and it is not an error
@@ -2296,7 +2270,7 @@ where
         }
     }
     *a_values = ac.into_inner();
-    a.push_arc(a_arc)
+    Ok(a.push_arc(a_arc))
 }
 
 enum FindResult<T> {
@@ -2476,8 +2450,8 @@ impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use proptest::prelude::*;
+    use std::collections::BTreeMap;
 
     use super::*;
 
@@ -2502,11 +2476,7 @@ mod tests {
     }
 
     fn to_btree_map(t: &Tree) -> BTreeMap<Vec<u8>, Vec<u8>> {
-        t.iter()
-            .map(|(k, v)| {
-                (k.to_vec(), v.to_vec())
-            })
-            .collect()
+        t.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect()
     }
 
     proptest! {
@@ -2563,24 +2533,6 @@ mod tests {
             rbu_reference.insert(k, v);
         }
         assert_eq!(rbu, rbu_reference);
-    }
-
-    #[test]
-    fn union_with4() {
-        let a = btreemap! {
-            vec![53, 48, 48, 48] => vec![0, 0, 0, 0, 0, 0],
-        };
-        let b = btreemap! {
-            vec![53, 49] => vec![],
-        };
-        let at = mk_owned_tree(&a);
-        let bt = mk_owned_tree(&b);
-        let mut rt = at.clone();
-        rt.outer_combine_with(&bt, |a, b| Some(b.to_owned()));
-        at.dump().unwrap();
-        bt.dump().unwrap();
-        rt.dump().unwrap();
-        let _r = to_btree_map(&at);
     }
 
     #[test]
@@ -2657,7 +2609,7 @@ mod tests {
             let res = t.try_get(i.to_string().as_bytes()).unwrap();
             println!("{:?}", res);
         }
-    
+
         for (k, v) in t.iter() {
             println!("{:?} {:?}", k, v);
         }
