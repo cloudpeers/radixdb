@@ -1257,12 +1257,6 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.done()
     }
 
-    pub fn push_prefix(mut self, prefix: &TreePrefixRef<S>) -> InPlaceBuilderRef<'a, S, AtValue> {
-        self.drop_current();
-        self.0.extend_from_slice(prefix.bytes());
-        self.done()
-    }
-
     pub fn push_prefix_ref(
         mut self,
         prefix: impl AsRef<[u8]>,
@@ -1298,9 +1292,25 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         InPlaceBuilderRef(self.0, PhantomData)
     }
 
-    fn unsplit(self, store: &S) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
+    fn canonicalize(self, store: &S) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
+        let a = self;
         // do nothing for now!
-        Ok(self.move_prefix().move_value().move_children())
+        let n = a.mark();
+        let mut a = a.move_prefix().move_value();
+        let a = if !a.peek().is_empty() {
+            let x = a.take_arc(store).unwrap();
+            a.set_arc(x).move_children()
+        } else {
+            a.move_children()
+        };
+        let a = a.rewind(n);
+        let node = TreeNode::<S>::read(a.0.source_slice()).unwrap();
+        Ok(if node.is_empty() {
+            // canonicalize the prefix for empty nodes
+            a.push_prefix_ref(&[]).move_value().move_children()
+        } else {
+            a.move_prefix().move_value().move_children()
+        })
     }
 
     fn done(self) -> InPlaceBuilderRef<'a, S, AtValue> {
@@ -1349,30 +1359,23 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         self.done()
     }
 
-    pub fn push_value_ref(
-        mut self,
-        value: &TreeValueRef<S>,
-    ) -> InPlaceBuilderRef<'a, S, AtChildren> {
-        self.drop_current();
-        self.0.extend_from_slice(value.bytes());
-        self.done()
-    }
-
     pub fn push_converted<S2: BlobStore>(
         mut self,
         value: &TreeValueOptRef<S2>,
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
         self.drop_current();
+        value.manual_clone();
         self.0.extend_from_slice(value.bytes());
         Ok(self.done())
     }
 
-    pub fn push_opt_converted<S2: BlobStore>(
+    pub fn insert_converted<S2: BlobStore>(
         mut self,
         value: &TreeValueOptRef<S2>,
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+        value.manual_clone();
         self.0.extend_from_slice(value.bytes());
         Ok(self.done())
     }
@@ -1386,6 +1389,26 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         TreeChildrenRef::new(FlexRef::new(self.0.source_slice()))
     }
 
+    pub fn mutate(
+        mut self,
+        store: &S,
+        f: impl Fn(&mut InPlaceNodeSeqBuilder<S>) -> Result<(), S::Error>,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
+        let mut arc = self.take_arc(store)?;
+        let mut values = Arc::make_mut(&mut arc);
+        let mut builder = InPlaceNodeSeqBuilder::<S>::new(&mut values);
+        match f(&mut builder) {
+            Ok(_) => {
+                *values = builder.into_inner();
+                Ok(self.push_arc(arc))
+            }
+            Err(cause) => {
+                self.move_children();
+                Err(cause)
+            }
+        }
+    }
+
     pub fn take_arc(&mut self, store: &S) -> Result<Arc<NodeSeqBuilder<S>>, S::Error> {
         // replace current value with "no children" paceholder
         let v = self.peek();
@@ -1393,6 +1416,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         let res = if let Some(arc) = v.1.arc_as_clone() {
             arc
         } else {
+            // todo: load data if needed
             Arc::new(NodeSeqBuilder::new())
         };
         self.0.s0 += len - 1;
@@ -1439,6 +1463,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
         // todo fix
+        children.manual_clone();
         self.0.extend_from_slice(children.bytes());
         Ok(self.done())
     }
@@ -1485,15 +1510,20 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
         self.cursor().move_prefix().move_value().move_children();
     }
 
+    /// converts and inserts! a tree node, without dropping anything
     fn insert_converted<S2: BlobStore>(
         &mut self,
         node: TreeNode<S2>,
         store: &S2,
     ) -> Result<(), S::Error> {
+        // todo: we must not fail in the middle, since that will leave a mess. Hence the unwrap. Fix this.
         self.cursor()
-            .insert_converted(node.prefix(), store)?
-            .push_opt_converted(node.value(), store)?
-            .insert_converted(node.children(), store)?;
+            .insert_converted(node.prefix(), store)
+            .unwrap()
+            .insert_converted(node.value(), store)
+            .unwrap()
+            .insert_converted(node.children(), store)
+            .unwrap();
         Ok(())
     }
 }
@@ -2179,7 +2209,7 @@ where
         };
         let bc = b.children().load(bb)?;
         let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
-        a.rewind(at).unsplit(&ab)?;
+        a.rewind(at).canonicalize(&ab)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
@@ -2188,7 +2218,7 @@ where
         let mut bc = NodeSeqBuilder::<B>::new();
         bc.push_shortened(b, bb, n)?;
         let a = outer_combine_children_with(a, &ab, bc.iter(), &bb, f)?;
-        a.rewind(at).unsplit(&ab)?;
+        a.rewind(at).canonicalize(&ab)?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
@@ -2207,7 +2237,7 @@ where
         let a = a.set_arc(Arc::new(child));
         let bc = b.children().load(bb)?;
         let a = outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
-        a.rewind(at).unsplit(&ab)?;
+        a.rewind(at).canonicalize(&ab)?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -2227,7 +2257,7 @@ where
             children.push(child.iter().next().unwrap());
         }
         let a = a.push_arc(Arc::new(children));
-        a.rewind(at).unsplit(&ab)?;
+        a.rewind(at).canonicalize(&ab)?;
     }
     Ok(())
 }
