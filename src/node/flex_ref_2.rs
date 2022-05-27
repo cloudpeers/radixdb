@@ -53,6 +53,10 @@ impl<S: BlobStore> TreePrefixRef<S> {
         self.1.bytes()
     }
 
+    fn is_empty(&self) -> bool {
+        self.first_opt().is_none()
+    }
+
     fn first_opt(&self) -> Option<u8> {
         self.1.first_u8_opt()
     }
@@ -518,6 +522,14 @@ impl<S: BlobStore> Deref for NodeSeq<S> {
 
 #[repr(transparent)]
 struct NodeSeqIter<'a, S>(&'a [u8], PhantomData<S>);
+
+impl<'a, S: BlobStore> Clone for NodeSeqIter<'a, S> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1.clone())
+    }
+}
+
+impl<'a, S: BlobStore> Copy for NodeSeqIter<'a, S> {}
 
 impl<'a, S: BlobStore> NodeSeqIter<'a, S> {
     fn empty() -> Self {
@@ -1293,11 +1305,15 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
     }
 
     fn canonicalize(self, store: &S) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
-        let a = self;
+        let a = self;   
         // do nothing for now!
         let n = a.mark();
-        let mut a = a.move_prefix().move_value();
-        let a = if !a.peek().is_empty() {
+        let prefix_is_empty = a.peek().is_empty();
+        let a = a.move_prefix();
+        let value_is_none = a.peek().is_none();
+        let mut a = a.move_value();
+        let children_is_empty = a.peek().is_empty();
+        let a = if !children_is_empty {
             let x = a.take_arc(store).unwrap();
             a.set_arc(x).move_children()
         } else {
@@ -2263,7 +2279,7 @@ where
 }
 
 fn outer_combine_children_with<'a, A, B, F>(
-    mut a: InPlaceBuilderRef<'a, A, AtChildren>,
+    a: InPlaceBuilderRef<'a, A, AtChildren>,
     ab: &A,
     bc: NodeSeqIter<'a, B>,
     bb: &B,
@@ -2276,31 +2292,53 @@ where
     F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<TreeValue>, A::Error> + Copy,
 {
     if a.peek().is_empty() && bc.is_empty() {
-        return Ok(a.move_children());
+        Ok(a.move_children())
+    } else {
+        a.mutate(ab, move |ac| {
+            let mut c = Combiner::<A, B>::new(ac, bc);
+            while let Some(ordering) = c.cmp()? {
+                match ordering {
+                    Ordering::Less => {
+                        c.a.move_one();
+                    }
+                    Ordering::Equal => {
+                        // the .unwrap() is safe because cmp guarantees that there is a value, and it is not an error
+                        let b = c.b.next().unwrap();
+                        outer_combine_with(c.a.cursor(), ab, &b, bb, f)?;
+                    }
+                    Ordering::Greater => {
+                        // the .unwrap() is safe because cmp guarantees that there is a value, and it is not an error
+                        let b = c.b.next().unwrap();
+                        c.a.insert_converted(b, bb)?;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
-    let mut a_arc = a.take_arc(ab)?;
-    let mut a_values = Arc::make_mut(&mut a_arc);
-    let mut ac = InPlaceNodeSeqBuilder::<A>::new(&mut a_values);
-    let mut c = Combiner::<A, B>::new(&mut ac, bc);
-    while let Some(ordering) = c.cmp()? {
-        match ordering {
-            Ordering::Equal => {
-                // the .unwrap().unwrap() is safe because cmp guarantees that there is a value, and it is not an error
-                let b = c.b.next().unwrap();
-                outer_combine_with(c.a.cursor(), ab, &b, bb, f)?;
-            }
-            Ordering::Less => {
-                c.a.move_one();
-            }
-            Ordering::Greater => {
-                // the .unwrap().unwrap() is safe because cmp guarantees that there is a value, and it is not an error
-                let b = c.b.next().unwrap();
-                c.a.insert_converted(b, bb)?;
-            }
-        }
-    }
-    *a_values = ac.into_inner();
-    Ok(a.push_arc(a_arc))
+    // let mut a_arc = a.take_arc(ab)?;
+    // let mut a_values = Arc::make_mut(&mut a_arc);
+    // let mut ac = InPlaceNodeSeqBuilder::<A>::new(&mut a_values);
+    // let mut c = Combiner::<A, B>::new(&mut ac, bc);
+    // while let Some(ordering) = c.cmp()? {
+    //     match ordering {
+    //         Ordering::Equal => {
+    //             // the .unwrap().unwrap() is safe because cmp guarantees that there is a value, and it is not an error
+    //             let b = c.b.next().unwrap();
+    //             outer_combine_with(c.a.cursor(), ab, &b, bb, f)?;
+    //         }
+    //         Ordering::Less => {
+    //             c.a.move_one();
+    //         }
+    //         Ordering::Greater => {
+    //             // the .unwrap().unwrap() is safe because cmp guarantees that there is a value, and it is not an error
+    //             let b = c.b.next().unwrap();
+    //             c.a.insert_converted(b, bb)?;
+    //         }
+    //     }
+    // }
+    // *a_values = ac.into_inner();
+    // Ok(a.push_arc(a_arc))
 }
 
 enum FindResult<T> {
