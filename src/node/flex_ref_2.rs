@@ -1,7 +1,9 @@
 use std::{borrow::Borrow, cmp::Ordering, fmt, marker::PhantomData, ops::Deref, sync::Arc};
 
 use crate::{
-    store::{unwrap_safe, Blob, BlobOwner, BlobStore2 as BlobStore, NoError, NoStore},
+    store::{
+        unwrap_safe, Blob, Blob2, BlobOwner, BlobStore2 as BlobStore, NoError, NoStore, OwnedBlob,
+    },
     Hex,
 };
 use std::fmt::Debug;
@@ -106,6 +108,7 @@ impl AsRef<[u8]> for TreePrefixRef {
 enum OwnedSlice {
     Arc(Arc<Vec<u8>>),
     Inline(Vec<u8>),
+    /// < TODO FIX
     Blob(Blob),
 }
 
@@ -1058,22 +1061,7 @@ fn validate_nodeseq_slice<S: BlobStore>(value: &[u8]) -> usize {
         debug_assert!(item.prefix().is_valid());
         debug_assert!(item.value().is_valid());
         debug_assert!(item.children().is_valid());
-        println!("{}", Hex::new(item.children().bytes()));
         n += 1;
-    }
-    println!("{:?}", Hex::new(iter.0));
-    if !iter.is_empty() {
-        println!("{:?}", Hex::new(value));
-        let mut iter = NodeSeqIter::<S>(value, PhantomData);
-        let mut n = 0;
-        while let Some(item) = iter.next() {
-            debug_assert!(item.prefix().is_valid());
-            debug_assert!(item.value().is_valid());
-            debug_assert!(item.children().is_valid());
-            println!("{}", Hex::new(item.children().bytes()));
-            n += 1;
-        }
-        panic!();
     }
     debug_assert!(iter.is_empty());
     n
@@ -2497,7 +2485,7 @@ impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
         for (k, v) in iter.into_iter() {
             tree.outer_combine_with(
                 &Tree::single(k.into().as_ref(), v.into().as_ref()),
-                |a, b| Some(b.to_owned()),
+                |_, b| Some(b.to_owned()),
             );
         }
         tree
@@ -2506,8 +2494,9 @@ impl<K: Into<TreePrefix>, V: Into<TreeValue>> FromIterator<(K, V)> for Tree {
 
 #[cfg(test)]
 mod tests {
+    use log::info;
     use proptest::prelude::*;
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, time::Instant};
 
     use super::*;
 
@@ -2661,6 +2650,25 @@ mod tests {
     }
 
     #[test]
+    fn build_bench() {
+        let elems = (0..2000000u64)
+            .map(|i| {
+                if i % 100000 == 0 {
+                    println!("{}", i);
+                }
+                (
+                    i.to_string().as_bytes().to_vec(),
+                    i.to_string().as_bytes().to_vec(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let t0 = Instant::now();
+        println!("building tree");
+        let tree: Tree = elems.clone().into_iter().collect();
+        println!("unattached tree {} s", t0.elapsed().as_secs_f64());
+    }
+
+    #[test]
     fn smoke() {
         let a = Tree::single(b"aaaa", b"b");
         let b = Tree::single(b"aa", b"d");
@@ -2690,21 +2698,23 @@ mod tests {
 
         println!("---");
 
+        let t0 = std::time::Instant::now();
         let mut t = Tree::empty();
-        for i in 0u64..10000 {
+        for i in 0u64..1000000 {
             let txt = i.to_string();
             let b = txt.as_bytes();
             t.outer_combine_with(&Tree::single(b, b), |_, b| Some(b.to_owned()))
         }
+        println!("create {}", t0.elapsed().as_secs_f64());
 
-        for i in 0..10000 {
-            let res = t.try_get(i.to_string().as_bytes()).unwrap();
-            println!("{:?}", res);
-        }
+        // for i in 0..10000 {
+        //     let res = t.try_get(i.to_string().as_bytes()).unwrap();
+        //     println!("{:?}", res);
+        // }
 
-        for (k, v) in t.iter() {
-            println!("{:?} {:?}", k, v);
-        }
+        // for (k, v) in t.iter() {
+        //     println!("{:?} {:?}", k, v);
+        // }
 
         // println!("{:?}", t);
     }

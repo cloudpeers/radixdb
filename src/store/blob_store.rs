@@ -5,7 +5,14 @@ use crate::{
 use anyhow::Context;
 use fnv::FnvHashMap;
 use parking_lot::Mutex;
-use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
+use std::{
+    any::Any,
+    borrow::Borrow,
+    collections::BTreeMap,
+    fmt::Debug,
+    ops::{Deref, Index, Range},
+    sync::Arc,
+};
 
 /// A generic blob store with variable id size
 pub trait BlobStore2: Debug + Send + Sync + 'static {
@@ -26,6 +33,81 @@ pub trait BlobStore2: Debug + Send + Sync + 'static {
     /// True if the store needs deep detach. This is true for basically all stores except the special NoStore store
     fn needs_deep_detach(&self) -> bool {
         true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Blob2<'a> {
+    data: &'a [u8],
+    owner: Option<Arc<dyn Any>>,
+}
+
+impl<'a> AsRef<[u8]> for Blob2<'a> {
+    fn as_ref(&self) -> &[u8] {
+        self.data
+    }
+}
+
+impl<'a> Deref for Blob2<'a> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl<'a> Borrow<[u8]> for Blob2<'a> {
+    fn borrow(&self) -> &[u8] {
+        self.as_ref()
+    }
+}
+
+pub type OwnedBlob = Blob2<'static>;
+
+impl<'a> Blob2<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        Self { data, owner: None }
+    }
+
+    /// When calling this with an owner, you promise that keeping the owner alive will keep the slice valid!
+    pub fn owned_new(data: &'a [u8], owner: Option<Arc<dyn Any>>) -> Self {
+        Self { data, owner }
+    }
+
+    pub fn slice(&self, begin: usize, end: usize) -> Self {
+        Self {
+            data: &self.data[begin..end],
+            owner: self.owner.clone(),
+        }
+    }
+
+    pub fn slice_from(&self, begin: usize) -> Self {
+        self.slice(begin, self.len())
+    }
+
+    pub fn slice_to(&self, end: usize) -> Self {
+        self.slice(0, end)
+    }
+}
+
+impl From<&[u8]> for OwnedBlob {
+    fn from(v: &[u8]) -> Self {
+        Self::from(v.to_vec())
+    }
+}
+
+impl From<Vec<u8>> for OwnedBlob {
+    fn from(v: Vec<u8>) -> Self {
+        Self::from(Arc::new(v))
+    }
+}
+
+impl From<Arc<Vec<u8>>> for OwnedBlob {
+    fn from(v: Arc<Vec<u8>>) -> Self {
+        let bytes: &[u8] = v.as_ref();
+        // the vec will be unchanged and will be kept alive by the arc
+        let bytes: &'static [u8] = unsafe { std::mem::transmute(bytes) };
+        Self::owned_new(bytes, Some(v))
     }
 }
 

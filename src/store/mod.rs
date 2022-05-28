@@ -10,7 +10,8 @@ mod paged_file_store2;
 
 pub use blob::{Blob, BlobOwner};
 pub use blob_store::{
-    unwrap_safe, BlobStore, BlobStore2, DynBlobStore, MemStore, NoError, NoStore, PagedMemStore,
+    unwrap_safe, Blob2, BlobStore, BlobStore2, DynBlobStore, MemStore, NoError, NoStore, OwnedBlob,
+    PagedMemStore,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
