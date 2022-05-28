@@ -20,7 +20,7 @@ pub trait BlobStore2: Debug + Send + Sync + 'static {
     type Error: From<NoError> + From<anyhow::Error> + Debug;
 
     /// Read a blob with the given id. Since ids can be of arbitrary size, passed as a slice
-    fn read(&self, id: &[u8]) -> std::result::Result<Blob, Self::Error>;
+    fn read(&self, id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error>;
 
     /// Write a blob, returning an id into a target vec `tgt`.
     ///
@@ -65,6 +65,10 @@ impl<'a> Borrow<[u8]> for Blob2<'a> {
 pub type OwnedBlob = Blob2<'static>;
 
 impl<'a> Blob2<'a> {
+    pub fn empty() -> Self {
+        Self::new(&[])
+    }
+
     pub fn new(data: &'a [u8]) -> Self {
         Self { data, owner: None }
     }
@@ -119,7 +123,7 @@ pub type DynBlobStore2 = Arc<dyn BlobStore2<Error = anyhow::Error>>;
 impl BlobStore2 for DynBlobStore2 {
     type Error = anyhow::Error;
 
-    fn read(&self, id: &[u8]) -> std::result::Result<Blob, Self::Error> {
+    fn read(&self, id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {
         self.as_ref().read(id)
     }
 
@@ -209,16 +213,16 @@ impl BlobStore for NoStore {
 impl BlobStore2 for NoStore {
     type Error = NoError;
 
-    fn read(&self, id: &[u8]) -> std::result::Result<Blob, Self::Error> {
-        todo!()
+    fn read(&self, id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {
+        panic!()
     }
 
     fn write(&self, data: &[u8], tgt: &mut Vec<u8>) -> std::result::Result<(), Self::Error> {
-        todo!()
+        panic!()
     }
 
     fn sync(&self) -> std::result::Result<(), Self::Error> {
-        todo!()
+        panic!()
     }
 
     fn needs_deep_detach(&self) -> bool {

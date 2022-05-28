@@ -9,6 +9,8 @@ pub use merge_state::{DetachConverter, DowncastConverter, NoStoreConverter, Node
 pub use owned_slice::OwnedSlice;
 pub use tree::{Tree, TreeChildren, TreeNode, TreePrefix, TreeValue};
 
+pub use flex_ref_2::Tree as VSTree;
+
 fn slice_cast<T, U>(value: &[T]) -> anyhow::Result<&[U]> {
     let (ptr, size) = unsafe { std::mem::transmute(value) };
     let (ptr, size) = slice_cast_raw::<T, U>(ptr, size)?;
