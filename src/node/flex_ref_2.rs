@@ -1009,6 +1009,7 @@ trait Extendable {
     fn push_id(&mut self, id: &[u8]) {
         self.reserve(1 + id.len());
         self.extend_from_slice(&[0]);
+        self.extend_from_slice(id);
     }
 
     fn push_none(&mut self) {
@@ -1059,15 +1060,12 @@ impl Extendable for InPlaceFlexRefSeqBuilder {
         let gap = self.gap();
         if gap < n {
             let missing = n - gap;
-            // grow the vec if needed
-            if self.vec.len() + missing > self.vec.capacity() {
-                self.vec
-                    .reserve(self.vec.len() + missing - self.vec.capacity());
-            }
-            // todo: move stuff to end
+            self.vec.reserve(missing);
+            let space = self.vec.capacity() - self.vec.len();
+            // debug_assert!(space >= missing);
             self.vec
-                .splice(self.s0..self.s0, std::iter::repeat(0).take(missing));
-            self.s0 += missing;
+                .splice(self.s0..self.s0, std::iter::repeat(0).take(space));
+            self.s0 += space;
         }
     }
 
@@ -1083,10 +1081,10 @@ fn validate_flexref_slice(value: &[u8]) -> usize {
     let mut iter = FlexRefIter(value);
     let mut n = 0;
     while let Some(item) = iter.next() {
-        debug_assert!(!item.is_empty());
+        // debug_assert!(!item.is_empty());
         n += 1;
     }
-    debug_assert!(iter.is_empty());
+    // debug_assert!(iter.is_empty());
     n
 }
 
@@ -1110,15 +1108,15 @@ impl InPlaceFlexRefSeqBuilder {
     }
 
     fn into_inner(mut self) -> Vec<u8> {
-        debug_assert!(self.source_count() == 0);
-        debug_assert!(self.target_count() % 3 == 0);
+        // debug_assert!(self.source_count() == 0);
+        // debug_assert!(self.target_count() % 3 == 0);
         self.vec.truncate(self.t1);
         self.vec
     }
 
     fn take_result(&mut self) -> Vec<u8> {
-        debug_assert!(self.source_count() == 0);
-        debug_assert!(self.target_count() % 3 == 0);
+        // debug_assert!(self.source_count() == 0);
+        // debug_assert!(self.target_count() % 3 == 0);
         self.vec.truncate(self.t1);
         let mut res = Vec::new();
         std::mem::swap(&mut self.vec, &mut res);
@@ -1139,8 +1137,9 @@ impl InPlaceFlexRefSeqBuilder {
         self.source_count() + self.target_count()
     }
 
+    #[inline]
     fn drop(&mut self, n: usize) {
-        debug_assert!(n <= self.source_slice().len());
+        // debug_assert!(n <= self.source_slice().len());
         self.s0 += n;
     }
 
@@ -1153,7 +1152,7 @@ impl InPlaceFlexRefSeqBuilder {
     }
 
     fn forward(&mut self, n: usize) {
-        debug_assert!(n <= self.source_slice().len());
+        // debug_assert!(n <= self.source_slice().len());
         if self.gap() == 0 {
             self.t1 += n;
             self.s0 += n;
@@ -1165,7 +1164,7 @@ impl InPlaceFlexRefSeqBuilder {
     }
 
     fn rewind(&mut self, to: usize) {
-        debug_assert!(to <= self.t1);
+        // debug_assert!(to <= self.t1);
         let n = self.t1 - to;
         if self.gap() == 0 {
             self.t1 -= n;
@@ -1177,14 +1176,17 @@ impl InPlaceFlexRefSeqBuilder {
         }
     }
 
+    #[inline]
     fn gap(&self) -> usize {
         self.s0 - self.t1
     }
 
+    #[inline]
     fn target_slice(&self) -> &[u8] {
         &self.vec[..self.t1]
     }
 
+    #[inline]
     fn source_slice(&self) -> &[u8] {
         &self.vec[self.s0..]
     }
@@ -1405,15 +1407,15 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         f: impl Fn(&mut InPlaceNodeSeqBuilder<S>) -> Result<(), S::Error>,
     ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
         let mut arc = self.take_arc(store)?;
-        // let n = Arc::strong_count(&arc);
-        // if n > 1 {
-        //     // !!! mutate in place does not work!!!
-        //     unsafe {
-        //         for i in 1..n {
-        //             Arc::decrement_strong_count(Arc::as_ptr(&arc));
-        //         }
-        //     }
-        // }
+        let n = Arc::strong_count(&arc);
+        if n > 1 {
+            // !!! mutate in place does not work!!!
+            unsafe {
+                for i in 1..n {
+                    Arc::decrement_strong_count(Arc::as_ptr(&arc));
+                }
+            }
+        }
         let mut values = Arc::make_mut(&mut arc);
         let mut builder = InPlaceNodeSeqBuilder::<S>::new(&mut values);
         match f(&mut builder) {
@@ -1519,7 +1521,7 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     /// consumes an InPlaceNodeSeqBuilder by storing the result in a NodeSeqBuilder
     fn into_inner(mut self) -> NodeSeqBuilder<S> {
         let t = self.inner.take_result();
-        validate_nodeseq_slice::<S>(&t);
+        // validate_nodeseq_slice::<S>(&t);
         NodeSeqBuilder(t, PhantomData)
     }
 
@@ -1663,7 +1665,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn new() -> Self {
-        Self(Vec::new(), PhantomData)
+        Self(Vec::with_capacity(64), PhantomData)
     }
 
     fn is_empty(&self) -> bool {
@@ -2356,14 +2358,16 @@ where
 {
     if bc.is_empty() {
         Ok(a.move_children())
-    } else if a.peek().is_empty() {
+    }
+    /* else if a.peek().is_empty() {
         let mut res = NodeSeqBuilder::new();
         let mut bc = bc;
         while let Some(b) = bc.next() {
             res.push_converted(b, bb)?;
         }
         Ok(a.push_arc(Arc::new(res)))
-    } else {
+    } */
+    else {
         a.mutate(ab, move |ac| {
             let mut c = Combiner::<A, B>::new(ac, bc);
             while let Some(ordering) = c.cmp()? {

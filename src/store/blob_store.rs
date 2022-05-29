@@ -10,7 +10,7 @@ use std::{
     borrow::Borrow,
     collections::BTreeMap,
     fmt::Debug,
-    ops::{Deref, Index, Range},
+    ops::{Bound, Deref, Index, Range, RangeBounds},
     sync::Arc,
 };
 
@@ -78,19 +78,76 @@ impl<'a> Blob2<'a> {
         Self { data, owner }
     }
 
-    pub fn slice(&self, begin: usize, end: usize) -> Self {
+    pub fn slice(&self, range: impl RangeBounds<usize>) -> Self {
+        let len = self.len();
+
+        let begin = match range.start_bound() {
+            Bound::Included(&n) => n,
+            Bound::Excluded(&n) => n + 1,
+            Bound::Unbounded => 0,
+        };
+
+        let end = match range.end_bound() {
+            Bound::Included(&n) => n.checked_add(1).expect("out of range"),
+            Bound::Excluded(&n) => n,
+            Bound::Unbounded => len,
+        };
+
+        assert!(
+            begin <= end,
+            "range start must not be greater than end: {:?} <= {:?}",
+            begin,
+            end,
+        );
+        assert!(
+            end <= len,
+            "range end out of bounds: {:?} <= {:?}",
+            end,
+            len,
+        );
+
+        if end == begin {
+            return Self::empty();
+        }
+
         Self {
             data: &self.data[begin..end],
             owner: self.owner.clone(),
         }
     }
 
-    pub fn slice_from(&self, begin: usize) -> Self {
-        self.slice(begin, self.len())
-    }
+    // copied from the Bytes crate
+    pub fn slice_ref(&self, subset: &[u8]) -> Self {
+        // Empty slice and empty Bytes may have their pointers reset
+        // so explicitly allow empty slice to be a subslice of any slice.
+        if subset.is_empty() {
+            return Self::empty();
+        }
 
-    pub fn slice_to(&self, end: usize) -> Self {
-        self.slice(0, end)
+        let bytes_p = self.as_ptr() as usize;
+        let bytes_len = self.len();
+
+        let sub_p = subset.as_ptr() as usize;
+        let sub_len = subset.len();
+
+        assert!(
+            sub_p >= bytes_p,
+            "subset pointer ({:p}) is smaller than self pointer ({:p})",
+            sub_p as *const u8,
+            bytes_p as *const u8,
+        );
+        assert!(
+            sub_p + sub_len <= bytes_p + bytes_len,
+            "subset is out of bounds: self = ({:p}, {}), subset = ({:p}, {})",
+            bytes_p as *const u8,
+            bytes_len,
+            sub_p as *const u8,
+            sub_len,
+        );
+
+        let sub_offset = sub_p - bytes_p;
+
+        self.slice(sub_offset..(sub_offset + sub_len))
     }
 }
 
