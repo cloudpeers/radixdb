@@ -188,6 +188,30 @@ impl fmt::Debug for OwnedSlice {
     }
 }
 
+#[derive(Debug)]
+pub struct TreeValueRefWrapper<S = NoStore>(OwnedBlob, PhantomData<S>);
+
+impl<S: BlobStore> AsRef<TreeValueRef<S>> for TreeValueRefWrapper<S> {
+    fn as_ref(&self) -> &TreeValueRef<S> {
+        TreeValueRef::new(FlexRef::new(self.0.as_ref()))
+    }
+}
+
+impl AsRef<[u8]> for TreeValueRefWrapper {
+    fn as_ref(&self) -> &[u8] {
+        let t: &TreeValueRef<NoStore> = self.as_ref();
+        unwrap_safe(t.data(&NoStore))
+    }
+}
+
+impl Deref for TreeValueRefWrapper {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
 pub struct TreeValue<'a>(Blob2<'a>);
 
 pub type OwnedTreeValue = TreeValue<'static>;
@@ -352,6 +376,18 @@ impl<S: BlobStore> TreeValueRef<S> {
             TreeValue::from_arc_vec(x)
         } else if let Some(id) = self.1.id_as_slice() {
             TreeValue::from_blob(store.read(id)?)
+        } else {
+            panic!()
+        })
+    }
+
+    fn data(&self, store: &S) -> Result<&[u8], S::Error> {
+        Ok(if let Some(x) = self.1.inline_as_ref() {
+            x
+        } else if let Some(x) = self.1.arc_as_slice() {
+            x
+        } else if let Some(id) = self.1.id_as_slice() {
+            panic!()
         } else {
             panic!()
         })
@@ -788,6 +824,13 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
 }
 
 impl FlexRef<Vec<u8>> {
+    fn arc_as_slice(&self) -> Option<&[u8]> {
+        self.with_arc(|arc| {
+            let t: &[u8] = arc.as_ref();
+            unsafe { std::mem::transmute(t) }
+        })
+    }
+
     fn first_u8_opt(&self) -> Option<u8> {
         match self.tpe() {
             Type::None => None,
@@ -1921,8 +1964,12 @@ impl Tree {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (IterKey, OwnedTreeValue)> {
+    pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValueRefWrapper)> {
         self.try_iter().map(unwrap_safe)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = TreeValueRefWrapper> {
+        self.try_values().map(unwrap_safe)
     }
 
     pub fn get(&self, key: &[u8]) -> Option<TreeValue> {
@@ -1978,6 +2025,11 @@ impl<S: BlobStore + Clone> Tree<S> {
     pub fn try_iter(&self) -> Iter<S> {
         let iter = NodeSeqIter2::new(Arc::new(self.node.clone()).as_owned_blob());
         Iter::new(iter, self.store.clone(), IterKey::default())
+    }
+
+    pub fn try_values(&self) -> Values<S> {
+        let iter = NodeSeqIter2::new(Arc::new(self.node.clone()).as_owned_blob());
+        Values::new(iter, self.store.clone())
     }
 
     /// Get the value for a given key
@@ -2568,7 +2620,7 @@ impl<S: BlobStore> Iter<S> {
         self.stack.last().unwrap().0
     }
 
-    fn next0(&mut self) -> Result<Option<(IterKey, OwnedTreeValue)>, S::Error> {
+    fn next0(&mut self) -> Result<Option<(IterKey, TreeValueRefWrapper<S>)>, S::Error> {
         while !self.stack.is_empty() {
             if let Some((value, node)) = self.stack.last_mut().unwrap().2.next() {
                 let prefix = node.prefix.load2(&self.store)?;
@@ -2578,8 +2630,7 @@ impl<S: BlobStore> Iter<S> {
                 self.stack.push((prefix_len, value, children));
             } else {
                 if let Some(value) = self.top_value().take() {
-                    let value =
-                        TreeValueRef::new(FlexRef::new(value.as_ref())).load(&self.store)?;
+                    let value = TreeValueRefWrapper(value, PhantomData);
                     return Ok(Some((self.path.clone(), value)));
                 } else {
                     self.path.pop(self.top_prefix_len());
@@ -2592,7 +2643,7 @@ impl<S: BlobStore> Iter<S> {
 }
 
 impl<S: BlobStore> Iterator for Iter<S> {
-    type Item = Result<(IterKey, OwnedTreeValue), S::Error>;
+    type Item = Result<(IterKey, TreeValueRefWrapper<S>), S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -2608,7 +2659,7 @@ impl<S: BlobStore> Iterator for Iter<S> {
 }
 
 pub struct Values<S: BlobStore> {
-    stack: Vec<(Option<OwnedBlob>, NodeSeqIter2<S>)>,
+    stack: Vec<NodeSeqIter2<S>>,
     store: S,
 }
 
@@ -2620,30 +2671,24 @@ impl<S: BlobStore> Values<S> {
         }
     }
 
-    fn new(iter: NodeSeqIter2<S>, store: S, prefix: IterKey) -> Self {
+    fn new(iter: NodeSeqIter2<S>, store: S) -> Self {
         Self {
-            stack: vec![(None, iter)],
+            stack: vec![iter],
             store,
         }
     }
 
-    fn top_value(&mut self) -> &mut Option<OwnedBlob> {
-        &mut self.stack.last_mut().unwrap().0
-    }
-
-    fn next0(&mut self) -> Result<Option<OwnedTreeValue>, S::Error> {
+    fn next0(&mut self) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         while !self.stack.is_empty() {
-            if let Some((value, node)) = self.stack.last_mut().unwrap().1.next() {
+            if let Some((value, node)) = self.stack.last_mut().unwrap().next() {
                 let children = node.children.load(&self.store)?.owned_iter();
-                self.stack.push((value, children));
-            } else {
-                if let Some(value) = self.top_value().take() {
-                    let value =
-                        TreeValueRef::new(FlexRef::new(value.as_ref())).load(&self.store)?;
+                self.stack.push(children);
+                if let Some(value) = value {
+                    let value = TreeValueRefWrapper(value, PhantomData);
                     return Ok(Some(value));
-                } else {
-                    self.stack.pop();
                 }
+            } else {
+                self.stack.pop();
             }
         }
         Ok(None)
@@ -2651,7 +2696,7 @@ impl<S: BlobStore> Values<S> {
 }
 
 impl<S: BlobStore> Iterator for Values<S> {
-    type Item = Result<OwnedTreeValue, S::Error>;
+    type Item = Result<TreeValueRefWrapper<S>, S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -2862,6 +2907,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         let elems1 = elems.clone();
+        let elems2 = elems.clone();
         let t0 = Instant::now();
         println!("building tree");
         let tree: Tree = elems.into_iter().collect();
@@ -2879,7 +2925,33 @@ mod tests {
         for (k, v) in elems1 {
             count += 1;
         }
-        println!("iterated tree {} s, {}", t0.elapsed().as_secs_f64(), count);
+        println!(
+            "iterated btreemap {} s, {}",
+            t0.elapsed().as_secs_f64(),
+            count
+        );
+
+        let mut count = 0;
+        let t0 = Instant::now();
+        for v in tree.values() {
+            count += 1;
+        }
+        println!(
+            "iterated tree values {} s, {}",
+            t0.elapsed().as_secs_f64(),
+            count
+        );
+
+        let mut count = 0;
+        let t0 = Instant::now();
+        for v in elems2.values() {
+            count += 1;
+        }
+        println!(
+            "iterated btreemap values {} s, {}",
+            t0.elapsed().as_secs_f64(),
+            count
+        );
         // println!("{}", MUTATE_COUNTER.load(std::sync::atomic::Ordering::SeqCst));
         // println!("{}", GROW_COUNTER.load(std::sync::atomic::Ordering::SeqCst));
     }
