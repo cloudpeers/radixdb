@@ -1,9 +1,7 @@
 use std::{borrow::Borrow, cmp::Ordering, fmt, marker::PhantomData, ops::Deref, sync::Arc};
 
 use crate::{
-    store::{
-        unwrap_safe, Blob, Blob2, BlobOwner, BlobStore2 as BlobStore, NoError, NoStore, OwnedBlob,
-    },
+    store::{unwrap_safe, Blob2 as Blob, BlobStore2 as BlobStore, NoError, NoStore, OwnedBlob},
     Hex,
 };
 use std::fmt::Debug;
@@ -69,25 +67,13 @@ impl<S: BlobStore> TreePrefixRef<S> {
         self.bytes().len() > 0 && self.1.tpe() != Type::None
     }
 
-    fn load2(&self, store: &S) -> Result<TreePrefix<'_>, S::Error> {
+    fn load(&self, store: &S) -> Result<Blob, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
-            TreePrefix(Blob2::new(x))
-        } else if let Some(x) = self.1.arc_as_clone() {
-            TreePrefix(x.into())
+            Blob::new(x)
+        } else if let Some(x) = self.1.arc_vec_as_slice() {
+            Blob::new(x)
         } else if let Some(id) = self.1.id_as_slice() {
-            TreePrefix::from_blob(store.read(id)?)
-        } else {
-            panic!()
-        })
-    }
-
-    fn load(&self, store: &S) -> Result<OwnedTreePrefix, S::Error> {
-        Ok(if let Some(x) = self.1.inline_as_ref() {
-            TreePrefix::from_slice(x)
-        } else if let Some(x) = self.1.arc_as_clone() {
-            TreePrefix::from_arc_vec(x)
-        } else if let Some(id) = self.1.id_as_slice() {
-            TreePrefix::from_blob(store.read(id)?)
+            store.read(id)?
         } else {
             panic!()
         })
@@ -102,10 +88,6 @@ impl<S: BlobStore> TreePrefixRef<S> {
         Some((Self::new(f), rest))
     }
 
-    fn empty() -> &'static Self {
-        Self::new(FlexRef::<Vec<u8>>::empty())
-    }
-
     fn manual_drop(&self) {
         self.1.manual_drop();
     }
@@ -115,156 +97,17 @@ impl<S: BlobStore> TreePrefixRef<S> {
     }
 }
 
-impl AsRef<[u8]> for TreePrefixRef {
-    fn as_ref(&self) -> &[u8] {
-        todo!()
-    }
-}
-
-enum OwnedSlice {
-    Arc(Arc<Vec<u8>>),
-    Inline(Vec<u8>),
-    /// < TODO FIX
-    Blob(Blob),
-}
-
-impl From<&[u8]> for OwnedSlice {
-    fn from(v: &[u8]) -> Self {
-        Self::Inline(v.to_vec())
-    }
-}
-
-impl From<Vec<u8>> for OwnedSlice {
-    fn from(v: Vec<u8>) -> Self {
-        Self::Inline(v)
-    }
-}
-
-impl From<Arc<Vec<u8>>> for OwnedSlice {
-    fn from(v: Arc<Vec<u8>>) -> Self {
-        Self::Arc(v)
-    }
-}
-
-impl OwnedSlice {
-    fn empty() -> Self {
-        Self::Inline(Vec::new())
-    }
-
-    fn from_blob(blob: Blob) -> Self {
-        Self::Blob(blob)
-    }
-
-    fn from_arc_vec(arc: Arc<Vec<u8>>) -> Self {
-        Self::Arc(arc)
-    }
-
-    fn from_slice(v: &[u8]) -> Self {
-        Self::Inline(v.to_vec())
-    }
-}
-
-impl AsRef<[u8]> for OwnedSlice {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            Self::Arc(x) => x.as_ref().as_ref(),
-            Self::Inline(x) => x.as_ref(),
-            Self::Blob(blob) => blob.as_ref(),
-        }
-    }
-}
-
-impl Deref for OwnedSlice {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-impl fmt::Debug for OwnedSlice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Hex::new(self.as_ref()))
-    }
-}
-
 #[derive(Debug)]
 pub struct TreeValueRefWrapper<S = NoStore>(OwnedBlob, PhantomData<S>);
 
-impl<S: BlobStore> AsRef<TreeValueRef<S>> for TreeValueRefWrapper<S> {
-    fn as_ref(&self) -> &TreeValueRef<S> {
-        TreeValueRef::new(FlexRef::new(self.0.as_ref()))
-    }
-}
-
 impl AsRef<[u8]> for TreeValueRefWrapper {
     fn as_ref(&self) -> &[u8] {
-        let t: &TreeValueRef<NoStore> = self.as_ref();
-        unwrap_safe(t.data(&NoStore))
+        let t = TreeValueRef::<NoStore>::new(FlexRef::new(self.0.as_ref()));
+        t.data().unwrap()
     }
 }
 
 impl Deref for TreeValueRefWrapper {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct TreePrefix<'a>(Blob2<'a>);
-
-type OwnedTreePrefix = TreePrefix<'static>;
-
-impl<'a> From<&[u8]> for TreePrefix<'a> {
-    fn from(v: &[u8]) -> Self {
-        Self(v.into())
-    }
-}
-
-impl<'a> From<Vec<u8>> for TreePrefix<'a> {
-    fn from(v: Vec<u8>) -> Self {
-        Self(v.into())
-    }
-}
-
-impl<'a> From<Arc<Vec<u8>>> for TreePrefix<'a> {
-    fn from(v: Arc<Vec<u8>>) -> Self {
-        Self(v.into())
-    }
-}
-
-impl<'a> TreePrefix<'a> {
-    fn append<S: BlobStore>(&mut self, that: &TreePrefixRef<S>, store: &S) -> Result<(), S::Error> {
-        todo!()
-    }
-
-    fn empty() -> Self {
-        Self(Blob2::empty())
-    }
-
-    fn from_blob(blob: OwnedBlob) -> Self {
-        Self(blob)
-    }
-
-    fn from_arc_vec(arc: Arc<Vec<u8>>) -> Self {
-        Self(arc.into())
-    }
-
-    fn from_slice(v: &[u8]) -> Self {
-        Self(v.into())
-    }
-}
-
-impl<'a> AsRef<[u8]> for TreePrefix<'a> {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl<'a> Deref for TreePrefix<'a> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -295,11 +138,11 @@ impl<S: BlobStore> TreeValueRef<S> {
         self.bytes().len() > 0 && self.1.tpe() != Type::None
     }
 
-    fn load2(&self, store: &S) -> Result<Blob2<'_>, S::Error> {
+    fn load(&self, store: &S) -> Result<Blob, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
-            Blob2::new(x)
-        } else if let Some(x) = self.1.arc_as_clone() {
-            Blob2::from(x)
+            Blob::new(x)
+        } else if let Some(x) = self.1.arc_vec_as_slice() {
+            Blob::new(x)
         } else if let Some(id) = self.1.id_as_slice() {
             store.read(id)?
         } else {
@@ -307,34 +150,14 @@ impl<S: BlobStore> TreeValueRef<S> {
         })
     }
 
-    fn load(&self, store: &S) -> Result<OwnedBlob, S::Error> {
-        Ok(if let Some(x) = self.1.inline_as_ref() {
-            x.into()
-        } else if let Some(x) = self.1.arc_as_clone() {
-            x.into()
-        } else if let Some(id) = self.1.id_as_slice() {
-            store.read(id)?
-        } else {
-            panic!()
-        })
-    }
-
-    fn data(&self, store: &S) -> Result<&[u8], S::Error> {
-        Ok(if let Some(x) = self.1.inline_as_ref() {
-            x
-        } else if let Some(x) = self.1.arc_as_slice() {
-            x
-        } else if let Some(id) = self.1.id_as_slice() {
-            panic!()
-        } else {
-            panic!()
-        })
+    fn data(&self) -> Option<&[u8]> {
+        self.1.inline_as_ref().or_else(|| self.1.arc_vec_as_slice())
     }
 }
 
 impl TreeValueRef {
     fn to_owned(&self) -> OwnedBlob {
-        unwrap_safe(self.load(&NoStore))
+        unwrap_safe(self.load(&NoStore)).to_owned()
     }
 }
 
@@ -369,10 +192,6 @@ impl<S: BlobStore> TreeValueOptRef<S> {
         }
     }
 
-    fn none() -> &'static Self {
-        Self::new(FlexRef::<Vec<u8>>::none())
-    }
-
     fn is_none(&self) -> bool {
         self.1.is_none()
     }
@@ -381,11 +200,11 @@ impl<S: BlobStore> TreeValueOptRef<S> {
         self.1.is_some()
     }
 
-    fn load(&self, store: &S) -> Result<Option<OwnedBlob>, S::Error> {
+    fn load(&self, store: &S) -> Result<Option<Blob>, S::Error> {
         Ok(if let Some(x) = self.1.inline_as_ref() {
-            Some(x.into())
-        } else if let Some(x) = self.1.arc_as_clone() {
-            Some(x.into())
+            Some(Blob::new(x))
+        } else if let Some(x) = self.1.arc_vec_as_slice() {
+            Some(Blob::new(x))
         } else if let Some(id) = self.1.id_as_slice() {
             Some(store.read(id)?)
         } else {
@@ -452,10 +271,6 @@ impl<S: BlobStore> TreeChildrenRef<S> {
         })
     }
 
-    fn empty() -> &'static Self {
-        Self::new(FlexRef::none())
-    }
-
     fn is_empty(&self) -> bool {
         self.1.is_none()
     }
@@ -473,13 +288,13 @@ struct NodeSeq<S: BlobStore>(OwnedBlob, PhantomData<S>);
 
 impl<S: BlobStore> NodeSeq<S> {
     fn empty() -> Self {
-        Self(Blob2::empty(), PhantomData)
+        Self(Blob::empty(), PhantomData)
     }
 
     fn from_arc_vec(value: Arc<NodeSeqBuilder<S>>) -> Self {
         let data: &[u8] = value.as_ref().0.as_ref();
         let data: &'static [u8] = unsafe { std::mem::transmute(data) };
-        Self(Blob2::owned_new(data, Some(value)), PhantomData)
+        Self(Blob::owned_new(data, Some(value)), PhantomData)
     }
 
     fn from_blob(value: OwnedBlob) -> Self {
@@ -500,17 +315,20 @@ impl<S: BlobStore> NodeSeqIter2<S> {
 
     fn next(&mut self) -> Option<(Option<OwnedBlob>, TreeNode<'_, S>)> {
         if let Some(res) = TreeNode::read(&self.0[self.1..]) {
+            // let start = self.0.as_ptr() as usize;
+            // let end = rest.as_ptr() as usize;
+            // self.1 = end - start;
             self.1 += res.prefix().bytes().len()
                 + res.value().bytes().len()
                 + res.children().bytes().len();
-            let v = res.value().value_opt().map(|x| self.load(x.bytes()));
+            let v = res.value().value_opt().map(|x| self.slice_ref(x.bytes()));
             Some((v, res))
         } else {
             None
         }
     }
 
-    fn load(&self, slice: &[u8]) -> OwnedBlob {
+    fn slice_ref(&self, slice: &[u8]) -> OwnedBlob {
         self.0.slice_ref(slice)
     }
 }
@@ -692,19 +510,10 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     fn first_entry(
         &self,
         store: &S,
-        mut prefix: OwnedTreePrefix,
-    ) -> Result<Option<(OwnedTreePrefix, TreeValueRefWrapper<S>)>, S::Error> {
-        prefix.append(&self.prefix(), store)?;
-        Ok(if self.children().is_empty() {
-            if let Some(value) = self.value().value_opt() {
-                Some((prefix, todo!()))
-            } else {
-                None
-            }
-        } else {
-            let children = self.children().load(store)?;
-            children.iter().next().unwrap().first_entry(store, prefix)?
-        })
+        mut prefix: &[u8],
+    ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
+        // prefix.append(&self.prefix(), store)?;
+        todo!();
     }
 
     /// get the first value
@@ -721,48 +530,49 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     fn last_entry(
         &self,
         store: &S,
-        mut prefix: OwnedTreePrefix,
-    ) -> Result<Option<(OwnedTreePrefix, TreeValueRefWrapper<S>)>, S::Error> {
-        prefix.append(&self.prefix(), store)?;
-        Ok(if self.children().is_empty() {
-            if let Some(value) = self.value().value_opt() {
-                Some((prefix, todo!()))
-            } else {
-                None
-            }
-        } else {
-            let children = self.children().load(store)?;
-            children.iter().last().unwrap().first_entry(store, prefix)?
-        })
-    }
-
-    /// Return the subtree with the given prefix. Will return an empty tree in case there is no match.
-    fn filter_prefix(&self, store: &S, prefix: &[u8]) -> Result<NodeSeqBuilder<S>, S::Error> {
-        find(store, self, prefix, |x| {
-            Ok(match x {
-                FindResult::Found(res) => {
-                    let mut b = NodeSeqBuilder::new();
-                    todo!();
-                    // let mut res = res.clone();
-                    // res.prefix = TreePrefix::new(FlexRef::inline_or_owned_from_slice(prefix));
-                    b
-                }
-                FindResult::Prefix { tree: res, rt } => {
-                    let mut b = NodeSeqBuilder::new();
-                    let rp = res.prefix().load(store)?;
-                    todo!();
-                    // let mut res = res.clone();
-                    // res.prefix = TreePrefix::join(prefix, &rp[rp.len() - rt..]);
-                    b
-                }
-                FindResult::NotFound { .. } => NodeSeqBuilder::empty_tree(),
-            })
-        })
+        mut prefix: &[u8],
+    ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
+        todo!();
     }
 }
 
+/// Return the subtree with the given prefix. Will return an empty tree in case there is no match.
+fn filter_prefix<S: BlobStore>(
+    node: &TreeNode<S>,
+    owner: &OwnedBlob,
+    store: &S,
+    prefix: &[u8],
+) -> Result<NodeSeqBuilder<S>, S::Error> {
+    find(store, owner, node, prefix, |o, x| {
+        Ok(match x {
+            FindResult::Found(res) => {
+                let mut t = NodeSeqBuilder::new();
+                t.cursor()
+                    .push_prefix(prefix)
+                    .push_value_ref(res.value())
+                    .push_children_ref(res.children());
+                t
+            }
+            FindResult::Prefix {
+                tree: res,
+                matching,
+            } => {
+                let mut rp = res.prefix().load(store)?.to_vec();
+                rp.splice(0..matching, prefix.iter().cloned());
+                let mut t = NodeSeqBuilder::new();
+                t.cursor()
+                    .push_prefix(rp)
+                    .push_value_ref(res.value())
+                    .push_children_ref(res.children());
+                t
+            }
+            FindResult::NotFound { .. } => NodeSeqBuilder::empty_tree(),
+        })
+    })
+}
+
 impl FlexRef<Vec<u8>> {
-    fn arc_as_slice(&self) -> Option<&[u8]> {
+    fn arc_vec_as_slice(&self) -> Option<&[u8]> {
         self.with_arc(|arc| {
             let t: &[u8] = arc.as_ref();
             unsafe { std::mem::transmute(t) }
@@ -926,13 +736,6 @@ impl<T> FlexRef<T> {
 
     fn is_some(&self) -> bool {
         !self.is_some()
-    }
-
-    fn copy_to(&self, target: &mut Vec<u8>) {
-        self.with_arc(|arc| {
-            std::mem::forget(arc.clone());
-        });
-        target.extend_from_slice(self.bytes());
     }
 }
 
@@ -1249,38 +1052,6 @@ impl<'a> Iterator for FlexRefIter<'a> {
 }
 
 #[derive(Debug)]
-#[repr(transparent)]
-struct BlobOfFlexRef(Blob);
-
-impl BlobOwner for BlobOfFlexRef {
-    fn get_slice(&self, offset: usize) -> &[u8] {
-        let len = 1 + len(self.0[offset]);
-        &self.0[offset..offset + len]
-    }
-}
-
-#[derive(Debug)]
-struct FlexRefIter2(Blob, usize);
-
-impl FlexRefIter2 {
-    fn next(&mut self) -> Option<&[u8]> {
-        if self.0.is_empty() {
-            None
-        } else {
-            let data = self.0.as_ref();
-            let offset = self.1;
-            let len = 1 + len(data[offset]);
-            if self.0.len() >= len {
-                self.1 += len;
-                Some(&data[offset..offset + len])
-            } else {
-                None
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
 struct AtPrefix;
 #[derive(Debug)]
 struct AtValue;
@@ -1301,6 +1072,58 @@ macro_rules! unwrap_or_break {
             }
         }
     };
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+struct BuilderRef<'a, S: BlobStore, P: IterPosition>(&'a mut NodeSeqBuilder<S>, PhantomData<P>);
+
+impl<'a, S: BlobStore> BuilderRef<'a, S, AtPrefix> {
+    fn push_prefix(self, prefix: impl AsRef<[u8]>) -> BuilderRef<'a, S, AtValue> {
+        self.0 .0.push_arc_or_inline(prefix.as_ref());
+        BuilderRef(self.0, PhantomData)
+    }
+
+    fn push_prefix_ref(self, value: &TreePrefixRef<S>) -> BuilderRef<'a, S, AtValue> {
+        value.manual_clone();
+        self.0 .0.extend_from_slice(value.bytes());
+        BuilderRef(self.0, PhantomData)
+    }
+}
+
+impl<'a, S: BlobStore> BuilderRef<'a, S, AtValue> {
+    fn push_value(self, value: impl AsRef<[u8]>) -> BuilderRef<'a, S, AtChildren> {
+        self.0 .0.push_arc_or_inline(value.as_ref());
+        BuilderRef(self.0, PhantomData)
+    }
+
+    fn push_value_opt(self, value: Option<impl AsRef<[u8]>>) -> BuilderRef<'a, S, AtChildren> {
+        if let Some(value) = value {
+            self.0 .0.push_arc_or_inline(value.as_ref());
+        } else {
+            self.0 .0.push_none();
+        }
+        BuilderRef(self.0, PhantomData)
+    }
+
+    fn push_value_ref(self, value: &TreeValueOptRef<S>) -> BuilderRef<'a, S, AtChildren> {
+        value.manual_clone();
+        self.0 .0.extend_from_slice(value.bytes());
+        BuilderRef(self.0, PhantomData)
+    }
+}
+
+impl<'a, S: BlobStore> BuilderRef<'a, S, AtChildren> {
+    fn push_children(self, children: NodeSeqBuilder<S>) -> BuilderRef<'a, S, AtPrefix> {
+        self.0 .0.push_arc(Arc::new(children));
+        BuilderRef(self.0, PhantomData)
+    }
+
+    fn push_children_ref(self, value: &TreeChildrenRef<S>) -> BuilderRef<'a, S, AtPrefix> {
+        value.manual_clone();
+        self.0 .0.extend_from_slice(value.bytes());
+        BuilderRef(self.0, PhantomData)
+    }
 }
 
 #[derive(Debug)]
@@ -1451,9 +1274,6 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         let mut builder = InPlaceNodeSeqBuilder::<S>::new(&mut values);
         match f(&mut builder) {
             Ok(_) => {
-                // todo: don't do this always?
-                builder.inner.rewind_all();
-                builder.canonicalize_all();
                 *values = builder.into_inner();
                 Ok(if !values.is_empty() {
                     self.push_new_arc(arc)
@@ -1570,22 +1390,16 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
 
     /// Peek element of the source
     fn peek(&self) -> Option<u8> {
-        if !self.inner.has_remaining() {
-            None
-        } else {
+        if self.inner.has_remaining() {
             Some(TreePrefixRef::<S>::new(FlexRef::new(self.inner.source_slice())).first())
+        } else {
+            None
         }
     }
 
     /// move one triple from the source to the target
     fn move_one(&mut self) {
         self.cursor().move_prefix().move_value().move_children();
-    }
-
-    fn move_all(&mut self) {
-        while self.inner.has_remaining() {
-            self.move_one()
-        }
     }
 
     /// move one triple from the source to the target, canonicalizing
@@ -1603,16 +1417,6 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
                 .push_prefix_ref(&[])
                 .push_value_none()
                 .push_empty();
-        }
-    }
-
-    fn rewind_all(&mut self) {
-        self.inner.rewind_all();
-    }
-
-    fn canonicalize_all(&mut self) {
-        while self.inner.has_remaining() {
-            self.canonicalize_one()
         }
     }
 
@@ -1688,17 +1492,15 @@ impl<S: BlobStore> Debug for NodeSeqBuilder<S> {
     }
 }
 
-impl<S: BlobStore> BlobOwner for NodeSeqBuilder<S> {
-    fn get_slice(&self, _: usize) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
 impl<S: BlobStore> NodeSeqBuilder<S> {
     fn as_owned_blob(self: Arc<Self>) -> OwnedBlob {
         let data: &[u8] = self.0.as_ref();
         let data: &'static [u8] = unsafe { std::mem::transmute(data) };
         OwnedBlob::owned_new(data, Some(self))
+    }
+
+    fn cursor(&mut self) -> BuilderRef<'_, S, AtPrefix> {
+        BuilderRef(self, PhantomData)
     }
 
     fn new() -> Self {
@@ -1709,45 +1511,11 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         self.0.is_empty()
     }
 
-    fn as_blob(self: Arc<NodeSeqBuilder<S>>) -> Blob {
-        Blob::new(self, 0).unwrap()
-    }
-
     fn into_inner(mut self) -> Vec<u8> {
         let mut r = Vec::new();
         std::mem::swap(&mut self.0, &mut r);
         drop(self);
         r
-    }
-
-    fn push_prefix(&mut self, prefix: impl AsRef<[u8]>) {
-        self.0.push_arc_or_inline(prefix.as_ref());
-    }
-
-    fn push_value(&mut self, value: Option<impl AsRef<[u8]>>) {
-        if let Some(value) = value {
-            self.0.push_arc_or_inline(value.as_ref());
-        } else {
-            self.0.push_none()
-        }
-    }
-
-    fn push_value_ref(&mut self, value: &TreeValueOptRef<S>) {
-        value.manual_clone();
-        self.0.extend_from_slice(value.bytes());
-    }
-
-    fn push_children(&mut self, value: NodeSeqBuilder<S>) {
-        if !value.0.is_empty() {
-            self.0.push_arc(Arc::new(value))
-        } else {
-            self.0.push_none()
-        }
-    }
-
-    fn push_children_ref(&mut self, value: &TreeChildrenRef<S>) {
-        value.manual_clone();
-        self.0.extend_from_slice(value.bytes());
     }
 
     fn empty_tree() -> Self {
@@ -1764,9 +1532,10 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         value: Option<impl AsRef<[u8]>>,
         children: NodeSeqBuilder<S>,
     ) {
-        self.push_prefix(prefix);
-        self.push_value(value);
-        self.push_children(children);
+        self.cursor()
+            .push_prefix(prefix)
+            .push_value_opt(value)
+            .push_children(children);
     }
 
     fn push_detached<S2: BlobStore>(
@@ -1791,9 +1560,10 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     fn push(&mut self, node: TreeNode<'_, S>) {
-        node.prefix().1.copy_to(&mut self.0);
-        node.value().1.copy_to(&mut self.0);
-        node.children().1.copy_to(&mut self.0);
+        self.cursor()
+            .push_prefix_ref(node.prefix())
+            .push_value_ref(node.value())
+            .push_children_ref(node.children());
     }
 
     fn push_shortened(
@@ -1802,15 +1572,17 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         store: &S,
         n: usize,
     ) -> Result<(), S::Error> {
-        if n > 0 {
-            let prefix = node.prefix().load2(store)?;
+        let cursor = self.cursor();
+        let cursor = if n > 0 {
+            let prefix = node.prefix().load(store)?;
             assert!(n < prefix.len());
-            FlexRef::slice(&prefix[n..], &mut self.0);
+            cursor.push_prefix(&prefix[n..])
         } else {
-            node.prefix().1.copy_to(&mut self.0);
-        }
-        node.value().1.copy_to(&mut self.0);
-        node.children().1.copy_to(&mut self.0);
+            cursor.push_prefix_ref(node.prefix())
+        };
+        cursor
+            .push_value_ref(node.value())
+            .push_children_ref(node.children());
         Ok(())
     }
 
@@ -1885,7 +1657,7 @@ impl<S: BlobStore> Drop for NodeSeqBuilder<S> {
 #[derive(Debug, Clone)]
 pub struct Tree<S: BlobStore = NoStore> {
     /// This contains exactly one node, even in the case of an empty tree
-    node: NodeSeqBuilder<S>,
+    node: Arc<NodeSeqBuilder<S>>,
     /// The associated store
     store: S,
 }
@@ -1893,19 +1665,19 @@ pub struct Tree<S: BlobStore = NoStore> {
 impl Tree {
     fn empty() -> Self {
         Self {
-            node: NodeSeqBuilder::empty_tree(),
+            node: Arc::new(NodeSeqBuilder::empty_tree()),
             store: NoStore,
         }
     }
 
     fn single(key: &[u8], value: &[u8]) -> Self {
         Self {
-            node: NodeSeqBuilder::single(key, value),
+            node: Arc::new(NodeSeqBuilder::single(key, value)),
             store: NoStore,
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (IterKey, TreeValueRefWrapper)> {
+    pub fn iter(&self) -> impl Iterator<Item = (OwnedBlob, TreeValueRefWrapper)> {
         self.try_iter().map(unwrap_safe)
     }
 
@@ -1929,14 +1701,11 @@ impl Tree {
         unwrap_safe(self.try_last_value())
     }
 
-    pub fn first_entry(
-        &self,
-        prefix: OwnedTreePrefix,
-    ) -> Option<(TreePrefix, TreeValueRefWrapper)> {
+    pub fn first_entry(&self, prefix: &[u8]) -> Option<(OwnedBlob, TreeValueRefWrapper)> {
         unwrap_safe(self.try_first_entry(prefix))
     }
 
-    pub fn last_entry(&self, prefix: OwnedTreePrefix) -> Option<(TreePrefix, TreeValueRefWrapper)> {
+    pub fn last_entry(&self, prefix: &[u8]) -> Option<(OwnedBlob, TreeValueRefWrapper)> {
         unwrap_safe(self.try_last_entry(prefix))
     }
 
@@ -1967,21 +1736,27 @@ impl<S: BlobStore + Clone> Tree<S> {
     }
 
     pub fn try_iter(&self) -> Iter<S> {
-        let iter = NodeSeqIter2::new(Arc::new(self.node.clone()).as_owned_blob());
+        let iter = NodeSeqIter2::new(self.node.clone().as_owned_blob());
         Iter::new(iter, self.store.clone(), IterKey::default())
     }
 
     pub fn try_values(&self) -> Values<S> {
-        let iter = NodeSeqIter2::new(Arc::new(self.node.clone()).as_owned_blob());
+        let iter = NodeSeqIter2::new(self.node.clone().as_owned_blob());
         Values::new(iter, self.store.clone())
+    }
+
+    fn blob(&self) -> OwnedBlob {
+        self.node.clone().as_owned_blob()
     }
 
     /// Get the value for a given key
     fn try_get(&self, key: &[u8]) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        find(&self.store, &self.node(), key, |r| {
+        find(&self.store, &self.blob(), &self.node(), key, |o, r| {
             Ok(if let FindResult::Found(tree) = r {
-                todo!()
+                tree.value()
+                    .value_opt()
+                    .map(|x| TreeValueRefWrapper(o.slice_ref(x.bytes()), PhantomData))
             } else {
                 None
             })
@@ -1991,7 +1766,7 @@ impl<S: BlobStore + Clone> Tree<S> {
     /// True if key is contained in this set
     fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        find(&self.store, &self.node(), key, |r| {
+        find(&self.store, &self.blob(), &self.node(), key, |o, r| {
             Ok(if let FindResult::Found(tree) = r {
                 tree.value().is_some()
             } else {
@@ -2016,7 +1791,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             &mut nodes,
         )?;
         Ok(Tree {
-            node: nodes,
+            node: Arc::new(nodes),
             store: NoStore,
         })
     }
@@ -2027,7 +1802,8 @@ impl<S: BlobStore + Clone> Tree<S> {
         S::Error: From<S2::Error> + From<NoError>,
         F: Fn(&TreeValueRef<S>, &TreeValueRef<S2>) -> Result<Option<OwnedBlob>, S::Error> + Copy,
     {
-        let mut iter = InPlaceNodeSeqBuilder::new(&mut self.node);
+        let node = Arc::make_mut(&mut self.node);
+        let mut iter = InPlaceNodeSeqBuilder::new(node);
         outer_combine_with(
             iter.cursor(),
             &self.store,
@@ -2035,7 +1811,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             &that.store,
             f,
         )?;
-        self.node = iter.into_inner();
+        *node = iter.into_inner();
         Ok(())
     }
 
@@ -2049,25 +1825,23 @@ impl<S: BlobStore + Clone> Tree<S> {
 
     pub fn try_first_entry(
         &self,
-        prefix: OwnedTreePrefix,
-    ) -> Result<Option<(OwnedTreePrefix, TreeValueRefWrapper<S>)>, S::Error> {
+        prefix: &[u8],
+    ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
         self.node().first_entry(&self.store, prefix)
     }
 
     pub fn try_last_entry(
         &self,
-        prefix: OwnedTreePrefix,
-    ) -> Result<Option<(OwnedTreePrefix, TreeValueRefWrapper<S>)>, S::Error> {
+        prefix: &[u8],
+    ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
         self.node().last_entry(&self.store, prefix)
     }
 
     pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
-        self.node()
-            .filter_prefix(&self.store, prefix)
-            .map(|node| Tree {
-                node,
-                store: self.store.clone(),
-            })
+        filter_prefix(&self.node(), &self.blob(), &self.store, prefix).map(|node| Tree {
+            node: Arc::new(node),
+            store: self.store.clone(),
+        })
     }
 }
 
@@ -2090,18 +1864,18 @@ where
     E: From<A::Error> + From<B::Error> + From<NoError>,
     F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<OwnedBlob>, E> + Copy,
 {
-    let ap = a.prefix().load2(ab)?;
-    let bp = b.prefix().load2(bb)?;
+    let ap = a.prefix().load(ab)?;
+    let bp = b.prefix().load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let prefix = TreePrefix::from_slice(&ap[..n]);
+    let prefix = &ap[..n];
     let mut children: NodeSeqBuilder = NodeSeqBuilder::new();
-    let value: Option<Blob2>;
+    let value: Option<Blob>;
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         value = match (a.value().value_opt(), b.value().value_opt()) {
             (Some(a), Some(b)) => f(a, b)?,
-            (Some(a), None) => Some(a.load2(ab)?),
-            (None, Some(b)) => Some(b.load2(bb)?),
+            (Some(a), None) => Some(a.load(ab)?),
+            (None, Some(b)) => Some(b.load(bb)?),
             (None, None) => None,
         };
         let ac = a.children().load(ab)?;
@@ -2276,8 +2050,8 @@ where
     A::Error: From<B::Error>,
     F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<Option<OwnedBlob>, A::Error> + Copy,
 {
-    let ap = a.peek().load2(ab)?;
-    let bp = b.prefix().load2(bb)?;
+    let ap = a.peek().load(ab)?;
+    let bp = b.prefix().load(bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
@@ -2306,18 +2080,19 @@ where
         // value is value of b
         // split a at n
         let mut child = NodeSeqBuilder::<A>::new();
+        let cursor = child.cursor();
         // store the last part of the prefix
-        child.push_prefix(&ap[n..]);
+        let cursor = cursor.push_prefix(&ap[n..]);
         // store the first part of the prefix
         // todo: move_prefix_shortened?
-        let ap = a.peek().load(ab)?;
+        let ap = ap.to_owned();
         let a = a.push_prefix_ref(&ap[..n]);
         // store value from a in child, if it exists
-        child.push_value_ref(a.peek());
+        let cursor = cursor.push_value_ref(a.peek());
         // store the value from b, if it exists
         let a = a.push_converted(b.value(), bb)?;
         // take the children
-        child.push_children_ref(a.peek());
+        let _ = cursor.push_children_ref(a.peek());
         let a = a.set_new_arc(Arc::new(child));
         let bc = b.children().load(bb)?;
         outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
@@ -2325,13 +2100,14 @@ where
         // the two nodes are disjoint
         // value is none
         let mut child = NodeSeqBuilder::<A>::new();
-        child.push_prefix(&ap[n..]);
+        let cursor = child.cursor();
+        let cursor = cursor.push_prefix(&ap[n..]);
         // todo: move_prefix_shortened?
-        let ap = a.peek().load(ab)?;
+        let ap = ap.to_owned();
         let a = a.push_prefix_ref(&ap[..n]);
-        child.push_value_ref(a.peek());
+        let cursor = cursor.push_value_ref(a.peek());
         let a = a.push_value_none();
-        child.push_children_ref(a.peek());
+        let _ = cursor.push_children_ref(a.peek());
         let mut children = NodeSeqBuilder::<A>::new();
         // children is just the shortened children a and b in the right order
         if ap[n] <= bp[n] {
@@ -2379,7 +2155,10 @@ where
                     Ordering::Equal => {
                         // the .unwrap() is safe because cmp guarantees that there is a value
                         let b = c.b.next().unwrap();
+                        let start = c.a.cursor().mark();
                         outer_combine_with(c.a.cursor(), ab, &b, bb, f)?;
+                        c.a.cursor().rewind(start);
+                        c.a.canonicalize_one();
                     }
                     Ordering::Greater => {
                         // the .unwrap() is safe because cmp guarantees that there is a value
@@ -2400,8 +2179,8 @@ enum FindResult<T> {
     Prefix {
         // a tree of which the searched path is a prefix
         tree: T,
-        // number of remaining elements in the prefix of the tree
-        rt: usize,
+        // number of bytes in the prefix of tree that are matching the end of the searched for prefix
+        matching: usize,
     },
     // did not find anything, T is the closest match, with n remaining (unmatched) in the prefix of T
     NotFound,
@@ -2413,9 +2192,10 @@ enum FindResult<T> {
 /// - NotFound if there is no tree
 fn find<S: BlobStore, T>(
     store: &S,
+    owner: &OwnedBlob,
     tree: &TreeNode<S>,
     prefix: &[u8],
-    f: impl Fn(FindResult<&TreeNode<S>>) -> Result<T, S::Error>,
+    f: impl Fn(&OwnedBlob, FindResult<&TreeNode<S>>) -> Result<T, S::Error>,
 ) -> Result<T, S::Error> {
     let tree_prefix = tree.prefix().load(store)?;
     let n = common_prefix(&tree_prefix, prefix);
@@ -2428,13 +2208,13 @@ fn find<S: BlobStore, T>(
         FindResult::Found(tree)
     } else if rp == 0 {
         // tree is a subtree of prefix
-        FindResult::Prefix { tree: tree, rt }
+        FindResult::Prefix { tree, matching: n }
     } else if rt == 0 {
         // prefix is a subtree of tree
         let c = prefix[n];
         let tree_children = tree.children().load(store)?;
         if let Some(child) = tree_children.find(c) {
-            return find(store, &child, &prefix[n..], f);
+            return find(store, &tree_children.0, &child, &prefix[n..], f);
         } else {
             FindResult::NotFound
         }
@@ -2442,15 +2222,19 @@ fn find<S: BlobStore, T>(
         // disjoint, but we still need to store how far we matched
         FindResult::NotFound
     };
-    f(fr)
+    f(owner, fr)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct IterKey(Arc<Vec<u8>>);
 
 impl IterKey {
     fn new(root: &[u8]) -> Self {
         Self(Arc::new(root.to_vec()))
+    }
+
+    fn as_owned_blob(&self) -> OwnedBlob {
+        OwnedBlob::from_arc_vec(self.0.clone())
     }
 
     fn append(&mut self, data: &[u8]) {
@@ -2464,26 +2248,6 @@ impl IterKey {
     fn pop(&mut self, n: usize) {
         let elems = Arc::make_mut(&mut self.0);
         elems.truncate(elems.len().saturating_sub(n));
-    }
-}
-
-impl AsRef<[u8]> for IterKey {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl Borrow<[u8]> for IterKey {
-    fn borrow(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl core::ops::Deref for IterKey {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
     }
 }
 
@@ -2518,10 +2282,10 @@ impl<S: BlobStore> Iter<S> {
         self.stack.last().unwrap().0
     }
 
-    fn next0(&mut self) -> Result<Option<(IterKey, TreeValueRefWrapper<S>)>, S::Error> {
+    fn next0(&mut self) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
         while !self.stack.is_empty() {
             if let Some((value, node)) = self.stack.last_mut().unwrap().2.next() {
-                let prefix = node.prefix.load2(&self.store)?;
+                let prefix = node.prefix.load(&self.store)?;
                 let prefix_len = prefix.len();
                 let children = node.children.load(&self.store)?.owned_iter();
                 self.path.append(prefix.as_ref());
@@ -2529,7 +2293,7 @@ impl<S: BlobStore> Iter<S> {
             } else {
                 if let Some(value) = self.top_value().take() {
                     let value = TreeValueRefWrapper(value, PhantomData);
-                    return Ok(Some((self.path.clone(), value)));
+                    return Ok(Some((self.path.as_owned_blob(), value)));
                 } else {
                     self.path.pop(self.top_prefix_len());
                     self.stack.pop();
@@ -2541,7 +2305,7 @@ impl<S: BlobStore> Iter<S> {
 }
 
 impl<S: BlobStore> Iterator for Iter<S> {
-    type Item = Result<(IterKey, TreeValueRefWrapper<S>), S::Error>;
+    type Item = Result<(OwnedBlob, TreeValueRefWrapper<S>), S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.next0() {
@@ -2849,6 +2613,28 @@ mod tests {
             "iterated btreemap values {} s, {}",
             t0.elapsed().as_secs_f64(),
             count
+        );
+
+        let mut count = 0;
+        let t0 = Instant::now();
+        for k in elems2.keys() {
+            if tree.get(k.as_ref()).is_some() {
+                count += 1;
+            }
+        }
+        println!("get all values {} s, {}", t0.elapsed().as_secs_f64(), count);
+
+        let t0 = Instant::now();
+        let mut n = 0;
+        for key in elems2.keys() {
+            if elems2.get(key).is_some() {
+                n += 1;
+            }
+        }
+        println!(
+            "get all values reference {} items, {} s",
+            n,
+            t0.elapsed().as_secs_f32()
         );
         // println!("{}", MUTATE_COUNTER.load(std::sync::atomic::Ordering::SeqCst));
         // println!("{}", GROW_COUNTER.load(std::sync::atomic::Ordering::SeqCst));

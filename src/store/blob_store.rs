@@ -73,6 +73,23 @@ impl<'a> Blob2<'a> {
         Self { data, owner: None }
     }
 
+    pub fn to_owned(self) -> OwnedBlob {
+        if self.owner.is_some() {
+            OwnedBlob {
+                data: unsafe { std::mem::transmute(self.data) },
+                owner: self.owner,
+            }
+        } else {
+            self.data.into()
+        }
+    }
+
+    pub fn from_arc_vec(arc: Arc<Vec<u8>>) -> OwnedBlob {
+        let data: &[u8] = arc.as_ref();
+        let data: &'static [u8] = unsafe { std::mem::transmute(data) };
+        OwnedBlob::owned_new(data, Some(arc))
+    }
+
     /// When calling this with an owner, you promise that keeping the owner alive will keep the slice valid!
     pub fn owned_new(data: &'a [u8], owner: Option<Arc<dyn Any>>) -> Self {
         Self { data, owner }
