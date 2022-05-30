@@ -271,6 +271,18 @@ impl<S: BlobStore> TreeChildrenRef<S> {
         })
     }
 
+    fn blob(&self, store: &S) -> Result<Blob, S::Error> {
+        Ok(if self.1.is_none() {
+            Blob::empty()
+        } else if let Some(x) = self.1.arc_as_ref() {
+            Blob::new(&x.0)
+        } else if let Some(id) = self.1.id_as_slice() {
+            store.read(id)?
+        } else {
+            panic!()
+        })
+    }
+
     fn is_empty(&self) -> bool {
         self.1.is_none()
     }
@@ -304,6 +316,25 @@ impl<S: BlobStore> NodeSeq<S> {
     fn owned_iter(&self) -> NodeSeqIter2<S> {
         NodeSeqIter2(self.0.clone(), 0, PhantomData)
     }
+
+    fn iter(&self) -> NodeSeqIter<'_, S> {
+        NodeSeqIter(&self.0, PhantomData)
+    }
+
+    fn find(&self, first: u8) -> Option<TreeNode<'_, S>> {
+        // todo: optimize
+        for leaf in self.iter() {
+            let first_opt = leaf.prefix().first_opt();
+            if first_opt == Some(first) {
+                // found it
+                return Some(leaf);
+            } else if first_opt > Some(first) {
+                // not going to come anymore
+                return None;
+            }
+        }
+        None
+    }
 }
 
 struct NodeSeqIter2<S: BlobStore>(OwnedBlob, usize, PhantomData<S>);
@@ -330,20 +361,6 @@ impl<S: BlobStore> NodeSeqIter2<S> {
 
     fn slice_ref(&self, slice: &[u8]) -> OwnedBlob {
         self.0.slice_ref(slice)
-    }
-}
-
-impl<S: BlobStore> AsRef<NodeSeqRef<S>> for NodeSeq<S> {
-    fn as_ref(&self) -> &NodeSeqRef<S> {
-        NodeSeqRef::new(self.0.as_ref())
-    }
-}
-
-impl<S: BlobStore> Deref for NodeSeq<S> {
-    type Target = NodeSeqRef<S>;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
     }
 }
 
@@ -571,12 +588,18 @@ fn filter_prefix<S: BlobStore>(
     })
 }
 
-impl FlexRef<Vec<u8>> {
-    fn arc_vec_as_slice(&self) -> Option<&[u8]> {
+impl<T> FlexRef<T> {
+    fn arc_as_ref(&self) -> Option<&T> {
         self.with_arc(|arc| {
-            let t: &[u8] = arc.as_ref();
+            let t: &T = arc.as_ref();
             unsafe { std::mem::transmute(t) }
         })
+    }
+}
+
+impl FlexRef<Vec<u8>> {
+    fn arc_vec_as_slice(&self) -> Option<&[u8]> {
+        self.arc_as_ref().map(|x| x.as_ref())
     }
 
     fn first_u8_opt(&self) -> Option<u8> {
@@ -767,34 +790,6 @@ const fn make_header_byte(tpe: Type, len: usize) -> u8 {
 const NONE: u8 = make_header_byte(Type::None, 0);
 const INLINE_EMPTY: u8 = make_header_byte(Type::Inline, 0);
 const ARC8: u8 = make_header_byte(Type::Arc, 8);
-
-#[repr(transparent)]
-struct NodeSeqRef<S: BlobStore>(PhantomData<S>, [u8]);
-
-impl<S: BlobStore> NodeSeqRef<S> {
-    fn new(value: &[u8]) -> &Self {
-        unsafe { std::mem::transmute(value) }
-    }
-
-    fn iter(&self) -> NodeSeqIter<'_, S> {
-        NodeSeqIter(&self.1, PhantomData)
-    }
-
-    fn find(&self, first: u8) -> Option<TreeNode<'_, S>> {
-        // todo: optimize
-        for leaf in self.iter() {
-            let first_opt = leaf.prefix().first_opt();
-            if first_opt == Some(first) {
-                // found it
-                return Some(leaf);
-            } else if first_opt > Some(first) {
-                // not going to come anymore
-                return None;
-            }
-        }
-        None
-    }
-}
 
 #[derive(Default)]
 
@@ -1499,12 +1494,16 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         OwnedBlob::owned_new(data, Some(self))
     }
 
+    fn iter(&self) -> NodeSeqIter<'_, S> {
+        NodeSeqIter(&self.0, PhantomData)
+    }
+
     fn cursor(&mut self) -> BuilderRef<'_, S, AtPrefix> {
         BuilderRef(self, PhantomData)
     }
 
     fn new() -> Self {
-        Self(Vec::with_capacity(64), PhantomData)
+        Self(Vec::with_capacity(32), PhantomData)
     }
 
     fn is_empty(&self) -> bool {
@@ -1622,23 +1621,9 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 }
 
-impl<S: BlobStore> AsRef<NodeSeqRef<S>> for NodeSeqBuilder<S> {
-    fn as_ref(&self) -> &NodeSeqRef<S> {
-        NodeSeqRef::new(self.0.as_ref())
-    }
-}
-
-impl<S: BlobStore> Deref for NodeSeqBuilder<S> {
-    type Target = NodeSeqRef<S>;
-
-    fn deref(&self) -> &Self::Target {
-        NodeSeqRef::new(self.0.as_ref())
-    }
-}
-
 impl<S: BlobStore> Clone for NodeSeqBuilder<S> {
     fn clone(&self) -> Self {
-        for elem in self.as_ref().iter() {
+        for elem in self.iter() {
             elem.manual_clone();
         }
         Self(self.0.clone(), PhantomData)
@@ -1647,7 +1632,7 @@ impl<S: BlobStore> Clone for NodeSeqBuilder<S> {
 
 impl<S: BlobStore> Drop for NodeSeqBuilder<S> {
     fn drop(&mut self) {
-        for elem in self.as_ref().iter() {
+        for elem in self.iter() {
             elem.manual_drop();
         }
         self.0.truncate(0);
@@ -2065,8 +2050,8 @@ where
             (Some(_), None) => a.move_value(),
             (None, _) => a.push_converted(b.value, bb)?,
         };
-        let bc = b.children().load(bb)?;
-        outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
+        let bc = b.children().blob(bb)?;
+        outer_combine_children_with(a, ab, NodeSeqIter(bc.as_ref(), PhantomData), bb, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
@@ -2094,8 +2079,8 @@ where
         // take the children
         let _ = cursor.push_children_ref(a.peek());
         let a = a.set_new_arc(Arc::new(child));
-        let bc = b.children().load(bb)?;
-        outer_combine_children_with(a, ab, bc.iter(), bb, f)?;
+        let bc = b.children().blob(bb)?;
+        outer_combine_children_with(a, ab, NodeSeqIter(bc.as_ref(), PhantomData), bb, f)?;
     } else {
         // the two nodes are disjoint
         // value is none
