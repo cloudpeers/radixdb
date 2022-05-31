@@ -1895,6 +1895,14 @@ impl Tree {
     ) -> impl Iterator<Item = Tree> + 'a {
         self.try_group_by(f).map(unwrap_safe)
     }
+
+    pub fn retain_prefix_with(&mut self, that: &Tree, f: impl Fn(&TreeValueRef) -> bool + Copy) {
+        unwrap_safe(self.try_retain_prefix_with(that, |b| Ok(f(b))))
+    }
+
+    pub fn remove_prefix_with(&mut self, that: &Tree, f: impl Fn(&TreeValueRef) -> bool + Copy) {
+        unwrap_safe(self.try_remove_prefix_with(that, |b| Ok(f(b))))
+    }
 }
 
 impl<S: BlobStore> Tree<S> {
@@ -2116,6 +2124,24 @@ impl<S: BlobStore + Clone> Tree<S> {
         // todo: what if iter is empty?
         *node = iter.into_inner();
         Ok(())
+    }
+
+    pub fn try_retain_prefix_with<S2, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), S::Error>
+    where
+        S2: BlobStore + Clone,
+        S::Error: From<S2::Error> + From<NoError>,
+        F: Fn(&TreeValueRef<S>) -> Result<bool, S::Error> + Copy,
+    {
+        todo!()
+    }
+
+    pub fn try_remove_prefix_with<S2, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), S::Error>
+    where
+        S2: BlobStore + Clone,
+        S::Error: From<S2::Error> + From<NoError>,
+        F: Fn(&TreeValueRef<S>) -> Result<bool, S::Error> + Copy,
+    {
+        todo!()
     }
 
     pub fn try_first_value(&self) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
