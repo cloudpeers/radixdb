@@ -3178,10 +3178,10 @@ mod tests {
             r2.left_combine_with(&b, |_, _| {});
             prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
 
-            // let r1 = a.left_combine(&b, |_, b| b);
-            // let mut r2 = a.clone();
-            // r2.left_combine_with(&b, |a, b| *a = b);
-            // prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+            let r1 = a.left_combine(&b, |_, b| b.clone());
+            let mut r2 = a.clone();
+            r2.left_combine_with(&b, |a, b| *a = b.clone());
+            prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
         }
     }
 
