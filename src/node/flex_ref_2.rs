@@ -1,10 +1,43 @@
-use std::{borrow::Borrow, cmp::Ordering, fmt, marker::PhantomData, ops::Deref, sync::Arc};
+use std::{cmp::Ordering, fmt, marker::PhantomData, ops::Deref, sync::Arc};
 
 use crate::{
     store::{unwrap_safe, Blob2 as Blob, BlobStore2 as BlobStore, NoError, NoStore, OwnedBlob},
     Hex,
 };
 use std::fmt::Debug;
+
+trait DataStore: Clone {
+    type Error;
+    fn read_prefix(self, id: &[u8]) -> Result<(Self, OwnedBlob), Self::Error>;
+    fn read(&self, id: &[u8]) -> Result<OwnedBlob, Self::Error>;
+    fn write_prefix(self, data: &[u8]) -> Result<(Self, OwnedBlob), Self::Error>;
+    fn write(&self, id: &[u8]) -> Result<OwnedBlob, Self::Error>;
+    fn sync(&self) -> Result<(), Self::Error>;
+}
+
+impl DataStore for NoStore {
+    type Error = NoError;
+
+    fn read_prefix(self, id: &[u8]) -> Result<(Self, OwnedBlob), Self::Error> {
+        todo!()
+    }
+
+    fn read(&self, id: &[u8]) -> Result<OwnedBlob, Self::Error> {
+        todo!()
+    }
+
+    fn write_prefix(self, data: &[u8]) -> Result<(Self, OwnedBlob), Self::Error> {
+        todo!()
+    }
+
+    fn write(&self, id: &[u8]) -> Result<OwnedBlob, Self::Error> {
+        todo!()
+    }
+
+    fn sync(&self) -> Result<(), Self::Error> {
+        todo!()
+    }
+}
 
 #[repr(C)]
 struct FlexRef<T>(PhantomData<T>, [u8]);
