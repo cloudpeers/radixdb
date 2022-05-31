@@ -3199,8 +3199,12 @@ impl<S: BlobStore, F: Fn(&[u8], &TreeNode<S>) -> bool> GroupBy<S, F> {
     }
 
     fn next0(&mut self) -> Result<Option<NodeSeqBuilder<S>>, S::Error> {
-        while !self.stack.is_empty() {
+        Ok(loop {
+            if self.stack.is_empty() {
+                break None;
+            }
             if let Some(node) = self.stack.last_mut().unwrap().1.next_node() {
+                // apply the prefix in any case!
                 let prefix = node.prefix.load(&self.store)?;
                 let prefix_len = prefix.len();
                 self.path.append(prefix.as_ref());
@@ -3218,7 +3222,7 @@ impl<S: BlobStore, F: Fn(&[u8], &TreeNode<S>) -> bool> GroupBy<S, F> {
                     };
                     self.stack.push((prefix_len, children));
                     if let Some(t) = res {
-                        return Ok(Some(t));
+                        break Some(t);
                     }
                 } else {
                     let mut res = NodeSeqBuilder::new();
@@ -3226,15 +3230,16 @@ impl<S: BlobStore, F: Fn(&[u8], &TreeNode<S>) -> bool> GroupBy<S, F> {
                         .push_prefix(self.path.0.as_ref())
                         .push_value_ref(node.value())
                         .push_children_ref(node.children());
+                    // undo applying the prefix immediately, since we don't descend
                     self.path.pop(prefix_len);
-                    return Ok(Some(res));
+                    break Some(res);
                 }
             } else {
+                // undo applying the prefix
                 self.path.pop(self.top_prefix_len());
                 self.stack.pop();
             }
-        }
-        Ok(None)
+        })
     }
 }
 
