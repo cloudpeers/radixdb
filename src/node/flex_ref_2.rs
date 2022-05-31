@@ -1139,6 +1139,16 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.done()
     }
 
+    pub fn move_prefix_shortened(
+        self,
+        n: usize,
+        store: &S,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
+        // todo: make this more efficient for the extremely common "inline" case
+        let prefix = self.peek().load(store)?.to_owned();
+        Ok(self.push_prefix_ref(&prefix[..n]))
+    }
+
     pub fn push_prefix_ref(
         mut self,
         prefix: impl AsRef<[u8]>,
@@ -1398,20 +1408,16 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     }
 
     /// move one triple from the source to the target, canonicalizing
-    fn canonicalize_one(&mut self) {
+    fn move_non_empty(&mut self) {
         let p = self.cursor();
         let start = p.mark();
-        let pe = p.peek().is_empty();
         let v = p.move_prefix();
         let ve = v.peek().is_none();
         let c = v.move_value();
         let ce = c.peek().is_empty();
         let p1 = c.move_children();
-        if ve && ce && !pe {
-            p1.rewind(start)
-                .push_prefix_ref(&[])
-                .push_value_none()
-                .push_empty();
+        if ve && ce {
+            p1.rewind(start);
         }
     }
 
@@ -1711,11 +1717,13 @@ impl Tree {
     }
 }
 
-impl<S: BlobStore + Clone> Tree<S> {
+impl<S: BlobStore> Tree<S> {
     fn node(&self) -> TreeNode<'_, S> {
         TreeNode::read(&self.node.0).unwrap()
     }
+}
 
+impl<S: BlobStore + Clone> Tree<S> {
     fn dump(&self) -> Result<(), S::Error> {
         self.node().dump(0, &self.store)
     }
@@ -1768,9 +1776,9 @@ impl<S: BlobStore + Clone> Tree<S> {
     {
         let mut nodes = NodeSeqBuilder::new();
         outer_combine(
-            &self.node.iter().next().unwrap(),
+            &self.node(),
             &self.store,
-            &that.node.iter().next().unwrap(),
+            &that.node(),
             &that.store,
             f,
             &mut nodes,
@@ -1789,13 +1797,8 @@ impl<S: BlobStore + Clone> Tree<S> {
     {
         let node = Arc::make_mut(&mut self.node);
         let mut iter = InPlaceNodeSeqBuilder::new(node);
-        outer_combine_with(
-            iter.cursor(),
-            &self.store,
-            &that.node.iter().next().unwrap(),
-            &that.store,
-            f,
-        )?;
+        outer_combine_with(iter.cursor(), &self.store, &that.node(), &that.store, f)?;
+        // todo: what if iter is empty?
         *node = iter.into_inner();
         Ok(())
     }
@@ -2069,9 +2072,7 @@ where
         // store the last part of the prefix
         let cursor = cursor.push_prefix(&ap[n..]);
         // store the first part of the prefix
-        // todo: move_prefix_shortened?
-        let ap = ap.to_owned();
-        let a = a.push_prefix_ref(&ap[..n]);
+        let a = a.move_prefix_shortened(n, ab)?;
         // store value from a in child, if it exists
         let cursor = cursor.push_value_ref(a.peek());
         // store the value from b, if it exists
@@ -2084,18 +2085,17 @@ where
     } else {
         // the two nodes are disjoint
         // value is none
+        let a_le_b = ap[n] <= bp[n];
         let mut child = NodeSeqBuilder::<A>::new();
         let cursor = child.cursor();
         let cursor = cursor.push_prefix(&ap[n..]);
-        // todo: move_prefix_shortened?
-        let ap = ap.to_owned();
-        let a = a.push_prefix_ref(&ap[..n]);
+        let a = a.move_prefix_shortened(n, ab)?;
         let cursor = cursor.push_value_ref(a.peek());
         let a = a.push_value_none();
         let _ = cursor.push_children_ref(a.peek());
         let mut children = NodeSeqBuilder::<A>::new();
         // children is just the shortened children a and b in the right order
-        if ap[n] <= bp[n] {
+        if a_le_b {
             children.push(child.iter().next().unwrap());
             children.push_shortened_converted(b, bb, n)?;
         } else {
@@ -2143,7 +2143,8 @@ where
                         let start = c.a.cursor().mark();
                         outer_combine_with(c.a.cursor(), ab, &b, bb, f)?;
                         c.a.cursor().rewind(start);
-                        c.a.canonicalize_one();
+                        // only move if the child is non-empty
+                        c.a.move_non_empty();
                     }
                     Ordering::Greater => {
                         // the .unwrap() is safe because cmp guarantees that there is a value
@@ -2311,13 +2312,6 @@ pub struct Values<S: BlobStore> {
 }
 
 impl<S: BlobStore> Values<S> {
-    fn empty(store: S) -> Self {
-        Self {
-            stack: Vec::new(),
-            store,
-        }
-    }
-
     fn new(iter: NodeSeqIter2<S>, store: S) -> Self {
         Self {
             stack: vec![iter],
@@ -2631,7 +2625,7 @@ mod tests {
         let b = Tree::single(b"aa", b"d");
         let r = a.outer_combine(&b, |_, b| Some(b.to_owned()));
         println!("{:?}", r);
-        println!("{:?}", r.node.iter().next().unwrap());
+        println!("{:?}", r.node());
 
         let mut t = Tree::empty();
         for i in 0u64..100 {
