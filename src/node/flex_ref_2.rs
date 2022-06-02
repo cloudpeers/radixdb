@@ -2207,23 +2207,23 @@ where
             (None, Some(b)) => Some(b.load(&bb)?),
             (None, None) => None,
         };
-        let ac = a.children().load(&ab)?;
-        let bc = b.children().load(&bb)?;
-        children = outer_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        let ac = a.children().blob(&ab)?;
+        let bc = b.children().blob(&bb)?;
+        children = outer_combine_children(NodeSeqIter::new(&ac), ab, NodeSeqIter::new(&bc), bb, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
         value = a.value().load(&ab)?;
-        let ac = a.children().load(&ab)?;
+        let ac = a.children().blob(&ab)?;
         let bc = NodeSeqBuilder::shortened(b, &bb, n)?;
-        children = outer_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        children = outer_combine_children(NodeSeqIter::new(&ac), ab, bc.iter(), bb, f)?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         value = b.value().load(&bb)?;
         let ac = NodeSeqBuilder::shortened(a, &ab, n)?;
-        let bc = b.children().load(&bb)?;
-        children = outer_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        let bc = b.children().blob(&bb)?;
+        children = outer_combine_children(ac.iter(), ab, NodeSeqIter::new(&bc), bb, f)?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -2526,23 +2526,23 @@ where
         } else {
             None
         };
-        let ac = a.children().load(&ab)?;
-        let bc = b.children().load(&bb)?;
-        children = inner_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        let ac = a.children().blob(&ab)?;
+        let bc = b.children().blob(&bb)?;
+        children = inner_combine_children(NodeSeqIter::new(&ac), ab, NodeSeqIter::new(&bc), bb, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is none
         value = None;
-        let ac = a.children().load(&ab)?;
+        let ac = a.children().blob(&ab)?;
         let bc = NodeSeqBuilder::shortened(b, &bb, n)?;
-        children = inner_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        children = inner_combine_children(NodeSeqIter::new(&ac), ab, bc.iter(), bb, f)?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is none
         value = None;
         let ac = NodeSeqBuilder::shortened(a, &ab, n)?;
-        let bc = b.children().load(&bb)?;
-        children = inner_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        let bc = b.children().blob(&bb)?;
+        children = inner_combine_children(ac.iter(), ab, NodeSeqIter::new(&bc), bb, f)?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -2708,19 +2708,19 @@ where
                 return Ok(true);
             }
         };
-        let ac = a.children.load(&ab)?;
-        let bc = b.children.load(&bb)?;
-        inner_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
+        let ac = a.children.blob(&ab)?;
+        let bc = b.children.blob(&bb)?;
+        inner_combine_children_pred(NodeSeqIter::new(&ac), ab, NodeSeqIter::new(&bc), bb, f)
     } else if n == ap.len() {
         let mut bc = NodeSeqBuilder::<B>::new();
         bc.push_shortened(b, &bb, n)?;
-        let ac = a.children.load(&ab)?;
-        inner_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
+        let ac = a.children.blob(&ab)?;
+        inner_combine_children_pred(NodeSeqIter::new(&ac), ab, bc.iter(), bb, f)
     } else if n == bp.len() {
         let mut ac = NodeSeqBuilder::<A>::new();
         ac.push_shortened(a, &ab, n)?;
-        let bc = b.children.load(&bb)?;
-        inner_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
+        let bc = b.children.blob(&bb)?;
+        inner_combine_children_pred(ac.iter(), ab, NodeSeqIter::new(&bc), bb, f)
     } else {
         Ok(false)
     }
@@ -2777,23 +2777,23 @@ where
             (Some(a), None) => Some(a.load(&ab)?),
             _ => None,
         };
-        let ac = a.children().load(&ab)?;
-        let bc = b.children().load(&bb)?;
-        children = left_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        let ac = a.children().blob(&ab)?;
+        let bc = b.children().blob(&bb)?;
+        children = left_combine_children(NodeSeqIter::new(&ac), ab, NodeSeqIter::new(&bc), bb, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
         value = a.value().load(&ab)?;
-        let ac = a.children().load(&ab)?;
+        let ac = a.children().blob(&ab)?;
         let bc = NodeSeqBuilder::shortened(b, &bb, n)?;
-        children = left_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        children = left_combine_children(NodeSeqIter::new(&ac), ab, bc.iter(), bb, f)?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
         value = None;
         let ac = NodeSeqBuilder::shortened(a, &ab, n)?;
-        let bc = b.children().load(&bb)?;
-        children = left_combine_children(ac.iter(), ab, bc.iter(), bb, f)?;
+        let bc = b.children().blob(&bb)?;
+        children = left_combine_children(ac.iter(), ab, NodeSeqIter::new(&bc), bb, f)?;
     } else {
         // the two nodes are disjoint
         // value is none
@@ -2860,22 +2860,22 @@ where
             (Some(_), None) => return Ok(true),
             _ => {}
         };
-        let ac = a.children.load(&ab)?;
-        let bc = b.children.load(&bb)?;
-        left_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
+        let ac = a.children.blob(&ab)?;
+        let bc = b.children.blob(&bb)?;
+        left_combine_children_pred(NodeSeqIter::new(&ac), ab, NodeSeqIter::new(&bc), bb, f)
     } else if n == ap.len() {
         if a.value.is_some() {
             return Ok(true);
         };
         let mut bc = NodeSeqBuilder::<B>::new();
         bc.push_shortened(b, &bb, n)?;
-        let ac = a.children.load(&ab)?;
-        left_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
+        let ac = a.children.blob(&ab)?;
+        left_combine_children_pred(NodeSeqIter::new(&ac), ab, bc.iter(), bb, f)
     } else if n == bp.len() {
         let mut ac = NodeSeqBuilder::<A>::new();
         ac.push_shortened(a, &ab, n)?;
-        let bc = b.children.load(&bb)?;
-        left_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
+        let bc = b.children.blob(&bb)?;
+        left_combine_children_pred(ac.iter(), ab, NodeSeqIter::new(&bc), bb, f)
     } else {
         Ok(true)
     }
