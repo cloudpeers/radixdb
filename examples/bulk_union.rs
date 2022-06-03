@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, time::Instant};
 
 use log::info;
-use radixdb::RadixTree;
+use radixdb::VSRadixTree;
 
 fn do_test() -> anyhow::Result<()> {
     let n1 = 2000000u64;
@@ -29,12 +29,12 @@ fn do_test() -> anyhow::Result<()> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let tree0: RadixTree = elems0.clone().into_iter().collect();
-    let tree1: RadixTree = elems1.clone().into_iter().collect();
+    let tree0: VSRadixTree = elems0.clone().into_iter().collect();
+    let tree1: VSRadixTree = elems1.clone().into_iter().collect();
     for _ in 0..100 {
         let mut res = tree0.clone();
         let t0 = Instant::now();
-        res.outer_combine_with(&tree1, |a, b| *a = b.clone());
+        res.outer_combine_with(&tree1, |a, b| Some(b.to_owned()));
         info!("bulk union {} {} {} s", n1, n2, t0.elapsed().as_secs_f64());
     }
 

@@ -1,7 +1,5 @@
-mod iterators;
 pub mod node;
 pub mod store;
-pub use node::Tree as RadixTree;
 pub use node::VSTree as VSRadixTree;
 
 #[cfg(test)]

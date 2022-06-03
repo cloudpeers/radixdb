@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
 use log::info;
 use radixdb::{
     store::{DynBlobStore, PagedFileStore},
-    RadixTree,
+    VSRadixTree,
 };
 use tempfile::tempdir;
 
@@ -21,7 +21,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
         .collect::<BTreeMap<_, _>>();
     let t0 = Instant::now();
     info!("building tree");
-    let tree: RadixTree = elems.clone().into_iter().collect();
+    let tree: VSRadixTree = elems.clone().into_iter().collect();
     info!(
         "unattached tree {:?} {} s",
         tree,
@@ -84,7 +84,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
 
     info!("attaching tree...");
     let t0 = Instant::now();
-    let tree = tree.attached(store)?;
+    // let tree = tree.attached(store)?;
     // store.sync()?;
     info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
     info!("traversing attached tree values...");
@@ -106,7 +106,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
     info!("detaching tree...");
     let t0 = Instant::now();
-    let tree = tree.detached()?;
+    // let tree = tree.detached()?;
     info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
     info!("traversing unattached tree...");
     let t0 = Instant::now();

@@ -218,7 +218,7 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::{store::DynBlobStore, RadixTree};
+    use crate::{store::DynBlobStore, VSRadixTree};
 
     use super::*;
     use log::info;
@@ -264,7 +264,7 @@ mod tests {
         });
         let t0 = Instant::now();
         info!("building tree");
-        let tree: RadixTree = elems.collect();
+        let tree: VSRadixTree = elems.collect();
         info!(
             "unattached tree {:?} {} s",
             tree,
@@ -279,7 +279,7 @@ mod tests {
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
         info!("attaching tree...");
         let t0 = Instant::now();
-        let tree = tree.attached(store.clone())?;
+        // let tree = tree.attached(store.clone())?;
         store.sync()?;
         info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
         info!("traversing attached tree values...");
@@ -301,7 +301,7 @@ mod tests {
         info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
         info!("detaching tree...");
         let t0 = Instant::now();
-        let tree = tree.detached()?;
+        // let tree = tree.detached()?;
         info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
         info!("traversing unattached tree...");
         let t0 = Instant::now();
