@@ -90,7 +90,7 @@ trait Extendable {
     }
 
     fn push_arc<T>(&mut self, arc: Arc<T>) {
-        let data: usize = unsafe { std::mem::transmute(arc) };
+        let data: usize = Arc::into_raw(arc) as usize;
         let data: u64 = data as u64;
         self.reserve(9);
         self.push(PTR8);

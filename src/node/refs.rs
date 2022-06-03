@@ -66,6 +66,7 @@ impl<T> FlexRef<T> {
     pub fn arc_as_ref(&self) -> Option<&T> {
         self.with_arc(|arc| {
             let t: &T = arc.as_ref();
+            // extend the lifetime
             unsafe { std::mem::transmute(t) }
         })
     }
@@ -123,6 +124,7 @@ impl<T> FlexRef<T> {
     }
 
     pub fn new(value: &[u8]) -> &Self {
+        // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
     }
 
@@ -181,7 +183,8 @@ impl<T> FlexRef<T> {
         if self.tpe() == Type::Ptr {
             let value = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
             let value = usize::try_from(value).unwrap();
-            let arc: Arc<T> = unsafe { std::mem::transmute(value) };
+            // let arc: Arc<T> = unsafe { std::mem::transmute(value) };
+            let arc: Arc<T> = unsafe { Arc::from_raw(value as *const T) };
             let res = Some(f(&arc));
             std::mem::forget(arc);
             res
@@ -557,6 +560,7 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
 
     fn from_arc_vec(value: Arc<NodeSeqBuilder<S>>) -> Self {
         let data: &[u8] = value.as_ref().0.as_ref();
+        // extend the lifetime
         let data: &'static [u8] = unsafe { std::mem::transmute(data) };
         Self(Blob::owned_new(data, Some(value)), PhantomData)
     }

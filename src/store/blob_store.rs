@@ -79,6 +79,7 @@ impl<'a> Blob2<'a> {
 
     pub fn from_arc_vec(arc: Arc<Vec<u8>>) -> OwnedBlob {
         let data: &[u8] = arc.as_ref();
+        // extend the lifetime
         let data: &'static [u8] = unsafe { std::mem::transmute(data) };
         OwnedBlob::owned_new(data, Some(arc))
     }
@@ -175,6 +176,7 @@ impl<'a> Blob2<'a> {
 impl From<Arc<Vec<u8>>> for OwnedBlob {
     fn from(v: Arc<Vec<u8>>) -> Self {
         let bytes: &[u8] = v.as_ref();
+        // extend the lifetime
         // the vec will be unchanged and will be kept alive by the arc
         let bytes: &'static [u8] = unsafe { std::mem::transmute(bytes) };
         Self::owned_new(bytes, Some(v))
