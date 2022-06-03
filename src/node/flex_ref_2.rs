@@ -52,7 +52,7 @@ impl<T> Debug for FlexRef<T> {
                 "FlexRef::Inline({})",
                 Hex::new(self.inline_as_ref().unwrap())
             ),
-            Type::Ptr => write!(f, "FlexRef::Arc"),
+            Type::Ptr => write!(f, "FlexRef::Ptr"),
         }
     }
 }
@@ -346,8 +346,8 @@ impl<S: BlobStore> TreeChildrenRef<S> {
 struct NodeSeq<'a, S: BlobStore>(Blob<'a>, PhantomData<S>);
 
 impl<S: BlobStore> NodeSeq<'static, S> {
-    fn owned_iter(&self) -> NodeSeqIter2<S> {
-        NodeSeqIter2(self.0.clone(), 0, PhantomData)
+    fn owned_iter(&self) -> OwnedNodeSeqIter<S> {
+        OwnedNodeSeqIter(self.0.clone(), 0, PhantomData)
     }
 }
 
@@ -386,11 +386,25 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
     }
 }
 
-struct NodeSeqIter2<S: BlobStore>(OwnedBlob, usize, PhantomData<S>);
+struct OwnedNodeSeqIter<S: BlobStore>(OwnedBlob, usize, PhantomData<S>);
 
-impl<S: BlobStore> NodeSeqIter2<S> {
+impl<S: BlobStore> OwnedNodeSeqIter<S> {
     fn new(data: OwnedBlob) -> Self {
         Self(data, 0, PhantomData)
+    }
+
+    fn next_node(&mut self) -> Option<TreeNode<'_, S>> {
+        if let Some(res) = TreeNode::read(&self.0[self.1..]) {
+            // let start = self.0.as_ptr() as usize;
+            // let end = rest.as_ptr() as usize;
+            // self.1 = end - start;
+            self.1 += res.prefix().bytes().len()
+                + res.value().bytes().len()
+                + res.children().bytes().len();
+            Some(res)
+        } else {
+            None
+        }
     }
 
     fn next_value_and_node(&mut self) -> Option<(Option<OwnedBlob>, TreeNode<'_, S>)> {
@@ -403,20 +417,6 @@ impl<S: BlobStore> NodeSeqIter2<S> {
                 + res.children().bytes().len();
             let v = res.value().value_opt().map(|x| self.slice_ref(x.bytes()));
             Some((v, res))
-        } else {
-            None
-        }
-    }
-
-    fn next_node(&mut self) -> Option<TreeNode<'_, S>> {
-        if let Some(res) = TreeNode::read(&self.0[self.1..]) {
-            // let start = self.0.as_ptr() as usize;
-            // let end = rest.as_ptr() as usize;
-            // self.1 = end - start;
-            self.1 += res.prefix().bytes().len()
-                + res.value().bytes().len()
-                + res.children().bytes().len();
-            Some(res)
         } else {
             None
         }
@@ -1475,6 +1475,16 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
         }
     }
 
+    fn make_non_empty(&mut self) {
+        assert!(self.inner.s0 == self.inner.vec.len());
+        if self.inner.t1 == 0 {
+            self.cursor()
+                .push_prefix_empty()
+                .push_value_none()
+                .push_children_empty();
+        }
+    }
+
     /// consumes an InPlaceNodeSeqBuilder by storing the result in a NodeSeqBuilder
     fn into_inner(mut self) -> NodeSeqBuilder<S> {
         let t = self.inner.take_result();
@@ -1614,6 +1624,15 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
 
     fn new() -> Self {
         Self(Vec::with_capacity(32), PhantomData)
+    }
+
+    fn make_non_empty(&mut self) {
+        if self.0.is_empty() {
+            self.cursor()
+                .push_prefix_empty()
+                .push_value_none()
+                .push_children_empty();
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -1761,17 +1780,11 @@ pub struct Tree<S: BlobStore = NoStore> {
 
 impl Tree {
     fn empty() -> Self {
-        Self {
-            node: Arc::new(NodeSeqBuilder::new()),
-            store: NoStore,
-        }
+        Self::new(NodeSeqBuilder::new(), NoStore)
     }
 
     fn single(key: &[u8], value: &[u8]) -> Self {
-        Self {
-            node: Arc::new(NodeSeqBuilder::single(key, value)),
-            store: NoStore,
-        }
+        Self::new(NodeSeqBuilder::single(key, value), NoStore)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (OwnedBlob, TreeValueRefWrapper)> {
@@ -1899,7 +1912,15 @@ impl Tree {
 
 impl<S: BlobStore> Tree<S> {
     fn node(&self) -> TreeNode<'_, S> {
-        TreeNode::read(&self.node.0).unwrap_or_else(|| TreeNode::empty())
+        TreeNode::read(&self.node.0).unwrap()
+    }
+
+    fn new(mut node: NodeSeqBuilder<S>, store: S) -> Self {
+        node.make_non_empty();
+        Self {
+            node: Arc::new(node),
+            store,
+        }
     }
 }
 
@@ -1909,25 +1930,28 @@ impl<S: BlobStore + Clone> Tree<S> {
     }
 
     pub fn try_iter(&self) -> Iter<S> {
-        let iter = NodeSeqIter2::new(self.node.clone().as_owned_blob());
-        Iter::new(iter, self.store.clone(), IterKey::default())
+        Iter::new(self.owned_iter(), self.store.clone(), IterKey::default())
     }
 
     pub fn try_values(&self) -> Values<S> {
-        let iter = NodeSeqIter2::new(self.node.clone().as_owned_blob());
-        Values::new(iter, self.store.clone())
+        Values::new(self.owned_iter(), self.store.clone())
     }
 
     pub fn try_scan_prefix(&self, prefix: &[u8]) -> Result<Iter<S>, S::Error> {
-        scan_prefix(self.store.clone(), &self.blob(), &self.node(), prefix)
+        scan_prefix(self.store.clone(), &self.owned_blob(), &self.node(), prefix)
     }
 
     pub fn try_group_by<'a, F: Fn(&[u8], &TreeNode<S>) -> bool + 'a>(
         &'a self,
         descend: F,
     ) -> impl Iterator<Item = Result<Tree<S>, S::Error>> + 'a {
-        let iter = NodeSeqIter2::new(self.node.clone().as_owned_blob());
-        GroupBy::new(iter, self.store.clone(), IterKey::default(), descend).map(|r| {
+        GroupBy::new(
+            self.owned_iter(),
+            self.store.clone(),
+            IterKey::default(),
+            descend,
+        )
+        .map(|r| {
             r.map(|r| Tree {
                 node: Arc::new(r),
                 store: self.store.clone(),
@@ -1935,34 +1959,50 @@ impl<S: BlobStore + Clone> Tree<S> {
         })
     }
 
-    fn blob(&self) -> OwnedBlob {
+    fn owned_blob(&self) -> OwnedBlob {
         self.node.clone().as_owned_blob()
+    }
+
+    fn owned_iter(&self) -> OwnedNodeSeqIter<S> {
+        OwnedNodeSeqIter::new(self.owned_blob())
     }
 
     /// Get the value for a given key
     fn try_get(&self, key: &[u8]) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        find(&self.store, &self.blob(), &self.node(), key, |o, r| {
-            Ok(if let FindResult::Found(tree) = r {
-                tree.value()
-                    .value_opt()
-                    .map(|x| TreeValueRefWrapper(o.slice_ref(x.bytes()), PhantomData))
-            } else {
-                None
-            })
-        })
+        find(
+            &self.store,
+            &self.owned_blob(),
+            &self.node(),
+            key,
+            |o, r| {
+                Ok(if let FindResult::Found(tree) = r {
+                    tree.value()
+                        .value_opt()
+                        .map(|x| TreeValueRefWrapper(o.slice_ref(x.bytes()), PhantomData))
+                } else {
+                    None
+                })
+            },
+        )
     }
 
     /// True if key is contained in this set
     fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        find(&self.store, &self.blob(), &self.node(), key, |_, r| {
-            Ok(if let FindResult::Found(tree) = r {
-                tree.value().is_some()
-            } else {
-                false
-            })
-        })
+        find(
+            &self.store,
+            &self.owned_blob(),
+            &self.node(),
+            key,
+            |_, r| {
+                Ok(if let FindResult::Found(tree) = r {
+                    tree.value().is_some()
+                } else {
+                    false
+                })
+            },
+        )
     }
 
     pub fn try_outer_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
@@ -1980,10 +2020,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             f,
             &mut nodes,
         )?;
-        Ok(Tree {
-            node: Arc::new(nodes),
-            store: NoStore,
-        })
+        Ok(Tree::new(nodes, NoStore))
     }
 
     pub fn try_outer_combine_with<S2, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), S::Error>
@@ -2001,7 +2038,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             that.store.clone(),
             f,
         )?;
-        // todo: what if iter is empty?
+        iter.make_non_empty();
         *node = iter.into_inner();
         Ok(())
     }
@@ -2021,10 +2058,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             f,
             &mut nodes,
         )?;
-        Ok(Tree {
-            node: Arc::new(nodes),
-            store: NoStore,
-        })
+        Ok(Tree::new(nodes, NoStore))
     }
 
     pub fn try_inner_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
@@ -2057,7 +2091,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             that.store.clone(),
             f,
         )?;
-        // todo: what if iter is empty?
+        iter.make_non_empty();
         *node = iter.into_inner();
         Ok(())
     }
@@ -2077,10 +2111,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             f,
             &mut nodes,
         )?;
-        Ok(Tree {
-            node: Arc::new(nodes),
-            store: NoStore,
-        })
+        Ok(Tree::new(nodes, NoStore))
     }
 
     pub fn try_left_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
@@ -2113,7 +2144,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             that.store.clone(),
             f,
         )?;
-        // todo: what if iter is empty?
+        iter.make_non_empty();
         *node = iter.into_inner();
         Ok(())
     }
@@ -2133,7 +2164,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             that.store.clone(),
             f,
         )?;
-        // todo: what if iter is empty?
+        iter.make_non_empty();
         *node = iter.into_inner();
         Ok(())
     }
@@ -2153,7 +2184,7 @@ impl<S: BlobStore + Clone> Tree<S> {
             that.store.clone(),
             f,
         )?;
-        // todo: what if iter is empty?
+        iter.make_non_empty();
         *node = iter.into_inner();
         Ok(())
     }
@@ -2181,7 +2212,7 @@ impl<S: BlobStore + Clone> Tree<S> {
     }
 
     pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
-        filter_prefix(&self.node(), &self.blob(), &self.store, prefix).map(|node| Tree {
+        filter_prefix(&self.node(), &self.owned_blob(), &self.store, prefix).map(|node| Tree {
             node: Arc::new(node),
             store: self.store.clone(),
         })
@@ -3326,7 +3357,7 @@ fn scan_prefix<S: BlobStore + Clone>(
                     .push_value_raw(tree.value())
                     .push_children_raw(tree.children());
                 Iter::new(
-                    NodeSeqIter2::new(Arc::new(t).as_owned_blob()),
+                    OwnedNodeSeqIter::new(Arc::new(t).as_owned_blob()),
                     store1,
                     IterKey::new(prefix),
                 )
@@ -3338,7 +3369,7 @@ fn scan_prefix<S: BlobStore + Clone>(
                     .push_value_raw(tree.value())
                     .push_children_raw(tree.children());
                 Iter::new(
-                    NodeSeqIter2::new(Arc::new(t).as_owned_blob()),
+                    OwnedNodeSeqIter::new(Arc::new(t).as_owned_blob()),
                     store1,
                     IterKey::new(&prefix[..prefix.len() - matching]),
                 )
@@ -3376,7 +3407,7 @@ impl IterKey {
 
 pub struct Iter<S: BlobStore> {
     path: IterKey,
-    stack: Vec<(usize, Option<OwnedBlob>, NodeSeqIter2<S>)>,
+    stack: Vec<(usize, Option<OwnedBlob>, OwnedNodeSeqIter<S>)>,
     store: S,
 }
 
@@ -3389,7 +3420,7 @@ impl<S: BlobStore> Iter<S> {
         }
     }
 
-    fn new(iter: NodeSeqIter2<S>, store: S, prefix: IterKey) -> Self {
+    fn new(iter: OwnedNodeSeqIter<S>, store: S, prefix: IterKey) -> Self {
         Self {
             stack: vec![(0, None, iter)],
             path: prefix,
@@ -3445,13 +3476,13 @@ impl<S: BlobStore> Iterator for Iter<S> {
 
 struct GroupBy<S: BlobStore, F> {
     path: IterKey,
-    stack: Vec<(usize, NodeSeqIter2<S>)>,
+    stack: Vec<(usize, OwnedNodeSeqIter<S>)>,
     store: S,
     descend: F,
 }
 
 impl<S: BlobStore, F: Fn(&[u8], &TreeNode<S>) -> bool> GroupBy<S, F> {
-    fn new(iter: NodeSeqIter2<S>, store: S, prefix: IterKey, descend: F) -> Self {
+    fn new(iter: OwnedNodeSeqIter<S>, store: S, prefix: IterKey, descend: F) -> Self {
         Self {
             stack: vec![(0, iter)],
             path: prefix,
@@ -3526,12 +3557,12 @@ impl<S: BlobStore, F: Fn(&[u8], &TreeNode<S>) -> bool> Iterator for GroupBy<S, F
 }
 
 pub struct Values<S: BlobStore> {
-    stack: Vec<NodeSeqIter2<S>>,
+    stack: Vec<OwnedNodeSeqIter<S>>,
     store: S,
 }
 
 impl<S: BlobStore> Values<S> {
-    fn new(iter: NodeSeqIter2<S>, store: S) -> Self {
+    fn new(iter: OwnedNodeSeqIter<S>, store: S) -> Self {
         Self {
             stack: vec![iter],
             store,
