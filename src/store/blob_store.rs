@@ -10,7 +10,7 @@ use std::{
     borrow::Borrow,
     collections::BTreeMap,
     fmt::Debug,
-    ops::{Bound, Deref, Index, Range, RangeBounds},
+    ops::{Bound, Deref, RangeBounds},
     sync::Arc,
 };
 
@@ -73,6 +73,16 @@ impl<'a> Blob2<'a> {
         Self { data, owner: None }
     }
 
+    pub fn copy_from_slice(data: &[u8]) -> OwnedBlob {
+        OwnedBlob::from_arc_vec(Arc::new(data.to_vec()))
+    }
+
+    pub fn from_arc_vec(arc: Arc<Vec<u8>>) -> OwnedBlob {
+        let data: &[u8] = arc.as_ref();
+        let data: &'static [u8] = unsafe { std::mem::transmute(data) };
+        OwnedBlob::owned_new(data, Some(arc))
+    }
+
     pub fn to_owned(self) -> OwnedBlob {
         if self.owner.is_some() {
             OwnedBlob {
@@ -80,14 +90,8 @@ impl<'a> Blob2<'a> {
                 owner: self.owner,
             }
         } else {
-            self.data.into()
+            OwnedBlob::copy_from_slice(&self.data)
         }
-    }
-
-    pub fn from_arc_vec(arc: Arc<Vec<u8>>) -> OwnedBlob {
-        let data: &[u8] = arc.as_ref();
-        let data: &'static [u8] = unsafe { std::mem::transmute(data) };
-        OwnedBlob::owned_new(data, Some(arc))
     }
 
     /// When calling this with an owner, you promise that keeping the owner alive will keep the slice valid!
@@ -165,18 +169,6 @@ impl<'a> Blob2<'a> {
         let sub_offset = sub_p - bytes_p;
 
         self.slice(sub_offset..(sub_offset + sub_len))
-    }
-}
-
-impl From<&[u8]> for OwnedBlob {
-    fn from(v: &[u8]) -> Self {
-        Self::from(v.to_vec())
-    }
-}
-
-impl From<Vec<u8>> for OwnedBlob {
-    fn from(v: Vec<u8>) -> Self {
-        Self::from(Arc::new(v))
     }
 }
 

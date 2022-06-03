@@ -1980,6 +1980,12 @@ fn retain_prefix_with<T: TT>(
             let bc = b.children.load(bb)?;
             InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, c, &RetainPrefixOp { f })?;
         }
+    } else if n == ap.len() {
+        // self is a prefix of that
+        a.value = TreeValue::none();
+        let ac = a.children.get_mut(ab)?;
+        let bc = [b.clone_shortened(bb, n)?];
+        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, c, &RetainPrefixOp { f })?;
     } else if n == bp.len() {
         // that is a prefix of self
         if b.value.is_none() {
@@ -1991,12 +1997,6 @@ fn retain_prefix_with<T: TT>(
             a.value = TreeValue::none();
             a.children = TreeChildren::empty();
         }
-    } else if n == ap.len() {
-        // self is a prefix of that
-        a.value = TreeValue::none();
-        let ac = a.children.get_mut(ab)?;
-        let bc = [b.clone_shortened(bb, n)?];
-        InPlaceVecMergeStateRef::<T>::merge(ac, ab, &bc, bb, c, &RetainPrefixOp { f })?;
     } else {
         // disjoint, nuke it
         a.value = TreeValue::none();
@@ -3231,6 +3231,17 @@ mod tests {
     }
 
     #[test]
+    fn retain_prefix_with4() {
+        let a = btreemap! { vec![1, 2] => vec![] };
+        let b = btreemap! { vec![1] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.retain_prefix_with(&bt, |_| true);
+        let r = to_btree_map(&at);
+        assert_eq!(r, btreemap! { vec![1, 2] => vec![] });
+    }
+
+    #[test]
     fn remove_prefix_with1() {
         let a = btreemap! { vec![1] => vec![] };
         let b = btreemap! { vec![2] => vec![], vec![3] => vec![] };
@@ -3261,6 +3272,28 @@ mod tests {
         at.remove_prefix_with(&bt, |_| true);
         let r = to_btree_map(&at);
         assert_eq!(r, btreemap! { vec![1] => vec![] });
+    }
+
+    #[test]
+    fn remove_prefix_with4() {
+        let a = btreemap! { vec![1, 2] => vec![] };
+        let b = btreemap! { vec![1] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.remove_prefix_with(&bt, |_| true);
+        let r = to_btree_map(&at);
+        assert_eq!(r, btreemap! {});
+    }
+
+    #[test]
+    fn remove_prefix_with5() {
+        let a = btreemap! { vec![1, 2] => vec![] };
+        let b = btreemap! { vec![1, 2] => vec![], vec![1, 3] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.remove_prefix_with(&bt, |_| true);
+        let r = to_btree_map(&at);
+        assert_eq!(r, btreemap! {});
     }
 
     #[test]
