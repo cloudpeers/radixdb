@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use crate::store::{BlobStore2 as BlobStore, OwnedBlob};
 
-use super::flex_ref::{self, TreeNode, TreePrefixRef};
+use super::refs::{self, TreeNode, TreePrefixRef};
 
 pub(crate) struct OwnedNodeSeqIter<S: BlobStore>(OwnedBlob, usize, PhantomData<S>);
 
@@ -125,7 +125,7 @@ impl<'a> Iterator for FlexRefIter<'a> {
         if self.0.is_empty() {
             None
         } else {
-            let len = 1 + flex_ref::len(self.0[0]);
+            let len = 1 + refs::len(self.0[0]);
             if self.0.len() >= len {
                 let res = Some(&self.0[..len]);
                 self.0 = &self.0[len..];

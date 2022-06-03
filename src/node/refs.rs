@@ -62,6 +62,189 @@ impl<T> Debug for FlexRef<T> {
     }
 }
 
+impl<T> FlexRef<T> {
+    pub fn arc_as_ref(&self) -> Option<&T> {
+        self.with_arc(|arc| {
+            let t: &T = arc.as_ref();
+            unsafe { std::mem::transmute(t) }
+        })
+    }
+}
+
+impl FlexRef<Vec<u8>> {
+    pub fn arc_vec_as_slice(&self) -> Option<&[u8]> {
+        self.arc_as_ref().map(|x| x.as_ref())
+    }
+
+    pub fn first_u8_opt(&self) -> Option<u8> {
+        match self.tpe() {
+            Type::None => None,
+            Type::Inline => self.1.get(1).cloned(),
+            Type::Ptr => self.with_arc(|x| x.as_ref().get(0).cloned()).unwrap(),
+            Type::Id => todo!("pack first byte into id"),
+        }
+    }
+
+    pub fn first_u8(&self) -> u8 {
+        match self.tpe() {
+            Type::Inline => self.1[1],
+            Type::Ptr => self.with_arc(|x| x[0]).unwrap(),
+            Type::None => panic!(),
+            Type::Id => todo!("pack first byte into id"),
+        }
+    }
+}
+
+impl<T> FlexRef<T> {
+    const fn header(&self) -> u8 {
+        self.1[0]
+    }
+
+    fn data(&self) -> &[u8] {
+        let len = len(self.header());
+        &self.1[1..len + 1]
+    }
+
+    fn bytes(&self) -> &[u8] {
+        let len = len(self.header());
+        &self.1[0..len + 1]
+    }
+
+    fn manual_drop(&self) {
+        self.with_arc(|arc| unsafe {
+            Arc::decrement_strong_count(Arc::as_ptr(arc));
+        });
+    }
+
+    fn manual_clone(&self) {
+        self.with_arc(|arc| unsafe {
+            Arc::increment_strong_count(Arc::as_ptr(arc));
+        });
+    }
+
+    pub fn new(value: &[u8]) -> &Self {
+        unsafe { std::mem::transmute(value) }
+    }
+
+    fn none() -> &'static Self {
+        Self::read(&[NONE]).unwrap()
+    }
+
+    fn empty() -> &'static Self {
+        Self::read(&[INLINE_EMPTY]).unwrap()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.header() == INLINE_EMPTY
+    }
+
+    fn read_one(value: &[u8]) -> Option<(&Self, &[u8])> {
+        if value.len() == 0 {
+            return None;
+        }
+        let len = len(value[0]);
+        if len + 1 > value.len() {
+            return None;
+        }
+        Some((Self::new(value), &value[len + 1..]))
+    }
+
+    fn read(value: &[u8]) -> Option<&Self> {
+        Some(Self::read_one(value)?.0)
+    }
+
+    const fn tpe(&self) -> Type {
+        tpe(self.header())
+    }
+
+    fn inline_as_ref(&self) -> Option<&[u8]> {
+        if let Type::Inline = self.tpe() {
+            Some(self.data())
+        } else {
+            None
+        }
+    }
+
+    pub fn arc_as_clone(&self) -> Option<Arc<T>> {
+        self.with_arc(|x| x.clone())
+    }
+
+    pub fn id_as_slice(&self) -> Option<&[u8]> {
+        self.with_id(|_| todo!())
+    }
+
+    fn ref_count(&self) -> usize {
+        self.with_arc(|x| Arc::strong_count(x)).unwrap_or_default()
+    }
+
+    fn with_arc<U>(&self, f: impl Fn(&Arc<T>) -> U) -> Option<U> {
+        if self.tpe() == Type::Ptr {
+            let value = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
+            let value = usize::try_from(value).unwrap();
+            let arc: Arc<T> = unsafe { std::mem::transmute(value) };
+            let res = Some(f(&arc));
+            std::mem::forget(arc);
+            res
+        } else {
+            None
+        }
+    }
+
+    fn with_inline<U>(&self, f: impl Fn(&[u8]) -> U) -> Option<U> {
+        if self.tpe() == Type::Inline {
+            Some(f(self.data()))
+        } else {
+            None
+        }
+    }
+
+    fn with_id<U>(&self, f: impl Fn(u64) -> U) -> Option<U> {
+        if self.tpe() == Type::Id {
+            let id = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
+            Some(f(id))
+        } else {
+            None
+        }
+    }
+
+    fn is_none(&self) -> bool {
+        self.tpe() == Type::None
+    }
+
+    fn is_some(&self) -> bool {
+        !self.is_none()
+    }
+}
+
+pub(crate) const fn len(value: u8) -> usize {
+    (value & 0x3f) as usize
+}
+
+const fn tpe(value: u8) -> Type {
+    match value >> 6 {
+        0 => Type::None,
+        1 => Type::Inline,
+        2 => Type::Ptr,
+        3 => Type::Id,
+        _ => panic!(),
+    }
+}
+
+pub(crate) const fn make_header_byte(tpe: Type, len: usize) -> u8 {
+    assert!(len < 64);
+    (len as u8)
+        | match tpe {
+            Type::None => 0,
+            Type::Inline => 1,
+            Type::Ptr => 2,
+            Type::Id => 3,
+        } << 6
+}
+
+pub(crate) const NONE: u8 = make_header_byte(Type::None, 0);
+pub(crate) const INLINE_EMPTY: u8 = make_header_byte(Type::Inline, 0);
+pub(crate) const PTR8: u8 = make_header_byte(Type::Ptr, 8);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Type {
     None,
@@ -537,198 +720,3 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         todo!();
     }
 }
-
-impl<T> FlexRef<T> {
-    pub fn arc_as_ref(&self) -> Option<&T> {
-        self.with_arc(|arc| {
-            let t: &T = arc.as_ref();
-            unsafe { std::mem::transmute(t) }
-        })
-    }
-}
-
-impl FlexRef<Vec<u8>> {
-    pub fn arc_vec_as_slice(&self) -> Option<&[u8]> {
-        self.arc_as_ref().map(|x| x.as_ref())
-    }
-
-    pub fn first_u8_opt(&self) -> Option<u8> {
-        match self.tpe() {
-            Type::None => None,
-            Type::Inline => self.1.get(1).cloned(),
-            Type::Ptr => self.with_arc(|x| x.as_ref().get(0).cloned()).unwrap(),
-            Type::Id => todo!("pack first byte into id"),
-        }
-    }
-
-    pub fn first_u8(&self) -> u8 {
-        match self.tpe() {
-            Type::Inline => self.1[1],
-            Type::Ptr => self.with_arc(|x| x[0]).unwrap(),
-            Type::None => panic!(),
-            Type::Id => todo!("pack first byte into id"),
-        }
-    }
-}
-
-pub(crate) trait VecTakeExt<T> {
-    fn take(&mut self) -> Vec<T>;
-}
-
-impl<T> VecTakeExt<T> for Vec<T> {
-    fn take(&mut self) -> Vec<T> {
-        let mut t = Vec::new();
-        std::mem::swap(&mut t, self);
-        t
-    }
-}
-
-impl<T> FlexRef<T> {
-    const fn header(&self) -> u8 {
-        self.1[0]
-    }
-
-    fn data(&self) -> &[u8] {
-        let len = len(self.header());
-        &self.1[1..len + 1]
-    }
-
-    fn bytes(&self) -> &[u8] {
-        let len = len(self.header());
-        &self.1[0..len + 1]
-    }
-
-    fn manual_drop(&self) {
-        self.with_arc(|arc| unsafe {
-            Arc::decrement_strong_count(Arc::as_ptr(arc));
-        });
-    }
-
-    fn manual_clone(&self) {
-        self.with_arc(|arc| unsafe {
-            Arc::increment_strong_count(Arc::as_ptr(arc));
-        });
-    }
-
-    pub fn new(value: &[u8]) -> &Self {
-        unsafe { std::mem::transmute(value) }
-    }
-
-    fn none() -> &'static Self {
-        Self::read(&[NONE]).unwrap()
-    }
-
-    fn empty() -> &'static Self {
-        Self::read(&[INLINE_EMPTY]).unwrap()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.header() == INLINE_EMPTY
-    }
-
-    fn read_one(value: &[u8]) -> Option<(&Self, &[u8])> {
-        if value.len() == 0 {
-            return None;
-        }
-        let len = len(value[0]);
-        if len + 1 > value.len() {
-            return None;
-        }
-        Some((Self::new(value), &value[len + 1..]))
-    }
-
-    fn read(value: &[u8]) -> Option<&Self> {
-        Some(Self::read_one(value)?.0)
-    }
-
-    const fn tpe(&self) -> Type {
-        tpe(self.header())
-    }
-
-    fn inline_as_ref(&self) -> Option<&[u8]> {
-        if let Type::Inline = self.tpe() {
-            Some(self.data())
-        } else {
-            None
-        }
-    }
-
-    pub fn arc_as_clone(&self) -> Option<Arc<T>> {
-        self.with_arc(|x| x.clone())
-    }
-
-    pub fn id_as_slice(&self) -> Option<&[u8]> {
-        self.with_id(|_| todo!())
-    }
-
-    fn ref_count(&self) -> usize {
-        self.with_arc(|x| Arc::strong_count(x)).unwrap_or_default()
-    }
-
-    fn with_arc<U>(&self, f: impl Fn(&Arc<T>) -> U) -> Option<U> {
-        if self.tpe() == Type::Ptr {
-            let value = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
-            let value = usize::try_from(value).unwrap();
-            let arc: Arc<T> = unsafe { std::mem::transmute(value) };
-            let res = Some(f(&arc));
-            std::mem::forget(arc);
-            res
-        } else {
-            None
-        }
-    }
-
-    fn with_inline<U>(&self, f: impl Fn(&[u8]) -> U) -> Option<U> {
-        if self.tpe() == Type::Inline {
-            Some(f(self.data()))
-        } else {
-            None
-        }
-    }
-
-    fn with_id<U>(&self, f: impl Fn(u64) -> U) -> Option<U> {
-        if self.tpe() == Type::Id {
-            let id = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
-            Some(f(id))
-        } else {
-            None
-        }
-    }
-
-    fn is_none(&self) -> bool {
-        self.tpe() == Type::None
-    }
-
-    fn is_some(&self) -> bool {
-        !self.is_none()
-    }
-}
-
-pub(crate) const fn len(value: u8) -> usize {
-    (value & 0x3f) as usize
-}
-
-const fn tpe(value: u8) -> Type {
-    match value >> 6 {
-        0 => Type::None,
-        1 => Type::Inline,
-        2 => Type::Ptr,
-        3 => Type::Id,
-        _ => panic!(),
-    }
-}
-
-pub(crate) const fn make_header_byte(tpe: Type, len: usize) -> u8 {
-    assert!(len < 64);
-    (len as u8)
-        | match tpe {
-            Type::None => 0,
-            Type::Inline => 1,
-            Type::Ptr => 2,
-            Type::Id => 3,
-        } << 6
-}
-
-pub(crate) const NONE: u8 = make_header_byte(Type::None, 0);
-pub(crate) const INLINE_EMPTY: u8 = make_header_byte(Type::Inline, 0);
-pub(crate) const PTR8: u8 = make_header_byte(Type::Ptr, 8);

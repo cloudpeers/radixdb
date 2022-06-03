@@ -7,11 +7,11 @@ use crate::{
 };
 
 use super::{
-    flex_ref::{
-        make_header_byte, FlexRef, TreeChildrenRef, TreeNode, TreePrefixRef, TreeValueOptRef, Type,
-        VecTakeExt, NONE, PTR8,
-    },
     iterators::FlexRefIter,
+    refs::{
+        make_header_byte, FlexRef, TreeChildrenRef, TreeNode, TreePrefixRef, TreeValueOptRef, Type,
+        NONE, PTR8,
+    },
 };
 
 #[derive(Debug)]
@@ -35,6 +35,18 @@ macro_rules! unwrap_or_break {
             }
         }
     };
+}
+
+pub(crate) trait VecTakeExt<T> {
+    fn take(&mut self) -> Vec<T>;
+}
+
+impl<T> VecTakeExt<T> for Vec<T> {
+    fn take(&mut self) -> Vec<T> {
+        let mut t = Vec::new();
+        std::mem::swap(&mut t, self);
+        t
+    }
 }
 
 #[derive(Default)]

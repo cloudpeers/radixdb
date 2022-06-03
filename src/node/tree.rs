@@ -6,8 +6,8 @@ use crate::store::{
 
 use super::{
     builders::{AtChildren, AtPrefix, InPlaceBuilderRef, InPlaceNodeSeqBuilder, NodeSeqBuilder},
-    flex_ref::{TreeNode, TreeValueRef, TreeValueRefWrapper},
     iterators::{NodeSeqIter, OwnedNodeSeqIter},
+    refs::{TreeNode, TreeValueRef, TreeValueRefWrapper},
 };
 
 #[derive(Debug, Clone)]
