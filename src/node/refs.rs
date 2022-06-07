@@ -7,7 +7,7 @@ use crate::{
 use std::fmt::Debug;
 
 use super::{
-    builders::NodeSeqBuilder,
+    builders::{Extendable, NodeSeqBuilder},
     iterators::{NodeSeqIter, OwnedNodeSeqIter},
 };
 
@@ -172,7 +172,11 @@ impl<T> FlexRef<T> {
     }
 
     pub fn id_as_slice(&self) -> Option<&[u8]> {
-        self.with_id(|_| todo!())
+        if let Type::Id = self.tpe() {
+            Some(self.data())
+        } else {
+            None
+        }
     }
 
     fn ref_count(&self) -> usize {
@@ -201,10 +205,9 @@ impl<T> FlexRef<T> {
         }
     }
 
-    fn with_id<U>(&self, f: impl Fn(u64) -> U) -> Option<U> {
+    fn with_id<U>(&self, f: impl Fn(&[u8]) -> U) -> Option<U> {
         if self.tpe() == Type::Id {
-            let id = u64::from_be_bytes(self.1[1..9].try_into().unwrap());
-            Some(f(id))
+            Some(f(self.data()))
         } else {
             None
         }
@@ -234,7 +237,9 @@ const fn tpe(value: u8) -> Type {
 }
 
 pub(crate) const fn make_header_byte(tpe: Type, len: usize) -> u8 {
-    assert!(len < 64);
+    if len >= 64 {
+        assert!(len < 64);
+    }
     (len as u8)
         | match tpe {
             Type::None => 0,
@@ -261,7 +266,11 @@ pub struct TreePrefixRef<S = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
 
 impl<S: BlobStore> Debug for TreePrefixRef<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TreePrefix({:?})", &self.1)
+        write!(f, "TreePrefix({:?})", &self.1)?;
+        if let Some(x) = self.1.arc_as_ref() {
+            write!(f, "Arc {}", Hex::partial(&x, 16))?;
+        }
+        Ok(())
     }
 }
 
@@ -278,7 +287,7 @@ impl<S: BlobStore> TreePrefixRef<S> {
         self.first_opt().is_none()
     }
 
-    fn first_opt(&self) -> Option<u8> {
+    pub fn first_opt(&self) -> Option<u8> {
         self.1.first_u8_opt()
     }
 
@@ -322,6 +331,22 @@ impl<S: BlobStore> TreePrefixRef<S> {
 
     pub(crate) fn manual_clone(&self) {
         self.1.manual_clone();
+    }
+
+    pub(crate) fn arc_to_id(&self, store: &S) -> Result<Result<Vec<u8>, usize>, S::Error> {
+        Ok(if let Some(data) = self.1.arc_vec_as_slice() {
+            Ok(store.write(data)?)
+        } else {
+            Err(self.bytes().len())
+        })
+    }
+
+    pub(crate) fn id_to_arc(&self, store: &S) -> Result<Result<OwnedBlob, usize>, S::Error> {
+        Ok(if let Some(id) = self.1.id_as_slice() {
+            Ok(store.read(id)?)
+        } else {
+            Err(self.bytes().len())
+        })
     }
 }
 
@@ -462,6 +487,22 @@ impl<S: BlobStore> TreeValueOptRef<S> {
 
     pub(crate) fn manual_clone(&self) {
         self.1.manual_clone();
+    }
+
+    pub(crate) fn arc_to_id(&self, store: &S) -> Result<Result<Vec<u8>, usize>, S::Error> {
+        Ok(if let Some(data) = self.1.arc_vec_as_slice() {
+            Ok(store.write(data)?)
+        } else {
+            Err(self.bytes().len())
+        })
+    }
+
+    pub(crate) fn id_to_arc(&self, store: &S) -> Result<Result<OwnedBlob, usize>, S::Error> {
+        Ok(if let Some(id) = self.1.id_as_slice() {
+            Ok(store.read(id)?)
+        } else {
+            Err(self.bytes().len())
+        })
     }
 }
 
@@ -722,5 +763,20 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         mut prefix: &[u8],
     ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
         todo!();
+    }
+
+    pub fn validate(&self, store: &S) -> Result<bool, S::Error> {
+        if self.prefix.1.ref_count() > 100 {
+            return Ok(false);
+        }
+        if self.value.1.ref_count() > 100 {
+            return Ok(false);
+        }
+        for child in self.children.load(store)?.iter() {
+            if !child.validate(store)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }

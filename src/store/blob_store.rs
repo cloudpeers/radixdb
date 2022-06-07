@@ -25,7 +25,7 @@ pub trait BlobStore2: Debug + Send + Sync + 'static {
     /// Write a blob, returning an id into a target vec `tgt`.
     ///
     /// If this returns an error, the tgt vec is guaranteed to be unmodified.
-    fn write(&self, data: &[u8], tgt: &mut Vec<u8>) -> std::result::Result<(), Self::Error>;
+    fn write(&self, data: &[u8]) -> std::result::Result<Vec<u8>, Self::Error>;
 
     /// Ensure all data is persisted
     fn sync(&self) -> std::result::Result<(), Self::Error>;
@@ -41,6 +41,9 @@ pub struct Blob2<'a> {
     data: &'a [u8],
     owner: Option<Arc<dyn Any>>,
 }
+
+unsafe impl<'a> Sync for Blob2<'a> {}
+unsafe impl<'a> Send for Blob2<'a> {}
 
 impl<'a> AsRef<[u8]> for Blob2<'a> {
     fn as_ref(&self) -> &[u8] {
@@ -195,8 +198,8 @@ impl BlobStore2 for DynBlobStore2 {
         self.as_ref().read(id)
     }
 
-    fn write(&self, data: &[u8], tgt: &mut Vec<u8>) -> std::result::Result<(), Self::Error> {
-        self.as_ref().write(data, tgt)
+    fn write(&self, data: &[u8]) -> std::result::Result<Vec<u8>, Self::Error> {
+        self.as_ref().write(data)
     }
 
     fn sync(&self) -> std::result::Result<(), Self::Error> {
@@ -285,7 +288,7 @@ impl BlobStore2 for NoStore {
         panic!()
     }
 
-    fn write(&self, data: &[u8], tgt: &mut Vec<u8>) -> std::result::Result<(), Self::Error> {
+    fn write(&self, data: &[u8]) -> std::result::Result<Vec<u8>, Self::Error> {
         panic!()
     }
 
@@ -356,6 +359,49 @@ impl BlobStore for MemStore {
     }
 
     fn sync(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// A simple in memory store
+#[derive(Default, Clone)]
+pub struct MemStore2 {
+    data: Arc<Mutex<BTreeMap<u64, Arc<Vec<u8>>>>>,
+}
+
+impl Debug for MemStore2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut builder = f.debug_map();
+        let data = self.data.lock();
+        for (id, v) in data.iter() {
+            builder.entry(&id, &Hex::partial(v.as_ref(), 128));
+        }
+        builder.finish()
+    }
+}
+
+impl BlobStore2 for MemStore2 {
+    type Error = anyhow::Error;
+
+    fn read(&self, id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {
+        anyhow::ensure!(id.len() == 8);
+        let id = u64::from_be_bytes(id.try_into().unwrap());
+        let data = self.data.lock();
+        data.get(&id)
+            .map(|x| Blob2::from_arc_vec(x.clone()))
+            .context("value not found")
+    }
+
+    fn write(&self, slice: &[u8]) -> std::result::Result<Vec<u8>, Self::Error> {
+        let mut data = self.data.lock();
+        let max = data.keys().next_back().cloned().unwrap_or(0);
+        let id = max + 1;
+        let blob = Arc::new(slice.to_vec());
+        data.insert(id, blob);
+        Ok(id.to_be_bytes().to_vec())
+    }
+
+    fn sync(&self) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 }

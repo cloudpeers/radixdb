@@ -8,7 +8,7 @@ use radixdb::{
 use tempfile::tempdir;
 
 fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
-    let elems = (0..2000000u64)
+    let elems = (0..2000_000u64)
         .map(|i| {
             if i % 100000 == 0 {
                 info!("{}", i);
@@ -22,11 +22,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     let t0 = Instant::now();
     info!("building tree");
     let tree: VSRadixTree = elems.clone().into_iter().collect();
-    info!(
-        "unattached tree {:?} {} s",
-        tree,
-        t0.elapsed().as_secs_f64()
-    );
+    info!("unattached tree {} s", t0.elapsed().as_secs_f64());
 
     // let x = elems.clone();
     // let t0 = Instant::now();
@@ -84,9 +80,9 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
 
     info!("attaching tree...");
     let t0 = Instant::now();
-    // let tree = tree.attached(store)?;
+    // let tree = tree.try_attached(store)?;
     // store.sync()?;
-    info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+    info!("attached tree {} s", t0.elapsed().as_secs_f32());
     info!("traversing attached tree values...");
     let t0 = Instant::now();
     let mut n = 0;
@@ -107,7 +103,7 @@ fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
     info!("detaching tree...");
     let t0 = Instant::now();
     // let tree = tree.detached()?;
-    info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+    info!("detached tree {} s", t0.elapsed().as_secs_f32());
     info!("traversing unattached tree...");
     let t0 = Instant::now();
     let mut n = 0;

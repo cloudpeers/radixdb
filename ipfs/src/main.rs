@@ -3,8 +3,8 @@
 //!
 //!
 use radixdb::{
-    node::{DowncastConverter, OwnedSlice, TreePrefix, TreeValue},
-    store::{Blob, BlobStore, DynBlobStore, NoError, PagedFileStore},
+    VSRadixTree as RadixTree,
+    store::{Blob, BlobStore2 as BlobStore, DynBlobStore2 as DynBlobStore, NoError, PagedFileStore, OwnedBlob},
     *,
 };
 use sha2::{Digest, Sha256};
@@ -112,16 +112,15 @@ trait RadixTreeExt<S: BlobStore> {
 
 impl<S: BlobStore + Clone> RadixTreeExt<S> for RadixTree<S> {
     fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), S::Error> {
-        self.try_outer_combine_with(&RadixTree::single(key, value), DowncastConverter, |a, b| {
-            Ok(*a = b.downcast())
+        self.try_outer_combine_with(&RadixTree::single(key, value), |a, b| {
+            Ok(Some(b.to_owned()))
         })
     }
 
     fn remove(&mut self, key: &[u8]) -> Result<(), S::Error> {
         self.try_left_combine_with(
-            &RadixTree::single(key, vec![]),
-            DowncastConverter,
-            |a, b| Ok(*a = TreeValue::none()),
+            &RadixTree::single(key, &[]),
+            |a, b| Ok(None),
         )
     }
 }
@@ -205,11 +204,11 @@ impl Ipfs {
                     res
                 })
                 .collect();
-            let remove = |a: &mut TreeValue<DynBlobStore>, _: &TreeValue| -> Result<(), NoError> {
-                Ok(*a = TreeValue::none())
+            let remove = |_, _| -> Result<Option<OwnedBlob>, NoError> {
+                Ok(None)
             };
             self.root
-                .try_left_combine_with(&dead_ids, DowncastConverter, &remove)?;
+                .try_left_combine_with(&dead_ids, &remove)?;
         }
         println!("{}", t0.elapsed().as_secs_f64());
         Ok(())
@@ -262,12 +261,12 @@ impl Ipfs {
         })
     }
 
-    fn get_cid(&self, id: u64) -> anyhow::Result<Option<OwnedSlice<u8>>> {
+    fn get_cid(&self, id: u64) -> anyhow::Result<Option<OwnedBlob>> {
         let id_key = cid_key(id);
         self.root.try_get(&id_key)
     }
 
-    fn get_block(&self, id: u64) -> anyhow::Result<Option<OwnedSlice<u8>>> {
+    fn get_block(&self, id: u64) -> anyhow::Result<Option<OwnedBlob>> {
         let block_key = block_key(id);
         self.root.try_get(&block_key)
     }
@@ -298,7 +297,7 @@ impl Ipfs {
         } else {
             let cids = self.root.try_filter_prefix(CIDS)?;
             // compute higest id
-            let id = if let Some((prefix, _)) = cids.try_last_entry(TreePrefix::default())? {
+            let id = if let Some((prefix, _)) = cids.try_last_entry(&[])? {
                 // get id from prefix and inc by one
                 let prefix = prefix.load(&self.store)?;
                 let id: [u8; 8] = prefix[prefix.len() - 8..].try_into()?;
@@ -334,7 +333,7 @@ impl Ipfs {
             .insert(&links_key(id), &serialize_links(&link_ids))?;
         Ok(id)
     }
-    fn get(&mut self, hash: &[u8]) -> anyhow::Result<Option<OwnedSlice<u8>>> {
+    fn get(&mut self, hash: &[u8]) -> anyhow::Result<Option<OwnedBlob>> {
         Ok(if let Some(id) = self.get_id(hash)? {
             self.get_block(id)?
         } else {

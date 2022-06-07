@@ -26,17 +26,6 @@ impl IterPosition for AtPrefix {}
 impl IterPosition for AtValue {}
 impl IterPosition for AtChildren {}
 
-macro_rules! unwrap_or_break {
-    ($res:expr) => {
-        match $res {
-            Some(val) => val,
-            None => {
-                break;
-            }
-        }
-    };
-}
-
 pub(crate) trait VecTakeExt<T> {
     fn take(&mut self) -> Vec<T>;
 }
@@ -72,7 +61,7 @@ impl Debug for InPlaceFlexRefSeqBuilder {
     }
 }
 
-trait Extendable {
+pub(crate) trait Extendable {
     fn reserve(&mut self, n: usize);
 
     fn extend_from_slice(&mut self, data: &[u8]);
@@ -93,7 +82,7 @@ trait Extendable {
         let data: usize = Arc::into_raw(arc) as usize;
         let data: u64 = data as u64;
         self.reserve(9);
-        self.push(PTR8);
+        self.push(make_header_byte(Type::Ptr, 8));
         self.extend_from_slice(&data.to_be_bytes());
     }
 
@@ -284,28 +273,34 @@ pub(crate) struct BuilderRef<'a, S: BlobStore, P: IterPosition>(
     PhantomData<P>,
 );
 
+impl<'a, S: BlobStore, P: IterPosition> BuilderRef<'a, S, P> {
+    fn done<P2: IterPosition>(self) -> BuilderRef<'a, S, P2> {
+        BuilderRef(self.0, PhantomData)
+    }
+}
+
 impl<'a, S: BlobStore> BuilderRef<'a, S, AtPrefix> {
     pub fn push_prefix(self, prefix: impl AsRef<[u8]>) -> BuilderRef<'a, S, AtValue> {
         self.0 .0.push_arc_or_inline(prefix.as_ref());
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn push_prefix_raw(self, value: &TreePrefixRef<S>) -> BuilderRef<'a, S, AtValue> {
         value.manual_clone();
         self.0 .0.extend_from_slice(value.bytes());
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn push_prefix_empty(mut self) -> BuilderRef<'a, S, AtValue> {
         self.0 .0.push_inline(&[]);
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 }
 
 impl<'a, S: BlobStore> BuilderRef<'a, S, AtValue> {
     pub fn push_value(self, value: impl AsRef<[u8]>) -> BuilderRef<'a, S, AtChildren> {
         self.0 .0.push_arc_or_inline(value.as_ref());
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn push_value_opt(self, value: Option<impl AsRef<[u8]>>) -> BuilderRef<'a, S, AtChildren> {
@@ -314,18 +309,18 @@ impl<'a, S: BlobStore> BuilderRef<'a, S, AtValue> {
         } else {
             self.0 .0.push_none();
         }
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn push_value_none(mut self) -> BuilderRef<'a, S, AtChildren> {
         self.0 .0.push_none();
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn push_value_raw(self, value: &TreeValueOptRef<S>) -> BuilderRef<'a, S, AtChildren> {
         value.manual_clone();
         self.0 .0.extend_from_slice(value.bytes());
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 }
 
@@ -336,18 +331,18 @@ impl<'a, S: BlobStore> BuilderRef<'a, S, AtChildren> {
         } else {
             self.0 .0.push_none();
         }
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn push_children_raw(self, value: &TreeChildrenRef<S>) -> BuilderRef<'a, S, AtPrefix> {
         value.manual_clone();
         self.0 .0.extend_from_slice(value.bytes());
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     pub fn push_children_empty(self) -> BuilderRef<'a, S, AtChildren> {
         self.0 .0.push_none();
-        BuilderRef(self.0, PhantomData)
+        self.done()
     }
 }
 
@@ -357,6 +352,12 @@ pub(crate) struct InPlaceBuilderRef<'a, S: BlobStore, P: IterPosition>(
     &'a mut InPlaceFlexRefSeqBuilder,
     PhantomData<(S, P)>,
 );
+
+impl<'a, S: BlobStore, P: IterPosition> InPlaceBuilderRef<'a, S, P> {
+    fn done<P2: IterPosition>(self) -> InPlaceBuilderRef<'a, S, P2> {
+        InPlaceBuilderRef(self.0, PhantomData)
+    }
+}
 
 impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
     pub fn peek(&self) -> &TreePrefixRef<S> {
@@ -376,7 +377,35 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
     ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
         // todo: make this more efficient for the extremely common "inline" case
         let prefix = self.peek().load(store)?.to_owned();
-        Ok(self.push_prefix_ref(&prefix[..n]))
+        Ok(self.push_prefix(&prefix[..n]))
+    }
+
+    pub fn attach_prefix(
+        mut self,
+        store: &S,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
+        match self.peek().arc_to_id(store)? {
+            Ok(id) => {
+                self.drop_current();
+                self.0.push_id(&id);
+            }
+            Err(n) => self.0.forward(n),
+        }
+        Ok(self.done())
+    }
+
+    pub fn detach_prefix(
+        mut self,
+        store: &S,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
+        match self.peek().id_to_arc(store)? {
+            Ok(id) => {
+                self.drop_current();
+                self.0.push_arc_or_inline(&id);
+            }
+            Err(n) => self.0.forward(n),
+        }
+        Ok(self.done())
     }
 
     pub fn push_prefix_empty(mut self) -> InPlaceBuilderRef<'a, S, AtValue> {
@@ -385,10 +414,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.done()
     }
 
-    pub fn push_prefix_ref(
-        mut self,
-        prefix: impl AsRef<[u8]>,
-    ) -> InPlaceBuilderRef<'a, S, AtValue> {
+    pub fn push_prefix(mut self, prefix: impl AsRef<[u8]>) -> InPlaceBuilderRef<'a, S, AtValue> {
         self.drop_current();
         self.0.push_arc_or_inline(prefix.as_ref());
         self.done()
@@ -417,19 +443,11 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
 
     pub fn rewind(self, to: usize) -> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.0.rewind(to);
-        InPlaceBuilderRef(self.0, PhantomData)
-    }
-
-    fn done(self) -> InPlaceBuilderRef<'a, S, AtValue> {
-        InPlaceBuilderRef(self.0, PhantomData)
+        self.done()
     }
 }
 
 impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
-    fn done(self) -> InPlaceBuilderRef<'a, S, AtChildren> {
-        InPlaceBuilderRef(self.0, PhantomData)
-    }
-
     fn drop_current(&mut self) {
         let len = self.peek().bytes().len();
         self.peek().manual_drop();
@@ -467,6 +485,34 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
         self.drop_current();
         self.0.push_arc_or_inline(value);
         self.done()
+    }
+
+    pub fn attach_value(
+        mut self,
+        store: &S,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+        match self.peek().arc_to_id(store)? {
+            Ok(id) => {
+                self.drop_current();
+                self.0.push_id(&id);
+            }
+            Err(n) => self.0.forward(n),
+        }
+        Ok(self.done())
+    }
+
+    pub fn detach_value(
+        mut self,
+        store: &S,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtChildren>, S::Error> {
+        match self.peek().id_to_arc(store)? {
+            Ok(id) => {
+                self.drop_current();
+                self.0.push_arc_or_inline(&id);
+            }
+            Err(n) => self.0.forward(n),
+        }
+        Ok(self.done())
     }
 
     pub fn push_converted<S2: BlobStore>(
@@ -535,8 +581,10 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         let res = if let Some(arc) = v.1.arc_as_clone() {
             v.manual_drop();
             arc
+        } else if let Some(id) = v.1.id_as_slice() {
+            let data = store.read(id)?;
+            Arc::new(NodeSeqBuilder(data.to_vec(), PhantomData))
         } else {
-            // todo: load data if needed
             Arc::new(NodeSeqBuilder::new())
         };
         // replace current value with "no children" paceholder
@@ -554,7 +602,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         self.drop_current();
         self.0.push_arc(value);
         self.0.rewind(t1);
-        InPlaceBuilderRef(self.0, PhantomData)
+        self.done()
     }
 
     fn drop_current(&mut self) {
@@ -580,13 +628,48 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
         self.done()
     }
 
-    fn done(self) -> InPlaceBuilderRef<'a, S, AtPrefix> {
-        InPlaceBuilderRef(self.0, PhantomData)
-    }
-
     pub fn move_children(self) -> InPlaceBuilderRef<'a, S, AtPrefix> {
         self.0.forward(self.peek().bytes().len());
         self.done()
+    }
+
+    pub fn push_id(mut self, id: &[u8]) -> InPlaceBuilderRef<'a, S, AtPrefix> {
+        self.drop_current();
+        self.0.push_id(id);
+        self.done()
+    }
+
+    pub fn attach_children(
+        mut self,
+        store: &S,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
+        Ok(if self.peek().is_empty() {
+            self.move_children()
+        } else {
+            let mut arc = self.take_arc(store)?;
+            let mut b = Arc::make_mut(&mut arc);
+            let mut ip = InPlaceNodeSeqBuilder::new(&mut b);
+            ip.attach(store)?;
+            let data = ip.into_inner();
+            let id = store.write(&data.0)?;
+            self.push_id(&id)
+        })
+    }
+
+    pub fn detach_children(
+        mut self,
+        store: &S,
+    ) -> Result<InPlaceBuilderRef<'a, S, AtPrefix>, S::Error> {
+        Ok(if self.peek().is_empty() {
+            self.move_children()
+        } else {
+            let mut arc = self.take_arc(store)?;
+            let mut b = Arc::make_mut(&mut arc);
+            let mut ip = InPlaceNodeSeqBuilder::new(&mut b);
+            ip.detach(store)?;
+            *b = ip.into_inner();
+            self.push_new_arc(arc)
+        })
     }
 
     pub fn insert_converted<S2: BlobStore>(
@@ -650,14 +733,6 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         std::mem::swap(&mut self.0, &mut r);
         drop(self);
         r
-    }
-
-    pub fn empty_tree() -> Self {
-        let mut res = InPlaceFlexRefSeqBuilder::default();
-        res.push_arc_or_inline(&[]);
-        res.push_none();
-        res.push_none();
-        Self(res.into_inner(), PhantomData)
     }
 
     pub fn push_non_empty(
@@ -872,6 +947,26 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
             .unwrap()
             .insert_converted(node.children(), store)
             .unwrap();
+        Ok(())
+    }
+
+    pub fn attach(&mut self, store: &S) -> Result<(), S::Error> {
+        while !self.inner.source_slice().is_empty() {
+            self.cursor()
+                .attach_prefix(store)?
+                .attach_value(store)?
+                .attach_children(store)?;
+        }
+        Ok(())
+    }
+
+    pub fn detach(&mut self, store: &S) -> Result<(), S::Error> {
+        while !self.inner.source_slice().is_empty() {
+            self.cursor()
+                .detach_prefix(store)?
+                .detach_value(store)?
+                .detach_children(store)?;
+        }
         Ok(())
     }
 }

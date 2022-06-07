@@ -1,6 +1,9 @@
 use std::marker::PhantomData;
 
-use crate::store::{BlobStore2 as BlobStore, OwnedBlob};
+use crate::{
+    store::{BlobStore2 as BlobStore, OwnedBlob},
+    Hex,
+};
 
 use super::refs::{self, TreeNode, TreePrefixRef};
 

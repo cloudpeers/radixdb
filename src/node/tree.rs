@@ -19,11 +19,11 @@ pub struct Tree<S: BlobStore = NoStore> {
 }
 
 impl Tree {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self::new(NodeSeqBuilder::new(), NoStore)
     }
 
-    fn single(key: &[u8], value: &[u8]) -> Self {
+    pub fn single(key: &[u8], value: &[u8]) -> Self {
         Self::new(NodeSeqBuilder::single(key, value), NoStore)
     }
 
@@ -147,6 +147,16 @@ impl Tree {
 
     pub fn remove_prefix_with(&mut self, that: &Tree, f: impl Fn(&TreeValueRef) -> bool + Copy) {
         unwrap_safe(self.try_remove_prefix_with(that, |b| Ok(f(b))))
+    }
+
+    pub fn try_attached<S: BlobStore>(&self, store: S) -> Result<Tree<S>, S::Error> {
+        let mut t: NodeSeqBuilder<S> = unsafe { std::mem::transmute(self.node.as_ref().clone()) };
+        let mut ip = InPlaceNodeSeqBuilder::new(&mut t);
+        ip.attach(&store)?;
+        Ok(Tree {
+            node: Arc::new(ip.into_inner()),
+            store,
+        })
     }
 }
 
@@ -456,6 +466,22 @@ impl<S: BlobStore + Clone> Tree<S> {
             node: Arc::new(node),
             store: self.store.clone(),
         })
+    }
+
+    pub fn try_detached(&self, store: S) -> Result<Tree, S::Error> {
+        let mut t: NodeSeqBuilder<S> = self.node.as_ref().clone();
+        let mut ip = InPlaceNodeSeqBuilder::new(&mut t);
+        ip.detach(&store)?;
+        let b = ip.into_inner();
+        let node: NodeSeqBuilder<NoStore> = unsafe { std::mem::transmute(b) };
+        Ok(Tree {
+            node: Arc::new(node),
+            store: NoStore,
+        })
+    }
+
+    pub fn try_validate(&self, store: &S) -> Result<bool, S::Error> {
+        self.node().validate(store)
     }
 }
 
@@ -1911,14 +1937,38 @@ mod tests {
         time::Instant,
     };
 
+    use crate::store::{MemStore, MemStore2};
+
     use super::*;
 
+    // fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
+    //     proptest::strategy::Union::new_weighted(vec![
+    //         (10, proptest::collection::vec(b'0'..b'9', 0..9)),
+    //         (1, proptest::collection::vec(b'0'..b'9', 128..129)),
+    //     ])
+    // }
+
+    // fn arb_value() -> impl Strategy<Value = Vec<u8>> {
+    //     proptest::strategy::Union::new_weighted(vec![
+    //         (10, proptest::collection::vec(any::<u8>(), 0..9)),
+    //         (1, proptest::collection::vec(any::<u8>(), 128..129)),
+    //     ])
+    // }
+
     fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
-        proptest::collection::vec(b'0'..b'9', 0..9)
+        proptest::strategy::Union::new_weighted(vec![
+            (10, proptest::collection::vec(b'0'..b'9', 0..9)),
+            (1, proptest::collection::vec(b'0'..b'9', 128..129)),
+        ])
+        // proptest::collection::vec(b'0'..b'9', 0..9)
     }
 
     fn arb_value() -> impl Strategy<Value = Vec<u8>> {
-        proptest::collection::vec(any::<u8>(), 0..9)
+        proptest::collection::vec(any::<u8>(), 0..2)
+        // proptest::strategy::Union::new_weighted(vec![
+        //     (10, proptest::collection::vec(any::<u8>(), 0..9)),
+        //     (1, proptest::collection::vec(any::<u8>(), 128..129)),
+        // ])
     }
 
     fn arb_tree_contents() -> impl Strategy<Value = BTreeMap<Vec<u8>, Vec<u8>>> {
@@ -1930,7 +1980,11 @@ mod tests {
     }
 
     fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> Tree {
-        v.clone().into_iter().collect()
+        let tree: Tree = v.clone().into_iter().collect();
+        if !tree.try_validate(&NoStore).unwrap() {
+            println!("{:?}", v);
+        }
+        tree
     }
 
     fn to_btree_map(t: &Tree) -> BTreeMap<Vec<u8>, Vec<u8>> {
@@ -2225,6 +2279,17 @@ mod tests {
             let actual = to_btree_map(&at);
             assert_eq!(expected, actual);
         }
+
+        #[test]
+        fn attach_detach_roundtrip(x in arb_tree_contents()) {
+            let reference = x;
+            let tree = mk_owned_tree(&reference);
+            let store = MemStore2::default();
+            let tree = tree.try_attached(store.clone()).unwrap();
+            let tree = tree.try_detached(store).unwrap();
+            let actual = to_btree_map(&tree);
+            prop_assert_eq!(reference, actual);
+        }
     }
 
     #[test]
@@ -2310,6 +2375,23 @@ mod tests {
     fn difference_with1() {
         let a = btreemap! { vec![] => vec![] };
         let b = btreemap! { vec![1] => vec![] };
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.left_combine_with(&bt, |a, b| Some(b.to_owned()));
+        let rbu = to_btree_map(&at);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            if rbu_reference.contains_key(&k) {
+                rbu_reference.insert(k, v);
+            }
+        }
+        assert_eq!(rbu, rbu_reference);
+    }
+
+    #[test]
+    fn difference_with2() {
+        let a = btreemap! { vec![0;130] => vec![] };
+        let b = btreemap! { vec![0;129] => vec![] };
         let mut at = mk_owned_tree(&a);
         let bt = mk_owned_tree(&b);
         at.left_combine_with(&bt, |a, b| Some(b.to_owned()));
@@ -2478,6 +2560,14 @@ mod tests {
     }
 
     #[test]
+    fn long_prefix_1() {
+        let a = btreemap! { vec![1] => vec![], vec![2; 129] => vec![] };
+        let at = mk_owned_tree(&a);
+        println!("{}", at.try_validate(&NoStore).unwrap());
+        at.dump().unwrap();
+    }
+
+    #[test]
     fn union_smoke() -> anyhow::Result<()> {
         println!("disjoint");
         let a = Tree::single(b"a".as_ref(), b"1".as_ref());
@@ -2508,6 +2598,34 @@ mod tests {
         r.dump()?;
 
         Ok(())
+    }
+
+    #[test]
+    fn attach_detach() {
+        let elems = (0..1000u64)
+            .map(|i| {
+                if i % 100000 == 0 {
+                    println!("{}", i);
+                }
+                (
+                    i.to_string().as_bytes().to_vec(),
+                    i.to_string().as_bytes().to_vec(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let tree: Tree = elems.into_iter().collect();
+        let store = MemStore2::default();
+        let tree = tree.try_attached(store.clone()).unwrap();
+        for e in tree.try_iter() {
+            let (k, v) = e.unwrap();
+            println!("attached {:?} {:?}", k, v);
+        }
+        tree.dump().unwrap();
+        let tree = tree.try_detached(store).unwrap();
+        tree.dump().unwrap();
+        for (k, v) in tree.iter() {
+            println!("detached {:?} {:?}", k, v);
+        }
     }
 
     #[test]
