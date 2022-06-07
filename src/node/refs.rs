@@ -57,7 +57,7 @@ impl<T> Debug for FlexRef<T> {
                 "FlexRef::Inline({})",
                 Hex::new(self.inline_as_ref().unwrap())
             ),
-            Type::Ptr => write!(f, "FlexRef::Ptr"),
+            Type::Ptr => write!(f, "FlexRef::Ptr({:x})", Arc::as_ptr(&self.arc_as_clone().unwrap()) as usize),
         }
     }
 }
@@ -113,12 +113,14 @@ impl<T> FlexRef<T> {
 
     fn manual_drop(&self) {
         self.with_arc(|arc| unsafe {
+            println!("drop {:x} {}", Arc::as_ptr(arc) as usize, Arc::strong_count(arc));
             Arc::decrement_strong_count(Arc::as_ptr(arc));
         });
     }
 
     fn manual_clone(&self) {
         self.with_arc(|arc| unsafe {
+            println!("clone {:x} {}", Arc::as_ptr(arc) as usize, Arc::strong_count(arc));
             Arc::increment_strong_count(Arc::as_ptr(arc));
         });
     }
@@ -179,7 +181,7 @@ impl<T> FlexRef<T> {
         }
     }
 
-    fn ref_count(&self) -> usize {
+    pub fn ref_count(&self) -> usize {
         self.with_arc(|x| Arc::strong_count(x)).unwrap_or_default()
     }
 
@@ -262,7 +264,7 @@ pub(crate) enum Type {
 }
 
 #[repr(transparent)]
-pub struct TreePrefixRef<S = NoStore>(PhantomData<S>, FlexRef<Vec<u8>>);
+pub struct TreePrefixRef<S = NoStore>(PhantomData<S>, pub(crate) FlexRef<Vec<u8>>);
 
 impl<S: BlobStore> Debug for TreePrefixRef<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

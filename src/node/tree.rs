@@ -1920,6 +1920,7 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for Tree {
     fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
         let mut tree = Tree::empty();
         for (k, v) in iter.into_iter() {
+            tree.dump().unwrap();
             tree.outer_combine_with(&Tree::single(k.as_ref(), v.as_ref()), |_, b| {
                 Some(b.to_owned())
             });
@@ -1956,19 +1957,19 @@ mod tests {
     // }
 
     fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
-        proptest::strategy::Union::new_weighted(vec![
-            (10, proptest::collection::vec(b'0'..b'9', 0..9)),
-            (1, proptest::collection::vec(b'0'..b'9', 128..129)),
-        ])
-        // proptest::collection::vec(b'0'..b'9', 0..9)
+        // proptest::strategy::Union::new_weighted(vec![
+        //     (10, proptest::collection::vec(b'0'..b'9', 0..9)),
+        //     (1, proptest::collection::vec(b'0'..b'9', 128..129)),
+        // ])
+        proptest::collection::vec(b'0'..b'9', 0..9)
     }
 
     fn arb_value() -> impl Strategy<Value = Vec<u8>> {
-        proptest::collection::vec(any::<u8>(), 0..2)
-        // proptest::strategy::Union::new_weighted(vec![
-        //     (10, proptest::collection::vec(any::<u8>(), 0..9)),
-        //     (1, proptest::collection::vec(any::<u8>(), 128..129)),
-        // ])
+        // proptest::collection::vec(any::<u8>(), 0..2)
+        proptest::strategy::Union::new_weighted(vec![
+            (10, proptest::collection::vec(any::<u8>(), 0..9)),
+            (1, proptest::collection::vec(any::<u8>(), 128..129)),
+        ])
     }
 
     fn arb_tree_contents() -> impl Strategy<Value = BTreeMap<Vec<u8>, Vec<u8>>> {
@@ -2318,7 +2319,7 @@ mod tests {
         let mut rbu_reference = a.clone();
         for (k, v) in b.clone() {
             rbu_reference.insert(k, v);
-        }
+        }  
         assert_eq!(rbu, rbu_reference);
     }
 
@@ -2563,8 +2564,16 @@ mod tests {
     fn long_prefix_1() {
         let a = btreemap! { vec![1] => vec![], vec![2; 129] => vec![] };
         let at = mk_owned_tree(&a);
-        println!("{}", at.try_validate(&NoStore).unwrap());
-        at.dump().unwrap();
+        assert!(at.try_validate(&NoStore).unwrap());
+    }
+
+    #[test]
+    #[ignore]
+    fn long_prefix_2() {
+        let a = btreemap! {vec![1, 1, 1, 1, 1, 1, 1] => vec![], vec![1, 2] => vec![], vec![1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 49, 52, 52, 48, 53, 49, 51, 54, 53, 53, 53, 48, 48, 53, 56, 55, 48, 48, 49, 56, 52, 50, 48, 51, 54, 49, 48, 55, 56, 54, 51, 54, 55, 56, 48, 56, 50, 56, 50, 56, 54, 56, 53, 52, 55, 55, 50, 49, 53, 49, 56, 56, 48, 51, 52, 52, 54, 55, 56, 49, 53, 51, 49, 53, 54, 53, 55, 52, 53, 53, 50, 54, 50, 52, 50, 49, 56, 55, 48, 53, 53, 52, 50, 51, 50, 48, 49, 51, 52, 54, 54, 48, 53, 55, 52, 54, 50, 54, 51, 51, 56, 53, 51, 52, 53, 51, 49, 0, 0, 0, 0] => vec![] };
+        let at = mk_owned_tree(&a);
+        at.dump();
+        assert!(at.try_validate(&NoStore).unwrap());
     }
 
     #[test]

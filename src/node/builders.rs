@@ -771,6 +771,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     pub fn push(&mut self, node: &TreeNode<'_, S>) {
+        node.manual_clone();
         self.cursor()
             .push_prefix_raw(node.prefix())
             .push_value_raw(node.value())
@@ -789,7 +790,8 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
             assert!(n < prefix.len());
             cursor.push_prefix(&prefix[n..])
         } else {
-            cursor.push_prefix_raw(node.prefix())
+            node.prefix.manual_clone();
+            cursor.push_prefix_raw(node.prefix)
         };
         cursor
             .push_value_raw(node.value())
@@ -982,6 +984,7 @@ impl<S: BlobStore> Drop for InPlaceNodeSeqBuilder<S> {
                 2 => TreeChildrenRef::<S>::new(FlexRef::new(x)).manual_drop(),
                 _ => panic!(),
             }
+            i += 1;
         }
         if !target.is_empty() {
             return;
@@ -994,6 +997,7 @@ impl<S: BlobStore> Drop for InPlaceNodeSeqBuilder<S> {
                 2 => TreeChildrenRef::<S>::new(FlexRef::new(x)).manual_drop(),
                 _ => panic!(),
             }
+            i += 1;
         }
         if !source.is_empty() {
             return;
