@@ -21,7 +21,12 @@ impl<'a> Hex<'a> {
 impl<'a> std::fmt::Debug for Hex<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.0.len() > self.1 {
-            write!(f, "[{}..., {} bytes]", hex::encode(&self.0[..self.1]), self.0.len())
+            write!(
+                f,
+                "[{}..., {} bytes]",
+                hex::encode(&self.0[..self.1]),
+                self.0.len()
+            )
         } else {
             write!(f, "[{}]", hex::encode(self.0))
         }
@@ -31,7 +36,12 @@ impl<'a> std::fmt::Debug for Hex<'a> {
 impl<'a> std::fmt::Display for Hex<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.0.len() > self.1 {
-            write!(f, "[{}..., {} bytes]", hex::encode(&self.0[..self.1]), self.0.len())
+            write!(
+                f,
+                "[{}..., {} bytes]",
+                hex::encode(&self.0[..self.1]),
+                self.0.len()
+            )
         } else {
             write!(f, "[{}]", hex::encode(self.0))
         }
