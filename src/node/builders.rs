@@ -651,11 +651,6 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
             ip.attach(store)?;
             let data = ip.into_inner();
             let rs = data.compute_record_size();
-            if rs != 0 {
-                println!("{}", rs);
-            } else {
-                println!("non-uniform!");
-            }
             let mut id = store.write(&data.data)?;            
             id.insert(0, rs as u8);
             self.push_id(&id)

@@ -605,8 +605,8 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
         Self { data: Blob::empty(), record_size: 0, p: PhantomData }
     }
 
-    pub fn blob(&self) -> Blob<'a> {
-        self.data.clone()
+    pub fn blob(&self) -> &Blob<'a> {
+        &self.data
     }
 
     fn from_arc_vec(value: Arc<NodeSeqBuilder<S>>) -> Self {
@@ -656,10 +656,12 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
 }
 
 pub struct TreeNode<'a, S: BlobStore = NoStore> {
-    blob: Blob<'a>,
     prefix: &'a TreePrefixRef<S>,
     value: &'a TreeValueOptRef<S>,
     children: &'a TreeChildrenRef<S>,
+    // value_offset: usize,
+    // children_offset: usize,
+    // p: PhantomData<S>,
 }
 
 impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
@@ -675,23 +677,29 @@ impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
 impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     fn empty() -> Self {
         TreeNode {
-            blob: Blob::empty(),
             prefix: TreePrefixRef::empty(),
             value: TreeValueOptRef::none(),
             children: TreeChildrenRef::empty(),
+            // Blob::empty(),
+            // value_offset: 1,
+            // children_offset: 2,
+            // p: PhantomData,
         }
     }
 
-    pub fn prefix(&self) -> &'a TreePrefixRef<S> {
-        &self.prefix
+    pub fn prefix(&self) -> &TreePrefixRef<S> {
+        self.prefix
+        // TreePrefixRef::new(FlexRef::new(&self.blob))
     }
 
-    pub fn value(&self) -> &'a TreeValueOptRef<S> {
-        &self.value
+    pub fn value(&self) -> &TreeValueOptRef<S> {
+        self.value
+        // TreeValueOptRef::new(FlexRef::new(&self.blob[self.value_offset..]))
     }
 
-    pub fn children(&self) -> &'a TreeChildrenRef<S> {
-        &self.children
+    pub fn children(&self) -> &TreeChildrenRef<S> {
+        self.children
+        // TreeChildrenRef::new(FlexRef::new(&self.blob[self.children_offset..]))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -704,17 +712,26 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
 
     pub fn read_one(buffer: &'a [u8]) -> Option<(Self, &'a [u8])> {
         let rest = buffer;
-        let (prefix, rest) = TreePrefixRef::<S>::read_one(rest)?;
-        let (value, rest) = TreeValueOptRef::<S>::read_one(rest)?;
-        let (children, rest) = TreeChildrenRef::<S>::read_one(rest)?;
+        let prefix_offset = 0;
+        let value_offset = 1 + len(*rest.get(prefix_offset)?);
+        let children_offset = value_offset + len(*rest.get(value_offset)?) + 1;
+        let prefix_offset = children_offset + len(*rest.get(children_offset)?) + 1;
+        let prefix = TreePrefixRef::new(FlexRef::new(rest));
+        let value = TreeValueOptRef::new(FlexRef::new(&rest[value_offset..]));
+        let children = TreeChildrenRef::new(FlexRef::new(&rest[children_offset..]));
+        let rest = &rest[prefix_offset..];
+        // let (prefix, rest) = TreePrefixRef::<S>::read_one(rest)?;
+        // let (value, rest) = TreeValueOptRef::<S>::read_one(rest)?;
+        // let (children, rest) = TreeChildrenRef::<S>::read_one(rest)?;
         Some((
-            Self {
-                blob: Blob::empty(),
-                prefix,
-                value,
-                children,
+            Self {    
+                prefix, value, children,
+                // blob: Blob::empty(),
+                // value_offset,
+                // children_offset,
+                // p: PhantomData,
             },
-            rest,
+            &rest,
         ))
     }
 
@@ -733,7 +750,7 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     pub fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error> {
         let spacer = std::iter::repeat(" ").take(indent).collect::<String>();
         let child_ref_count = self.children().1.ref_count();
-        let child_count = self.children.load(store)?.iter().count();
+        let child_count = self.children().load(store)?.iter().count();
         println!("{}TreeNode", spacer);
         println!(
             "{}  prefix={:?} {}",
@@ -748,7 +765,7 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
             self.value().1.ref_count()
         );
         println!("{}  children={:?} {}", spacer, child_count, child_ref_count);
-        for child in self.children.load(store)?.iter() {
+        for child in self.children().load(store)?.iter() {
             child.dump(indent + 4, store)?;
         }
         Ok(())
@@ -756,10 +773,10 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
 
     /// get the first value
     pub fn first_value(&self, store: &S) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
-        Ok(if self.value.is_some() {
-            Some(TreeValueRefWrapper::new(Blob::copy_from_slice(self.value.bytes())))
+        Ok(if self.value().is_some() {
+            Some(TreeValueRefWrapper::new(Blob::copy_from_slice(self.value().bytes())))
         } else {
-            let children = self.children.load(store)?;
+            let children = self.children().load(store)?;
             children.iter().next().unwrap().first_value(store)?
         })
     }
@@ -770,11 +787,11 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         store: &S,
         mut prefix: Vec<u8>,
     ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
-        prefix.extend_from_slice(&self.prefix.load(store)?);
-        Ok(if self.value.is_some() {
-            Some((Blob::copy_from_slice(&prefix), TreeValueRefWrapper::new(Blob::copy_from_slice(self.value.bytes()))))
+        prefix.extend_from_slice(&self.prefix().load(store)?);
+        Ok(if self.value().is_some() {
+            Some((Blob::copy_from_slice(&prefix), TreeValueRefWrapper::new(Blob::copy_from_slice(self.value().bytes()))))
         } else {
-            let children = self.children.load(store)?;
+            let children = self.children().load(store)?;
             children.iter().next().unwrap().first_entry(store, prefix)?
         })
     }
@@ -782,9 +799,9 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     /// get the last value
     pub fn last_value(&self, store: &S) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         Ok(if self.children().is_empty() {
-            self.value.value_opt().map(|x| TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())))
+            self.value().value_opt().map(|x| TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())))
         } else {
-            let children = self.children.load(store)?;
+            let children = self.children().load(store)?;
             children.iter().last().unwrap().last_value(store)?
         })
     }
@@ -795,23 +812,23 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         store: &S,
         mut prefix: Vec<u8>,
     ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
-        prefix.extend_from_slice(&self.prefix.load(store)?);
+        prefix.extend_from_slice(&self.prefix().load(store)?);
         Ok(if self.children().is_empty() {
-            self.value.value_opt().map(|x| ((Blob::copy_from_slice(&prefix), TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())))))
+            self.value().value_opt().map(|x| ((Blob::copy_from_slice(&prefix), TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())))))
         } else {
-            let c = self.children.load(store)?;
+            let c = self.children().load(store)?;
             c.iter().last().unwrap().last_entry(store, prefix)?
         })
     }
 
     pub fn validate(&self, store: &S) -> Result<bool, S::Error> {
-        if self.prefix.1.ref_count() > 100 {
+        if self.prefix().1.ref_count() > 100 {
             return Ok(false);
         }
-        if self.value.1.ref_count() > 100 {
+        if self.value().1.ref_count() > 100 {
             return Ok(false);
         }
-        for child in self.children.load(store)?.iter() {
+        for child in self.children().load(store)?.iter() {
             if !child.validate(store)? {
                 return Ok(false);
             }

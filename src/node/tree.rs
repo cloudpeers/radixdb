@@ -1607,7 +1607,7 @@ fn find<S: BlobStore, T>(
         let c = prefix[n];
         let tree_children = tree.children().load_owned(store)?;
         if let Some(child) = tree_children.find(c) {
-            return find(store, &tree_children.blob(), &child, &prefix[n..], f);
+            return find(store, tree_children.blob(), &child, &prefix[n..], f);
         } else {
             FindResult::NotFound
         }
@@ -1664,7 +1664,7 @@ fn filter_prefix<S: BlobStore>(
     store: &S,
     prefix: &[u8],
 ) -> Result<NodeSeqBuilder<S>, S::Error> {
-    find(store, owner, node, prefix, |o, x| {
+    find(store, owner, node, prefix, |_, x| {
         Ok(match x {
             FindResult::Found(res) => {
                 let mut t = NodeSeqBuilder::empty();
@@ -2253,12 +2253,12 @@ mod tests {
             prop_assert!(trees.len() <= a.len());
             let mut leafs = BTreeMap::new();
             for tree in &trees {
-                let prefix = tree.node().prefix().load(&NoStore).unwrap();
+                let prefix = tree.node().prefix().load(&NoStore).unwrap().to_vec();
                 if prefix.len() <= n {
                     prop_assert!(tree.node().children().is_empty());
                     prop_assert!(tree.node().value().is_some());
-                    let value = tree.node().value().load(&NoStore).unwrap().unwrap();
-                    let prev = leafs.insert(prefix.to_vec(), value.to_vec());
+                    let value = tree.node().value().load(&NoStore).unwrap().unwrap().to_vec();
+                    let prev = leafs.insert(prefix, value);
                     prop_assert!(prev.is_none());
                 } else {
                     for (k, v) in tree.iter() {

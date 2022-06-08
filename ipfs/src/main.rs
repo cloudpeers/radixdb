@@ -277,6 +277,11 @@ impl Ipfs {
         Ok(t)
     }
 
+    fn has_block(&self, id: u64) -> anyhow::Result<bool> {
+        let block_key = block_key(id);
+        self.root.try_contains_key(&block_key)
+    }
+
     fn alias(&mut self, name: &[u8], hash: Option<&[u8]>) -> anyhow::Result<()> {
         if let Some(hash) = hash {
             let id = self.get_or_create_id(hash)?;
@@ -346,6 +351,13 @@ impl Ipfs {
             None
         })
     }
+    fn has(&mut self, hash: &[u8]) -> anyhow::Result<bool> {
+        Ok(if let Some(id) = self.get_id(hash)? {
+            self.has_block(id)?
+        } else {
+            false
+        })
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -362,9 +374,10 @@ fn main() -> anyhow::Result<()> {
         ipfs.put(&block)?;
         hashes.push(block.hash);
     }
+    let t0 = Instant::now();
     println!("committing {:?}", store);
     ipfs.commit()?;
-    println!("done {:?}", store);
+    println!("done {:?} {}", store, t0.elapsed().as_secs_f64());
     // ipfs.dump()?;
     let id1 = ipfs.get_or_create_id(b"abcd")?;
     let id2 = ipfs.get_or_create_id(b"abcd")?;
