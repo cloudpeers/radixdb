@@ -15,14 +15,16 @@ pub struct Tree<S: BlobStore = NoStore> {
     /// This contains exactly one node, even in the case of an empty tree
     node: Arc<NodeSeqBuilder<S>>,
     /// The associated store
-    store: S,
+    store: S,    
+}
+
+impl<S: BlobStore + Default> Default for Tree<S> {
+    fn default() -> Self {
+        Self::empty(S::default())
+    }
 }
 
 impl Tree {
-    pub fn empty() -> Self {
-        Self::new(NodeSeqBuilder::new(), NoStore)
-    }
-
     pub fn single(key: &[u8], value: &[u8]) -> Self {
         Self::new(NodeSeqBuilder::single(key, value), NoStore)
     }
@@ -165,6 +167,11 @@ impl<S: BlobStore> Tree<S> {
         TreeNode::read(&self.node.0).unwrap()
     }
 
+    pub fn empty(store: S) -> Self {
+        Self::new(NodeSeqBuilder::new(), store)
+    }
+
+
     fn new(mut node: NodeSeqBuilder<S>, store: S) -> Self {
         node.make_non_empty();
         Self {
@@ -218,7 +225,7 @@ impl<S: BlobStore + Clone> Tree<S> {
     }
 
     /// Get the value for a given key
-    fn try_get(&self, key: &[u8]) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
+    pub fn try_get(&self, key: &[u8]) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(
             &self.store,
@@ -238,7 +245,7 @@ impl<S: BlobStore + Clone> Tree<S> {
     }
 
     /// True if key is contained in this set
-    fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
+    pub fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(
             &self.store,
@@ -451,21 +458,18 @@ impl<S: BlobStore + Clone> Tree<S> {
         &self,
         prefix: &[u8],
     ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
-        self.node().first_entry(&self.store, prefix)
+        self.node().first_entry(&self.store, prefix.to_vec())
     }
 
     pub fn try_last_entry(
         &self,
         prefix: &[u8],
     ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
-        self.node().last_entry(&self.store, prefix)
+        self.node().last_entry(&self.store, prefix.to_vec())
     }
 
     pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
-        filter_prefix(&self.node(), &self.owned_blob(), &self.store, prefix).map(|node| Tree {
-            node: Arc::new(node),
-            store: self.store.clone(),
-        })
+        filter_prefix(&self.node(), &self.owned_blob(), &self.store, prefix).map(|node| Tree::new(node, self.store.clone()))
     }
 
     pub fn try_detached(&self, store: S) -> Result<Tree, S::Error> {
@@ -801,7 +805,6 @@ where
                     Ordering::Greater => {
                         // the .unwrap() is safe because cmp guarantees that there is a value
                         let b = c.b.next().unwrap();
-                        println!("{:?}", b.prefix());
                         c.a.insert_converted(b, &bb)?;
                     }
                 }
@@ -1919,7 +1922,7 @@ impl<S: BlobStore> Iterator for Values<S> {
 
 impl FromIterator<(Vec<u8>, Vec<u8>)> for Tree {
     fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
-        let mut tree = Tree::empty();
+        let mut tree = Tree::default();
         for (k, v) in iter.into_iter() {
             tree.outer_combine_with(&Tree::single(k.as_ref(), v.as_ref()), |_, b| {
                 Some(b.to_owned())
@@ -2739,7 +2742,7 @@ mod tests {
         println!("{:?}", r);
         println!("{:?}", r.node());
 
-        let mut t = Tree::empty();
+        let mut t = Tree::default();
         for i in 0u64..100 {
             let txt = i.to_string();
             let b = txt.as_bytes();
@@ -2762,7 +2765,7 @@ mod tests {
         println!("---");
 
         let t0 = std::time::Instant::now();
-        let mut t = Tree::empty();
+        let mut t = Tree::default();
         for i in 0u64..1000000 {
             let txt = i.to_string();
             let b = txt.as_bytes();
