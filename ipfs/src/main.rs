@@ -341,8 +341,7 @@ impl Ipfs {
         let links = serialize_links(&link_ids);
         self.root.insert(&block_key, &block.data)?;
         if !links.is_empty() {
-            self.root
-                .insert(&links_key(id), &links)?;
+            self.root.insert(&links_key(id), &links)?;
         }
         Ok(id)
     }
@@ -368,11 +367,13 @@ fn main() -> anyhow::Result<()> {
     let store = PagedFileStore::<4194304>::new(file)?;
     let mut ipfs = Ipfs::new(Arc::new(store.clone()))?;
     let mut hashes = Vec::new();
-    let blocks = (0..100_000u64).map(|i| {
-        let mut data = [0u8; 10000];
-        data[0..8].copy_from_slice(&i.to_be_bytes());
-        Block::new(&data)
-    }).collect::<Vec<_>>();
+    let blocks = (0..100_000u64)
+        .map(|i| {
+            let mut data = [0u8; 10000];
+            data[0..8].copy_from_slice(&i.to_be_bytes());
+            Block::new(&data)
+        })
+        .collect::<Vec<_>>();
     let t0 = Instant::now();
     for (i, block) in blocks.into_iter().enumerate() {
         println!("putting block {}", i);

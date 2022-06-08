@@ -246,19 +246,13 @@ impl<S: BlobStore + Clone> Tree<S> {
     /// True if key is contained in this set
     pub fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        find(
-            &self.store,
-            &self.owned_blob(),
-            &self.node(),
-            key,
-            |_, r| {
-                Ok(if let FindResult::Found(tree) = r {
-                    tree.value().is_some()
-                } else {
-                    false
-                })
-            },
-        )
+        find2(&self.store, &self.node(), key, |r| {
+            Ok(if let FindResult::Found(tree) = r {
+                tree.value().is_some()
+            } else {
+                false
+            })
+        })
     }
 
     pub fn try_outer_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
@@ -1616,6 +1610,44 @@ fn find<S: BlobStore, T>(
         FindResult::NotFound
     };
     f(owner, fr)
+}
+
+/// find a prefix in a tree. Will either return
+/// - Found(tree) if we found the tree exactly,
+/// - Prefix if we found a tree of which prefix is a prefix
+/// - NotFound if there is no tree
+fn find2<S: BlobStore, T>(
+    store: &S,
+    tree: &TreeNode<S>,
+    prefix: &[u8],
+    f: impl Fn(FindResult<&TreeNode<S>>) -> Result<T, S::Error>,
+) -> Result<T, S::Error> {
+    let tree_prefix = tree.prefix().load(store)?;
+    let n = common_prefix(&tree_prefix, prefix);
+    // remaining in tree prefix
+    let rt = tree_prefix.len() - n;
+    // remaining in prefix
+    let rp = prefix.len() - n;
+    let fr = if rp == 0 && rt == 0 {
+        // direct hit
+        FindResult::Found(tree)
+    } else if rp == 0 {
+        // tree is a subtree of prefix
+        FindResult::Prefix { tree, matching: n }
+    } else if rt == 0 {
+        // prefix is a subtree of tree
+        let c = prefix[n];
+        let tree_children = tree.children().load(store)?;
+        if let Some(child) = tree_children.find(c) {
+            return find2(store, &child, &prefix[n..], f);
+        } else {
+            FindResult::NotFound
+        }
+    } else {
+        // disjoint, but we still need to store how far we matched
+        FindResult::NotFound
+    };
+    f(fr)
 }
 
 fn scan_prefix<S: BlobStore + Clone>(
