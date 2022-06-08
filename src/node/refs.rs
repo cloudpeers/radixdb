@@ -93,9 +93,9 @@ impl FlexRef<Vec<u8>> {
     pub fn first_u8(&self) -> u8 {
         match self.tpe() {
             Type::Inline => self.1[1],
+            Type::Id => self.1[1],
             Type::Ptr => self.with_arc(|x| x[0]).unwrap(),
             Type::None => panic!(),
-            Type::Id => todo!("pack first byte into id"),
         }
     }
 }
@@ -211,22 +211,6 @@ impl<T> FlexRef<T> {
         }
     }
 
-    fn with_inline<U>(&self, f: impl Fn(&[u8]) -> U) -> Option<U> {
-        if self.tpe() == Type::Inline {
-            Some(f(self.data()))
-        } else {
-            None
-        }
-    }
-
-    fn with_id<U>(&self, f: impl Fn(&[u8]) -> U) -> Option<U> {
-        if self.tpe() == Type::Id {
-            Some(f(self.data()))
-        } else {
-            None
-        }
-    }
-
     fn is_none(&self) -> bool {
         self.tpe() == Type::None
     }
@@ -324,7 +308,7 @@ impl<S: BlobStore> TreePrefixRef<S> {
         } else if let Some(x) = self.1.arc_vec_as_slice() {
             Blob::new(x)
         } else if let Some(id) = self.1.id_as_slice() {
-            store.read(id)?
+            store.read(&id[1..])?
         } else {
             panic!()
         })
@@ -349,7 +333,9 @@ impl<S: BlobStore> TreePrefixRef<S> {
 
     pub(crate) fn arc_to_id(&self, store: &S) -> Result<Result<Vec<u8>, usize>, S::Error> {
         Ok(if let Some(data) = self.1.arc_vec_as_slice() {
-            Ok(store.write(data)?)
+            let mut id = store.write(data)?;
+            id.insert(0, data.get(0).cloned().unwrap_or_default());
+            Ok(id)
         } else {
             Err(self.bytes().len())
         })
@@ -357,7 +343,7 @@ impl<S: BlobStore> TreePrefixRef<S> {
 
     pub(crate) fn id_to_arc(&self, store: &S) -> Result<Result<OwnedBlob, usize>, S::Error> {
         Ok(if let Some(id) = self.1.id_as_slice() {
-            Ok(store.read(id)?)
+            Ok(store.read(&id[1..])?)
         } else {
             Err(self.bytes().len())
         })
@@ -570,7 +556,7 @@ impl<S: BlobStore> TreeChildrenRef<S> {
         } else if let Some(x) = self.1.arc_as_clone() {
             NodeSeq::from_arc_vec(x)
         } else if let Some(id) = self.1.id_as_slice() {
-            NodeSeq::from_blob(store.read(id)?)
+            NodeSeq::from_blob(id[0] as usize, store.read(&id[1..])?)
         } else {
             panic!()
         })
@@ -580,9 +566,9 @@ impl<S: BlobStore> TreeChildrenRef<S> {
         Ok(if self.1.is_none() {
             NodeSeq::empty()
         } else if let Some(x) = self.1.arc_as_ref() {
-            NodeSeq::from_blob(x.blob())
+            NodeSeq::from_blob(x.record_size, x.blob())
         } else if let Some(id) = self.1.id_as_slice() {
-            NodeSeq::from_blob(store.read(id)?)
+            NodeSeq::from_blob(id[0] as usize, store.read(&id[1..])?)
         } else {
             panic!()
         })
@@ -602,49 +588,65 @@ impl<S: BlobStore> TreeChildrenRef<S> {
 }
 
 /// a newtype wrapper around a blob that contains a valid nodeseq
-#[repr(transparent)]
-pub(crate) struct NodeSeq<'a, S: BlobStore>(Blob<'a>, PhantomData<S>);
+pub(crate) struct NodeSeq<'a, S: BlobStore> {
+    data: Blob<'a>,
+    record_size: usize,
+    p: PhantomData<S>,
+}
 
 impl<S: BlobStore> NodeSeq<'static, S> {
     pub fn owned_iter(&self) -> OwnedNodeSeqIter<S> {
-        OwnedNodeSeqIter::new(self.0.clone())
+        OwnedNodeSeqIter::new(self.data.clone())
     }
 }
 
 impl<'a, S: BlobStore> NodeSeq<'a, S> {
     fn empty() -> Self {
-        Self(Blob::empty(), PhantomData)
+        Self { data: Blob::empty(), record_size: 0, p: PhantomData }
     }
 
     pub fn blob(&self) -> Blob<'a> {
-        self.0.clone()
+        self.data.clone()
     }
 
     fn from_arc_vec(value: Arc<NodeSeqBuilder<S>>) -> Self {
-        let data: &[u8] = value.as_ref().0.as_ref();
+        let data: &[u8] = value.as_ref().data.as_ref();
+        let record_size = value.as_ref().record_size;
         // extend the lifetime
         let data: &'static [u8] = unsafe { std::mem::transmute(data) };
-        Self(Blob::owned_new(data, Some(value)), PhantomData)
+        Self {
+            data: Blob::owned_new(data, Some(value)),
+            record_size,
+            p: PhantomData,
+        }
     }
 
-    fn from_blob(value: Blob<'a>) -> Self {
-        Self(value, PhantomData)
+    fn from_blob(record_size: usize, data: Blob<'a>) -> Self {
+        Self {
+            data,
+            record_size,
+            p: PhantomData,
+        }
     }
 
     pub fn iter(&self) -> NodeSeqIter<'_, S> {
-        NodeSeqIter::new(&self.0)
+        NodeSeqIter::new(&self.data)
     }
 
-    pub fn find(&self, first: u8) -> Option<TreeNode<'_, S>> {
-        // let bs = self.iter().next().map(|x| x.prefix().bytes().len() + x.value().bytes().len() + x.children().bytes().len()).unwrap_or(usize::max_value());
-        // println!("{} {} {} {}", self.0.len(), bs, self.0.len() / bs, self.0.len() % bs);
-        // todo: optimize
+    pub fn find(&self, elem: u8) -> Option<TreeNode<'_, S>> {
+        if self.record_size != 0 {
+            let records = self.data.len() / self.record_size;
+            if records == 256 {
+                let offset = (elem as usize) * self.record_size;
+                return TreeNode::read(&self.data[offset..])
+            }
+        }
         for leaf in self.iter() {
-            let first_opt = leaf.prefix().first_opt();
-            if first_opt == Some(first) {
+            let first_opt = leaf.prefix().first();
+            if first_opt == elem {
                 // found it
                 return Some(leaf);
-            } else if first_opt > Some(first) {
+            } else if first_opt > elem {
                 // not going to come anymore
                 return None;
             }

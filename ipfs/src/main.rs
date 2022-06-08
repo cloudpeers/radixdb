@@ -216,7 +216,7 @@ impl Ipfs {
     }
 
     fn commit(&mut self) -> anyhow::Result<()> {
-        // self.root.reattach()?;
+        self.root.try_reattach(self.store.clone())?;
         self.store.sync()
     }
 
