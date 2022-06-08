@@ -338,9 +338,12 @@ impl Ipfs {
             .iter()
             .map(|link| self.get_or_create_id(link))
             .collect::<anyhow::Result<BTreeSet<_>>>()?;
+        let links = serialize_links(&link_ids);
         self.root.insert(&block_key, &block.data)?;
-        self.root
-            .insert(&links_key(id), &serialize_links(&link_ids))?;
+        if !links.is_empty() {
+            self.root
+                .insert(&links_key(id), &links)?;
+        }
         Ok(id)
     }
     fn get(&mut self, hash: &[u8]) -> anyhow::Result<Option<OwnedBlob>> {
@@ -415,7 +418,7 @@ fn main() -> anyhow::Result<()> {
         let t0 = Instant::now();
         let mut res = 0u64;
         for hash in &hashes {
-            res += ipfs.get(hash)?.unwrap().len() as u64;
+            res += ipfs.get_id(hash)?.unwrap() as u64;
         }
         println!("done {} {}", res, t0.elapsed().as_secs_f64());
     }

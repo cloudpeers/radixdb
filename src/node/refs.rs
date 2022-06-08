@@ -602,7 +602,11 @@ impl<S: BlobStore> NodeSeq<'static, S> {
 
 impl<'a, S: BlobStore> NodeSeq<'a, S> {
     fn empty() -> Self {
-        Self { data: Blob::empty(), record_size: 0, p: PhantomData }
+        Self {
+            data: Blob::empty(),
+            record_size: 0,
+            p: PhantomData,
+        }
     }
 
     pub fn blob(&self) -> &Blob<'a> {
@@ -638,7 +642,7 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
             let records = self.data.len() / self.record_size;
             if records == 256 {
                 let offset = (elem as usize) * self.record_size;
-                return TreeNode::read(&self.data[offset..])
+                return TreeNode::read(&self.data[offset..]);
             }
         }
         for leaf in self.iter() {
@@ -724,8 +728,10 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         // let (value, rest) = TreeValueOptRef::<S>::read_one(rest)?;
         // let (children, rest) = TreeChildrenRef::<S>::read_one(rest)?;
         Some((
-            Self {    
-                prefix, value, children,
+            Self {
+                prefix,
+                value,
+                children,
                 // blob: Blob::empty(),
                 // value_offset,
                 // children_offset,
@@ -774,7 +780,9 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     /// get the first value
     pub fn first_value(&self, store: &S) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         Ok(if self.value().is_some() {
-            Some(TreeValueRefWrapper::new(Blob::copy_from_slice(self.value().bytes())))
+            Some(TreeValueRefWrapper::new(Blob::copy_from_slice(
+                self.value().bytes(),
+            )))
         } else {
             let children = self.children().load(store)?;
             children.iter().next().unwrap().first_value(store)?
@@ -789,7 +797,10 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
         prefix.extend_from_slice(&self.prefix().load(store)?);
         Ok(if self.value().is_some() {
-            Some((Blob::copy_from_slice(&prefix), TreeValueRefWrapper::new(Blob::copy_from_slice(self.value().bytes()))))
+            Some((
+                Blob::copy_from_slice(&prefix),
+                TreeValueRefWrapper::new(Blob::copy_from_slice(self.value().bytes())),
+            ))
         } else {
             let children = self.children().load(store)?;
             children.iter().next().unwrap().first_entry(store, prefix)?
@@ -799,7 +810,9 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     /// get the last value
     pub fn last_value(&self, store: &S) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         Ok(if self.children().is_empty() {
-            self.value().value_opt().map(|x| TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())))
+            self.value()
+                .value_opt()
+                .map(|x| TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())))
         } else {
             let children = self.children().load(store)?;
             children.iter().last().unwrap().last_value(store)?
@@ -814,7 +827,12 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     ) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
         prefix.extend_from_slice(&self.prefix().load(store)?);
         Ok(if self.children().is_empty() {
-            self.value().value_opt().map(|x| ((Blob::copy_from_slice(&prefix), TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())))))
+            self.value().value_opt().map(|x| {
+                ((
+                    Blob::copy_from_slice(&prefix),
+                    TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())),
+                ))
+            })
         } else {
             let c = self.children().load(store)?;
             c.iter().last().unwrap().last_entry(store, prefix)?

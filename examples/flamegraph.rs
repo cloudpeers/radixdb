@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
 
 use log::info;
 use radixdb::{
-    store::{DynBlobStore, PagedFileStore, DynBlobStore2},
+    store::{DynBlobStore, DynBlobStore2, PagedFileStore},
     VSRadixTree,
 };
 use tempfile::tempdir;

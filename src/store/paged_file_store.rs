@@ -85,7 +85,7 @@ impl<const SIZE: usize> Page<SIZE> {
     fn bytes(&self, offset: usize) -> anyhow::Result<OwnedBlob> {
         let data = self.0.mmap.as_ref();
         let base = offset + 4;
-        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;    
+        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
         let slice: &[u8] = &data[base..base + length];
         let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
         Ok(OwnedBlob::owned_new(slice, Some(self.0.clone())))
@@ -227,7 +227,10 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::{store::{DynBlobStore, DynBlobStore2}, VSRadixTree};
+    use crate::{
+        store::{DynBlobStore, DynBlobStore2},
+        VSRadixTree,
+    };
 
     use super::*;
     use log::info;

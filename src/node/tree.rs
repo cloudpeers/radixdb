@@ -15,7 +15,7 @@ pub struct Tree<S: BlobStore = NoStore> {
     /// This contains exactly one node, even in the case of an empty tree
     node: Arc<NodeSeqBuilder<S>>,
     /// The associated store
-    store: S,    
+    store: S,
 }
 
 impl<S: BlobStore + Default> Default for Tree<S> {
@@ -170,7 +170,6 @@ impl<S: BlobStore> Tree<S> {
     pub fn empty(store: S) -> Self {
         Self::new(NodeSeqBuilder::empty(), store)
     }
-
 
     fn new(mut node: NodeSeqBuilder<S>, store: S) -> Self {
         node.make_non_empty();
@@ -469,7 +468,8 @@ impl<S: BlobStore + Clone> Tree<S> {
     }
 
     pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
-        filter_prefix(&self.node(), &self.owned_blob(), &self.store, prefix).map(|node| Tree::new(node, self.store.clone()))
+        filter_prefix(&self.node(), &self.owned_blob(), &self.store, prefix)
+            .map(|node| Tree::new(node, self.store.clone()))
     }
 
     pub fn try_reattach(&mut self, store: S) -> Result<(), S::Error> {

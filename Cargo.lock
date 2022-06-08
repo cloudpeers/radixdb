@@ -278,6 +278,7 @@ dependencies = [
  "obey",
  "parking_lot",
  "proptest",
+ "smallvec",
  "tempfile",
  "thousands",
 ]

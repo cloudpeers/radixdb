@@ -1,5 +1,7 @@
 use std::{fmt, fmt::Debug, marker::PhantomData, sync::Arc};
 
+use smallvec::SmallVec;
+
 use crate::{
     node::iterators::NodeSeqIter,
     store::{Blob2 as Blob, BlobStore2 as BlobStore, NoStore, OwnedBlob},
@@ -26,13 +28,13 @@ impl IterPosition for AtPrefix {}
 impl IterPosition for AtValue {}
 impl IterPosition for AtChildren {}
 
-pub(crate) trait VecTakeExt<T> {
-    fn take(&mut self) -> Vec<T>;
+pub(crate) trait VecTakeExt {
+    fn take(&mut self) -> Self;
 }
 
-impl<T> VecTakeExt<T> for Vec<T> {
-    fn take(&mut self) -> Vec<T> {
-        let mut t = Vec::new();
+impl VecTakeExt for SmallVec<[u8; 16]> {
+    fn take(&mut self) -> Self {
+        let mut t = SmallVec::new();
         std::mem::swap(&mut t, self);
         t
     }
@@ -43,7 +45,7 @@ impl<T> VecTakeExt<T> for Vec<T> {
 pub(crate) struct InPlaceFlexRefSeqBuilder {
     // place for the data. [..t1] and [s1..] contain valid sequences of flexrefs.
     // The rest is to be considered uninitialized
-    vec: Vec<u8>,
+    vec: SmallVec<[u8; 16]>,
     // end of the result
     t1: usize,
     // start of the source
@@ -69,7 +71,6 @@ pub(crate) trait Extendable {
     fn push(&mut self, value: u8);
 
     fn push_id(&mut self, id: &[u8]) {
-        self.reserve(1 + id.len());
         self.push(make_header_byte(Type::Id, id.len()));
         self.extend_from_slice(id);
     }
@@ -81,7 +82,6 @@ pub(crate) trait Extendable {
     fn push_arc<T>(&mut self, arc: Arc<T>) {
         let data: usize = Arc::into_raw(arc) as usize;
         let data: u64 = data as u64;
-        self.reserve(9);
         self.push(make_header_byte(Type::Ptr, 8));
         self.extend_from_slice(&data.to_be_bytes());
     }
@@ -96,14 +96,12 @@ pub(crate) trait Extendable {
     }
 
     fn push_inline(&mut self, data: &[u8]) {
-        debug_assert!(data.len() < 64);
-        self.reserve(data.len() + 1);
         self.push(make_header_byte(Type::Inline, data.len()));
         self.extend_from_slice(data);
     }
 }
 
-impl Extendable for Vec<u8> {
+impl Extendable for SmallVec<[u8; 16]> {
     fn reserve(&mut self, n: usize) {
         let free = self.capacity() - self.len();
         if free < n {
@@ -126,9 +124,10 @@ impl Extendable for InPlaceFlexRefSeqBuilder {
         if gap < n {
             let missing = n - gap;
             self.vec.reserve(missing);
-            let space = self.vec.capacity() - self.vec.len();
-            self.vec
-                .splice(self.s0..self.s0, std::iter::repeat(0).take(space));
+            let s1 = self.vec.len();
+            let space = self.vec.capacity() - s1;
+            self.vec.resize(self.vec.capacity(), 0);
+            self.vec.copy_within(self.s0..s1, self.s0 + space);
             self.s0 += space;
         }
     }
@@ -173,22 +172,22 @@ fn validate_nodeseq_slice<S: BlobStore>(value: &[u8]) -> usize {
 
 impl InPlaceFlexRefSeqBuilder {
     /// Create a new builder by taking over the data from a vec
-    pub fn new(vec: Vec<u8>) -> Self {
+    pub fn new(vec: SmallVec<[u8; 16]>) -> Self {
         Self { vec, t1: 0, s0: 0 }
     }
 
-    fn into_inner(mut self) -> Vec<u8> {
+    fn into_inner(mut self) -> SmallVec<[u8; 16]> {
         // debug_assert!(self.source_count() == 0);
         // debug_assert!(self.target_count() % 3 == 0);
         self.vec.truncate(self.t1);
         self.vec
     }
 
-    fn take_result(&mut self) -> Vec<u8> {
+    fn take_result(&mut self) -> SmallVec<[u8; 16]> {
         // debug_assert!(self.source_count() == 0);
         // debug_assert!(self.target_count() % 3 == 0);
         self.vec.truncate(self.t1);
-        let mut res = Vec::new();
+        let mut res = SmallVec::new();
         std::mem::swap(&mut self.vec, &mut res);
         self.t1 = 0;
         self.s0 = 0;
@@ -281,45 +280,45 @@ impl<'a, S: BlobStore, P: IterPosition> BuilderRef<'a, S, P> {
 
 impl<'a, S: BlobStore> BuilderRef<'a, S, AtPrefix> {
     pub fn push_prefix(self, prefix: impl AsRef<[u8]>) -> BuilderRef<'a, S, AtValue> {
-        self.0 .data.push_arc_or_inline(prefix.as_ref());
+        self.0.data.push_arc_or_inline(prefix.as_ref());
         self.done()
     }
 
     pub fn push_prefix_raw(self, value: &TreePrefixRef<S>) -> BuilderRef<'a, S, AtValue> {
         value.manual_clone();
-        self.0 .data.extend_from_slice(value.bytes());
+        self.0.data.extend_from_slice(value.bytes());
         self.done()
     }
 
     pub fn push_prefix_empty(mut self) -> BuilderRef<'a, S, AtValue> {
-        self.0 .data.push_inline(&[]);
+        self.0.data.push_inline(&[]);
         self.done()
     }
 }
 
 impl<'a, S: BlobStore> BuilderRef<'a, S, AtValue> {
     pub fn push_value(self, value: impl AsRef<[u8]>) -> BuilderRef<'a, S, AtChildren> {
-        self.0 .data.push_arc_or_inline(value.as_ref());
+        self.0.data.push_arc_or_inline(value.as_ref());
         self.done()
     }
 
     pub fn push_value_opt(self, value: Option<impl AsRef<[u8]>>) -> BuilderRef<'a, S, AtChildren> {
         if let Some(value) = value {
-            self.0 .data.push_arc_or_inline(value.as_ref());
+            self.0.data.push_arc_or_inline(value.as_ref());
         } else {
-            self.0 .data.push_none();
+            self.0.data.push_none();
         }
         self.done()
     }
 
     pub fn push_value_none(mut self) -> BuilderRef<'a, S, AtChildren> {
-        self.0 .data.push_none();
+        self.0.data.push_none();
         self.done()
     }
 
     pub fn push_value_raw(self, value: &TreeValueOptRef<S>) -> BuilderRef<'a, S, AtChildren> {
         value.manual_clone();
-        self.0 .data.extend_from_slice(value.bytes());
+        self.0.data.extend_from_slice(value.bytes());
         self.done()
     }
 }
@@ -327,21 +326,21 @@ impl<'a, S: BlobStore> BuilderRef<'a, S, AtValue> {
 impl<'a, S: BlobStore> BuilderRef<'a, S, AtChildren> {
     pub fn push_children(self, children: NodeSeqBuilder<S>) -> BuilderRef<'a, S, AtPrefix> {
         if !children.is_empty() {
-            self.0 .data.push_arc(Arc::new(children));
+            self.0.data.push_arc(Arc::new(children));
         } else {
-            self.0 .data.push_none();
+            self.0.data.push_none();
         }
         self.done()
     }
 
     pub fn push_children_raw(self, value: &TreeChildrenRef<S>) -> BuilderRef<'a, S, AtPrefix> {
         value.manual_clone();
-        self.0 .data.extend_from_slice(value.bytes());
+        self.0.data.extend_from_slice(value.bytes());
         self.done()
     }
 
     pub fn push_children_empty(self) -> BuilderRef<'a, S, AtChildren> {
-        self.0 .data.push_none();
+        self.0.data.push_none();
         self.done()
     }
 }
@@ -582,7 +581,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
             arc
         } else if let Some(id) = v.1.id_as_slice() {
             let data = store.read(&id[1..])?;
-            Arc::new(NodeSeqBuilder::new(data.to_vec()))
+            Arc::new(NodeSeqBuilder::new(data.as_ref().into()))
         } else {
             Arc::new(NodeSeqBuilder::empty())
         };
@@ -651,7 +650,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
             ip.attach(store)?;
             let data = ip.into_inner();
             let rs = data.compute_record_size();
-            let mut id = store.write(&data.data)?;            
+            let mut id = store.write(&data.data)?;
             id.insert(0, rs as u8);
             self.push_id(&id)
         })
@@ -686,7 +685,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
 }
 
 pub(crate) struct NodeSeqBuilder<S: BlobStore = NoStore> {
-    pub(crate) data: Vec<u8>,
+    pub(crate) data: SmallVec<[u8; 16]>,
     pub(crate) record_size: usize,
     p: PhantomData<S>,
 }
@@ -716,7 +715,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         BuilderRef(self, PhantomData)
     }
 
-    pub fn new(data: Vec<u8>) -> Self {        
+    pub fn new(data: SmallVec<[u8; 16]>) -> Self {
         Self {
             data,
             record_size: 0,
@@ -727,7 +726,9 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     pub fn compute_record_size(&self) -> usize {
         let mut res = 0;
         for node in NodeSeqIter::<S>::new(&self.data) {
-            let rs = node.prefix().bytes().len() + node.value().bytes().len() + node.children().bytes().len();
+            let rs = node.prefix().bytes().len()
+                + node.value().bytes().len()
+                + node.children().bytes().len();
             if res == 0 {
                 res = rs;
             } else if res != rs {
@@ -739,7 +740,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     }
 
     pub fn empty() -> Self {
-        Self::new(Vec::with_capacity(32))
+        Self::new(SmallVec::new())
     }
 
     pub fn make_non_empty(&mut self) {
@@ -755,8 +756,8 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
         self.data.is_empty()
     }
 
-    pub fn into_inner(mut self) -> Vec<u8> {
-        let mut r = Vec::new();
+    pub fn into_inner(mut self) -> SmallVec<[u8; 16]> {
+        let mut r = SmallVec::new();
         std::mem::swap(&mut self.data, &mut r);
         drop(self);
         r

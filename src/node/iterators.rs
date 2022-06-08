@@ -77,16 +77,12 @@ impl<'a, S: BlobStore> NodeSeqIter<'a, S> {
     }
 
     pub fn next(&mut self) -> Option<TreeNode<'_, S>> {
-        if self.0.is_empty() {
-            None
-        } else {
-            match TreeNode::read_one(&mut self.0) {
-                Some((res, rest)) => {
-                    self.0 = rest;
-                    Some(res)
-                }
-                None => None,
+        match TreeNode::read_one(&mut self.0) {
+            Some((res, rest)) => {
+                self.0 = rest;
+                Some(res)
             }
+            None => None,
         }
     }
 }
@@ -95,16 +91,12 @@ impl<'a, S: BlobStore> Iterator for NodeSeqIter<'a, S> {
     type Item = TreeNode<'a, S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.0.is_empty() {
-            None
-        } else {
-            match TreeNode::read_one(&mut self.0) {
-                Some((res, rest)) => {
-                    self.0 = rest;
-                    Some(res)
-                }
-                None => None,
+        match TreeNode::read_one(&mut self.0) {
+            Some((res, rest)) => {
+                self.0 = rest;
+                Some(res)
             }
+            None => None,
         }
     }
 }
