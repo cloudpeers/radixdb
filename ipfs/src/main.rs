@@ -351,15 +351,16 @@ fn main() -> anyhow::Result<()> {
     let mut hashes = Vec::new();
     for i in 0..100_000u64 {
         println!("putting block {}", i);
-        let mut data = [0u8; 10000];
+        let mut data = [0u8; 100000];
         data[0..8].copy_from_slice(&i.to_be_bytes());
         let block = Block::new(&data);
         ipfs.put(&block)?;
         hashes.push(block.hash);
     }
+    let t0 = Instant::now();
     println!("committing {:?}", store);
     ipfs.commit()?;
-    println!("done {:?}", store);
+    println!("done {:?} {}", store, t0.elapsed().as_secs_f64());
     // ipfs.dump()?;
     let id1 = ipfs.get_or_create_id(b"abcd")?;
     let id2 = ipfs.get_or_create_id(b"abcd")?;
