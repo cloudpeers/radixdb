@@ -3,9 +3,11 @@
 //!
 //!
 use radixdb::{
-    VSRadixTree as RadixTree,
-    store::{Blob, BlobStore2 as BlobStore, DynBlobStore2 as DynBlobStore, NoError, PagedFileStore, OwnedBlob, MemStore2},
-    *,
+    store::{
+        Blob, BlobStore2 as BlobStore, DynBlobStore2 as DynBlobStore, MemStore2, NoError,
+        OwnedBlob, PagedFileStore,
+    },
+    VSRadixTree as RadixTree, *,
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
@@ -118,10 +120,7 @@ impl<S: BlobStore + Clone> RadixTreeExt<S> for RadixTree<S> {
     }
 
     fn remove(&mut self, key: &[u8]) -> Result<(), S::Error> {
-        self.try_left_combine_with(
-            &RadixTree::single(key, &[]),
-            |a, b| Ok(None),
-        )
+        self.try_left_combine_with(&RadixTree::single(key, &[]), |a, b| Ok(None))
     }
 }
 
@@ -366,14 +365,18 @@ fn main() -> anyhow::Result<()> {
     let store = PagedFileStore::<4194304>::new(file)?;
     let mut ipfs = Ipfs::new(Arc::new(store.clone()))?;
     let mut hashes = Vec::new();
-    for i in 0..100_000u64 {
-        println!("putting block {}", i);
+    let blocks = (0..100_000u64).map(|i| {
         let mut data = [0u8; 10000];
         data[0..8].copy_from_slice(&i.to_be_bytes());
-        let block = Block::new(&data);
+        Block::new(&data)
+    }).collect::<Vec<_>>();
+    let t0 = Instant::now();
+    for (i, block) in blocks.into_iter().enumerate() {
+        println!("putting block {}", i);
         ipfs.put(&block)?;
         hashes.push(block.hash);
     }
+    println!("finished {}", t0.elapsed().as_secs_f64());
     let t0 = Instant::now();
     println!("committing {:?}", store);
     ipfs.commit()?;
