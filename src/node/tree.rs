@@ -801,6 +801,7 @@ where
                     Ordering::Greater => {
                         // the .unwrap() is safe because cmp guarantees that there is a value
                         let b = c.b.next().unwrap();
+                        println!("{:?}", b.prefix());
                         c.a.insert_converted(b, &bb)?;
                     }
                 }
@@ -1920,7 +1921,6 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for Tree {
     fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
         let mut tree = Tree::empty();
         for (k, v) in iter.into_iter() {
-            tree.dump().unwrap();
             tree.outer_combine_with(&Tree::single(k.as_ref(), v.as_ref()), |_, b| {
                 Some(b.to_owned())
             });
@@ -1957,11 +1957,11 @@ mod tests {
     // }
 
     fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
-        // proptest::strategy::Union::new_weighted(vec![
-        //     (10, proptest::collection::vec(b'0'..b'9', 0..9)),
-        //     (1, proptest::collection::vec(b'0'..b'9', 128..129)),
-        // ])
-        proptest::collection::vec(b'0'..b'9', 0..9)
+        proptest::strategy::Union::new_weighted(vec![
+            (10, proptest::collection::vec(b'0'..b'9', 0..9)),
+            (1, proptest::collection::vec(b'0'..b'9', 128..129)),
+        ])
+        // proptest::collection::vec(b'0'..b'9', 0..9)
     }
 
     fn arb_value() -> impl Strategy<Value = Vec<u8>> {
@@ -2572,11 +2572,17 @@ mod tests {
         let a = btreemap! {
             vec![1, 1] => vec![],
             vec![1, 2] => vec![],
+        };
+        let b = btreemap! {
             vec![1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] => vec![]
         };
         let at = mk_owned_tree(&a);
-        at.dump();
+        let bt = mk_owned_tree(&b);
         assert!(at.try_validate(&NoStore).unwrap());
+        assert!(bt.try_validate(&NoStore).unwrap());
+        let mut rt = at;
+        rt.outer_combine_with(&bt, |a, b| Some(b.to_owned()));
+        assert!(rt.try_validate(&NoStore).unwrap());
     }
 
     #[test]

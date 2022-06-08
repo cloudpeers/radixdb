@@ -425,7 +425,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
         prefix: &TreePrefixRef<S2>,
         store: &S2,
     ) -> Result<InPlaceBuilderRef<'a, S, AtValue>, S::Error> {
-        // todo fix
+        prefix.manual_clone();
         self.0.extend_from_slice(prefix.bytes());
         Ok(self.done())
     }
