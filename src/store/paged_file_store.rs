@@ -10,6 +10,8 @@ use std::{
     sync::Arc,
 };
 
+use super::{BlobStore2, OwnedBlob};
+
 #[derive(Clone)]
 pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
 
@@ -27,7 +29,7 @@ impl<const SIZE: usize> Debug for PagedFileStore<SIZE> {
 struct Inner<const SIZE: usize> {
     file: File,
     pages: FnvHashMap<u64, Page<SIZE>>,
-    recent: FnvHashMap<u64, Blob>,
+    recent: FnvHashMap<u64, OwnedBlob>,
 }
 
 const ALIGN: usize = 8;
@@ -71,17 +73,22 @@ impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
 }
 
 #[derive(Debug, Clone)]
-struct Page<const SIZE: usize>(Arc<dyn BlobOwner>);
+struct Page<const SIZE: usize>(Arc<PageInner<SIZE>>);
 
 impl<const SIZE: usize> Page<SIZE> {
     fn new(mmap: Mmap) -> Self {
         assert!(mmap.len() == SIZE);
-        Self(Arc::new(Arc::new(PageInner::<SIZE>::new(mmap))))
+        Self(Arc::new(PageInner::<SIZE>::new(mmap)))
     }
 
     /// try to get the bytes at the given offset
-    fn bytes(&self, offset: usize) -> anyhow::Result<Blob> {
-        Blob::new(self.0.clone(), offset)
+    fn bytes(&self, offset: usize) -> anyhow::Result<OwnedBlob> {
+        let data = self.0.mmap.as_ref();
+        let base = offset + 4;
+        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;    
+        let slice: &[u8] = &data[base..base + length];
+        let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
+        Ok(OwnedBlob::owned_new(slice, Some(self.0.clone())))
     }
 }
 
@@ -140,7 +147,7 @@ impl<const SIZE: usize> Inner<SIZE> {
         Ok(())
     }
 
-    fn bytes(&self, offset: u64) -> anyhow::Result<Blob> {
+    fn bytes(&self, offset: u64) -> anyhow::Result<OwnedBlob> {
         let page = Self::page(offset);
         let page_offset = Self::offset_within_page(offset);
         // first try pages, then recent
@@ -175,7 +182,7 @@ impl<const SIZE: usize> Inner<SIZE> {
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         self.file.write_all(data)?;
         self.file.flush()?;
-        self.recent.insert(id, Blob::from_slice(data));
+        self.recent.insert(id, OwnedBlob::copy_from_slice(data));
         Ok(id)
     }
 }
@@ -194,15 +201,17 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
     }
 }
 
-impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
+impl<const SIZE: usize> BlobStore2 for PagedFileStore<SIZE> {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob> {
-        self.0.lock().bytes(id)
+    fn read(&self, id: &[u8]) -> anyhow::Result<OwnedBlob> {
+        let offset = u64::from_be_bytes(id.try_into().unwrap());
+        self.0.lock().bytes(offset)
     }
 
-    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
-        self.0.lock().append(data)
+    fn write(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let id = self.0.lock().append(data)?;
+        Ok(id.to_be_bytes().to_vec())
     }
 
     fn sync(&self) -> anyhow::Result<()> {
@@ -218,7 +227,7 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::{store::DynBlobStore, VSRadixTree};
+    use crate::{store::{DynBlobStore, DynBlobStore2}, VSRadixTree};
 
     use super::*;
     use log::info;
@@ -252,7 +261,7 @@ mod tests {
         data
     }
 
-    fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
+    fn do_test(store: DynBlobStore2) -> anyhow::Result<()> {
         let elems = (0..2000000u64).map(|i| {
             if i % 100000 == 0 {
                 info!("{}", i);
@@ -335,7 +344,7 @@ mod tests {
             .write(true)
             .open(&path)?;
         let db = PagedFileStore::<1048576>::new(file).unwrap();
-        let store: DynBlobStore = Arc::new(db);
+        let store: DynBlobStore2 = Arc::new(db);
         do_test(store)
     }
 
@@ -374,7 +383,7 @@ mod tests {
         let t = Instant::now();
         for (i, offset) in offsets.into_iter().enumerate() {
             let expected = mk_block::<BLOCK_SIZE>(i as u64);
-            let actual = db.read(offset)?;
+            let actual = db.read(&offset)?;
             assert_eq!(&expected[..], actual.as_ref());
         }
         let dt = t.elapsed().as_secs_f64();

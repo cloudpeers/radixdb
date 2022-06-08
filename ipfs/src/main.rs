@@ -352,7 +352,6 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
     let file = tempfile()?;
     let store = PagedFileStore::<4194304>::new(file)?;
-    let store = MemStore2::default();
     let mut ipfs = Ipfs::new(Arc::new(store.clone()))?;
     let mut hashes = Vec::new();
     for i in 0..100_000u64 {

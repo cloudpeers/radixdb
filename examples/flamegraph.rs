@@ -2,12 +2,12 @@ use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
 
 use log::info;
 use radixdb::{
-    store::{DynBlobStore, PagedFileStore},
+    store::{DynBlobStore, PagedFileStore, DynBlobStore2},
     VSRadixTree,
 };
 use tempfile::tempdir;
 
-fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
+fn do_test(store: DynBlobStore2) -> anyhow::Result<()> {
     let elems = (0..2000_000u64)
         .map(|i| {
             if i % 100000 == 0 {
@@ -134,7 +134,7 @@ fn browser_compare() -> anyhow::Result<()> {
         .write(true)
         .open(&path)?;
     let db = PagedFileStore::<1048576>::new(file).unwrap();
-    let store: DynBlobStore = Arc::new(db);
+    let store: DynBlobStore2 = Arc::new(db);
     do_test(store)
 }
 

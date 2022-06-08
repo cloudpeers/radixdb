@@ -732,7 +732,7 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
     pub fn compute_record_size(&self) -> usize {
         let mut res = 0;
         for node in NodeSeqIter::<S>::new(&self.data) {
-            let rs = node.prefix.bytes().len() + node.value.bytes().len() + node.children.bytes().len();
+            let rs = node.prefix().bytes().len() + node.value().bytes().len() + node.children().bytes().len();
             if res == 0 {
                 res = rs;
             } else if res != rs {
@@ -824,8 +824,8 @@ impl<S: BlobStore> NodeSeqBuilder<S> {
             assert!(n < prefix.len());
             cursor.push_prefix(&prefix[n..])
         } else {
-            node.prefix.manual_clone();
-            cursor.push_prefix_raw(node.prefix)
+            node.prefix().manual_clone();
+            cursor.push_prefix_raw(node.prefix())
         };
         cursor
             .push_value_raw(node.value())

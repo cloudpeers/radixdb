@@ -917,7 +917,7 @@ where
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
         let a = a.move_prefix();
-        let a = match (a.peek().value_opt(), b.value.value_opt()) {
+        let a = match (a.peek().value_opt(), b.value().value_opt()) {
             (Some(av), Some(bv)) => {
                 let r = f(av, bv)?;
                 a.push_value_opt(r)
@@ -1170,11 +1170,11 @@ where
     E: From<A::Error> + From<B::Error> + From<NoError>,
     F: Fn(&TreeValueRef<A>, &TreeValueRef<B>) -> Result<bool, E> + Copy,
 {
-    let ap = a.prefix.load(&ab)?;
-    let bp = b.prefix.load(&bb)?;
+    let ap = a.prefix().load(&ab)?;
+    let bp = b.prefix().load(&bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
     if n == ap.len() && n == bp.len() {
-        match (a.value.value_opt(), b.value.value_opt()) {
+        match (a.value().value_opt(), b.value().value_opt()) {
             (Some(av), Some(bv)) => {
                 if f(av, bv)? {
                     return Ok(true);
@@ -1183,21 +1183,21 @@ where
             (Some(_), None) => return Ok(true),
             _ => {}
         };
-        let ac = a.children.load(&ab)?;
-        let bc = b.children.load(&bb)?;
+        let ac = a.children().load(&ab)?;
+        let bc = b.children().load(&bb)?;
         left_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
     } else if n == ap.len() {
-        if a.value.is_some() {
+        if a.value().is_some() {
             return Ok(true);
         };
         let mut bc = NodeSeqBuilder::<B>::empty();
         bc.push_shortened(b, &bb, n)?;
-        let ac = a.children.load(&ab)?;
+        let ac = a.children().load(&ab)?;
         left_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
     } else if n == bp.len() {
         let mut ac = NodeSeqBuilder::<A>::empty();
         ac.push_shortened(a, &ab, n)?;
-        let bc = b.children.load(&bb)?;
+        let bc = b.children().load(&bb)?;
         left_combine_children_pred(ac.iter(), ab, bc.iter(), bb, f)
     } else {
         Ok(true)
@@ -1252,7 +1252,7 @@ where
         // prefixes are identical
         // move prefix and value
         let a = a.move_prefix();
-        let a = if let (Some(av), Some(bv)) = (a.peek().value_opt(), b.value.value_opt()) {
+        let a = if let (Some(av), Some(bv)) = (a.peek().value_opt(), b.value().value_opt()) {
             let r = f(av, bv)?;
             a.push_value_opt(r)
         } else {
@@ -1390,7 +1390,7 @@ where
             // take the children
             let _ = cursor.push_children_raw(a.peek());
             let a = a.set_new_arc(Arc::new(child));
-            let bc = b.children.load(&bb)?;
+            let bc = b.children().load(&bb)?;
             retain_children_prefix_with(a, ab, bc.iter(), bb, f)?;
         } else if !f(&b.value().value_opt().unwrap())? {
             a.push_prefix_empty()
@@ -1752,9 +1752,9 @@ impl<S: BlobStore> Iter<S> {
     fn next0(&mut self) -> Result<Option<(OwnedBlob, TreeValueRefWrapper<S>)>, S::Error> {
         while !self.stack.is_empty() {
             if let Some((value, node)) = self.stack.last_mut().unwrap().2.next_value_and_node() {
-                let prefix = node.prefix.load(&self.store)?;
+                let prefix = node.prefix().load(&self.store)?;
                 let prefix_len = prefix.len();
-                let children = node.children.load_owned(&self.store)?.owned_iter();
+                let children = node.children().load_owned(&self.store)?.owned_iter();
                 self.path.append(prefix.as_ref());
                 self.stack.push((prefix_len, value, children));
             } else {
@@ -1815,11 +1815,11 @@ impl<S: BlobStore, F: Fn(&[u8], &TreeNode<S>) -> bool> GroupBy<S, F> {
             }
             if let Some(node) = self.stack.last_mut().unwrap().1.next_node() {
                 // apply the prefix in any case!
-                let prefix = node.prefix.load(&self.store)?;
+                let prefix = node.prefix().load(&self.store)?;
                 let prefix_len = prefix.len();
                 self.path.append(prefix.as_ref());
                 if (self.descend)(&self.path.0, &node) {
-                    let children = node.children.load_owned(&self.store)?.owned_iter();
+                    let children = node.children().load_owned(&self.store)?.owned_iter();
                     let res = if node.value().is_some() {
                         let mut t = NodeSeqBuilder::empty();
                         t.cursor()
@@ -1885,7 +1885,7 @@ impl<S: BlobStore> Values<S> {
     fn next0(&mut self) -> Result<Option<TreeValueRefWrapper<S>>, S::Error> {
         while !self.stack.is_empty() {
             if let Some((value, node)) = self.stack.last_mut().unwrap().next_value_and_node() {
-                let children = node.children.load_owned(&self.store)?.owned_iter();
+                let children = node.children().load_owned(&self.store)?.owned_iter();
                 self.stack.push(children);
                 if let Some(value) = value {
                     let value = TreeValueRefWrapper::new(value);

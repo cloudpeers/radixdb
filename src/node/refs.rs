@@ -83,10 +83,10 @@ impl FlexRef<Vec<u8>> {
 
     pub fn first_u8_opt(&self) -> Option<u8> {
         match self.tpe() {
-            Type::None => None,
             Type::Inline => self.1.get(1).cloned(),
+            Type::Id => self.1.get(1).cloned(),
             Type::Ptr => self.with_arc(|x| x.as_ref().get(0).cloned()).unwrap(),
-            Type::Id => todo!("pack first byte into id"),
+            Type::None => None,
         }
     }
 
@@ -656,9 +656,10 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
 }
 
 pub struct TreeNode<'a, S: BlobStore = NoStore> {
-    pub(crate) prefix: &'a TreePrefixRef<S>,
-    pub(crate) value: &'a TreeValueOptRef<S>,
-    pub(crate) children: &'a TreeChildrenRef<S>,
+    blob: Blob<'a>,
+    prefix: &'a TreePrefixRef<S>,
+    value: &'a TreeValueOptRef<S>,
+    children: &'a TreeChildrenRef<S>,
 }
 
 impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
@@ -674,6 +675,7 @@ impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
 impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     fn empty() -> Self {
         TreeNode {
+            blob: Blob::empty(),
             prefix: TreePrefixRef::empty(),
             value: TreeValueOptRef::none(),
             children: TreeChildrenRef::empty(),
@@ -707,6 +709,7 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         let (children, rest) = TreeChildrenRef::<S>::read_one(rest)?;
         Some((
             Self {
+                blob: Blob::empty(),
                 prefix,
                 value,
                 children,
