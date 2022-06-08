@@ -2735,6 +2735,11 @@ mod tests {
     }
 
     #[test]
+    fn sizes() {
+        println!("{}", std::mem::size_of::<TreeNode>());
+    }
+
+    #[test]
     fn smoke() {
         let a = Tree::single(b"aaaa", b"b");
         let b = Tree::single(b"aa", b"d");

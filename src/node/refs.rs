@@ -636,6 +636,8 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
     }
 
     pub fn find(&self, first: u8) -> Option<TreeNode<'_, S>> {
+        // let bs = self.iter().next().map(|x| x.prefix().bytes().len() + x.value().bytes().len() + x.children().bytes().len()).unwrap_or(usize::max_value());
+        // println!("{} {} {} {}", self.0.len(), bs, self.0.len() / bs, self.0.len() % bs);
         // todo: optimize
         for leaf in self.iter() {
             let first_opt = leaf.prefix().first_opt();
