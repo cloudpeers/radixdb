@@ -935,12 +935,8 @@ impl<S: BlobStore> InPlaceNodeSeqBuilder<S> {
     }
 
     /// Peek element of the source
-    pub fn peek(&self) -> Option<u8> {
-        if self.inner.has_remaining() {
-            Some(TreePrefixRef::<S>::new(FlexRef::new(self.inner.source_slice())).first())
-        } else {
-            None
-        }
+    pub fn peek(&self) -> Option<Option<u8>> {
+        TreePrefixRef::<S>::read(self.inner.source_slice()).map(|x| x.first_opt())
     }
 
     /// move one triple from the source to the target

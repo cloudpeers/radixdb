@@ -64,12 +64,8 @@ impl<'a, S: BlobStore> NodeSeqIter<'a, S> {
         Self(data, PhantomData)
     }
 
-    pub fn peek(&self) -> Option<u8> {
-        if self.0.is_empty() {
-            None
-        } else {
-            TreePrefixRef::<S>::read(&self.0).map(|x| x.first())
-        }
+    pub fn peek(&self) -> Option<Option<u8>> {
+        TreePrefixRef::<S>::read(&self.0).map(|x| x.first_opt())
     }
 
     pub fn is_empty(&self) -> bool {

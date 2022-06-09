@@ -419,7 +419,7 @@ fn main() -> anyhow::Result<()> {
         let t0 = Instant::now();
         let mut res = 0u64;
         for hash in &hashes {
-            res += ipfs.get_id(hash)?.unwrap() as u64;
+            res += ipfs.get(hash)?.unwrap().len() as u64;
         }
         println!("done {} {}", res, t0.elapsed().as_secs_f64());
     }

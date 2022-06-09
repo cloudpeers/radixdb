@@ -89,16 +89,6 @@ impl FlexRef<Vec<u8>> {
             Type::None => None,
         }
     }
-
-    pub fn first_u8(&self) -> u8 {
-        debug_assert!(len(self.1[0]) != 0);
-        match self.tpe() {
-            Type::Inline => self.1[1],
-            Type::Id => self.1[1],
-            Type::Ptr => self.with_arc(|x| x[0]).unwrap(),
-            Type::None => panic!(),
-        }
-    }
 }
 
 impl<T> FlexRef<T> {
@@ -107,13 +97,12 @@ impl<T> FlexRef<T> {
     }
 
     fn data(&self) -> &[u8] {
-        let len = len(self.header());
-        &self.1[1..len + 1]
+        &self.1[1..]
     }
 
     fn bytes(&self) -> &[u8] {
         let len = len(self.header());
-        &self.1[0..len + 1]
+        &self.1
     }
 
     fn manual_drop(&self) {
@@ -139,6 +128,9 @@ impl<T> FlexRef<T> {
     }
 
     pub fn new(value: &[u8]) -> &Self {
+        if len(value[0]) + 1 != value.len() {
+            debug_assert_eq!(len(value[0]) + 1, value.len());
+        }
         // todo: use ref_cast
         unsafe { std::mem::transmute(value) }
     }
@@ -159,11 +151,11 @@ impl<T> FlexRef<T> {
         if value.len() == 0 {
             return None;
         }
-        let len = len(value[0]);
-        if len + 1 > value.len() {
+        let len = len(value[0]) + 1;
+        if len > value.len() {
             return None;
         }
-        Some((Self::new(value), &value[len + 1..]))
+        Some((Self::new(&value[..len]), &value[len..]))
     }
 
     fn read(value: &[u8]) -> Option<&Self> {
@@ -288,10 +280,6 @@ impl<S: BlobStore> TreePrefixRef<S> {
 
     pub fn first_opt(&self) -> Option<u8> {
         self.1.first_u8_opt()
-    }
-
-    pub fn first(&self) -> u8 {
-        self.1.first_u8()
     }
 
     pub(crate) fn new(value: &FlexRef<Vec<u8>>) -> &Self {
@@ -655,11 +643,11 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
             }
         }
         for leaf in self.iter() {
-            let first_opt = leaf.prefix().first();
-            if first_opt == elem {
+            let first_opt = leaf.prefix().first_opt();
+            if first_opt == Some(elem) {
                 // found it
                 return Some(leaf);
-            } else if first_opt > elem {
+            } else if first_opt > Some(elem) {
                 // not going to come anymore
                 return None;
             }
@@ -825,10 +813,10 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         prefix.extend_from_slice(&self.prefix().load(store)?);
         Ok(if self.children().is_empty() {
             self.value().value_opt().map(|x| {
-                ((
+                (
                     Blob::copy_from_slice(&prefix),
                     TreeValueRefWrapper::new(Blob::copy_from_slice(x.bytes())),
-                ))
+                )
             })
         } else {
             let c = self.children().load(store)?;
