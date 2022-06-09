@@ -91,6 +91,7 @@ impl FlexRef<Vec<u8>> {
     }
 
     pub fn first_u8(&self) -> u8 {
+        debug_assert!(len(self.1[0]) != 0);
         match self.tpe() {
             Type::Inline => self.1[1],
             Type::Id => self.1[1],
