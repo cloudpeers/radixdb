@@ -657,9 +657,16 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
 }
 
 pub struct TreeNode<'a, S: BlobStore = NoStore> {
-    prefix: &'a TreePrefixRef<S>,
-    value: &'a TreeValueOptRef<S>,
-    children: &'a TreeChildrenRef<S>,
+    prefix_len: u8,
+    value_len: u8,
+    children_len: u8,
+    prefix: *const u8,
+    value: *const u8,
+    children: *const u8,
+    p: PhantomData<&'a S>,
+    // prefix: &'a TreePrefixRef<S>,
+    // value: &'a TreeValueOptRef<S>,
+    // children: &'a TreeChildrenRef<S>,
 }
 
 impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
@@ -675,22 +682,29 @@ impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
 impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
     fn empty() -> Self {
         TreeNode {
-            prefix: TreePrefixRef::empty(),
-            value: TreeValueOptRef::none(),
-            children: TreeChildrenRef::empty(),
+            prefix_len: 1,
+            value_len: 1,
+            children_len: 1,
+            prefix: &TreePrefixRef::<S>::empty().1.1[0],
+            value: &TreeValueOptRef::<S>::none().1.1[0],
+            children: &TreeChildrenRef::<S>::empty().1.1[0],
+            p: PhantomData
         }
     }
 
     pub fn prefix(&self) -> &TreePrefixRef<S> {
-        self.prefix
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(self.prefix, self.prefix_len as usize) };
+        unsafe { std::mem::transmute(slice) }
     }
 
     pub fn value(&self) -> &TreeValueOptRef<S> {
-        self.value
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(self.value, self.value_len as usize) };
+        unsafe { std::mem::transmute(slice) }
     }
 
     pub fn children(&self) -> &TreeChildrenRef<S> {
-        self.children
+        let slice: &[u8] = unsafe { std::slice::from_raw_parts(self.children, self.children_len as usize) };
+        unsafe { std::mem::transmute(slice) }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -708,9 +722,13 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         let (children, rest) = TreeChildrenRef::<S>::read_one(rest)?;
         Some((
             Self {
-                prefix,
-                value,
-                children,
+                prefix_len: prefix.bytes().len() as u8,
+                prefix: &prefix.1.1[0],
+                value_len: value.bytes().len() as u8,
+                value: &value.1.1[0],
+                children_len: children.bytes().len() as u8,
+                children: &children.1.1[0],
+                p: PhantomData,
             },
             &rest,
         ))
