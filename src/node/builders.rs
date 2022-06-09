@@ -360,7 +360,7 @@ impl<'a, S: BlobStore, P: IterPosition> InPlaceBuilderRef<'a, S, P> {
 
 impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtPrefix> {
     pub fn peek(&self) -> &TreePrefixRef<S> {
-        TreePrefixRef::new(FlexRef::new(self.0.source_slice()))
+        TreePrefixRef::read(self.0.source_slice()).unwrap()
     }
 
     pub fn move_prefix(self) -> InPlaceBuilderRef<'a, S, AtValue> {
@@ -454,7 +454,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtValue> {
     }
 
     pub fn peek(&self) -> &TreeValueOptRef<S> {
-        TreeValueOptRef::new(FlexRef::new(self.0.source_slice()))
+        TreeValueOptRef::read(self.0.source_slice()).unwrap()
     }
 
     pub fn move_value(self) -> InPlaceBuilderRef<'a, S, AtChildren> {
@@ -546,7 +546,7 @@ impl<'a, S: BlobStore> InPlaceBuilderRef<'a, S, AtChildren> {
     ///
     /// this returns an error in case the item extends behind the end of the buffer
     pub fn peek(&self) -> &TreeChildrenRef<S> {
-        TreeChildrenRef::new(FlexRef::new(self.0.source_slice()))
+        TreeChildrenRef::read(self.0.source_slice()).unwrap()
     }
 
     pub fn mutate(
