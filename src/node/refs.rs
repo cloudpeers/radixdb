@@ -660,9 +660,6 @@ pub struct TreeNode<'a, S: BlobStore = NoStore> {
     prefix: &'a TreePrefixRef<S>,
     value: &'a TreeValueOptRef<S>,
     children: &'a TreeChildrenRef<S>,
-    // value_offset: usize,
-    // children_offset: usize,
-    // p: PhantomData<S>,
 }
 
 impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
@@ -681,26 +678,19 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
             prefix: TreePrefixRef::empty(),
             value: TreeValueOptRef::none(),
             children: TreeChildrenRef::empty(),
-            // Blob::empty(),
-            // value_offset: 1,
-            // children_offset: 2,
-            // p: PhantomData,
         }
     }
 
     pub fn prefix(&self) -> &TreePrefixRef<S> {
         self.prefix
-        // TreePrefixRef::new(FlexRef::new(&self.blob))
     }
 
     pub fn value(&self) -> &TreeValueOptRef<S> {
         self.value
-        // TreeValueOptRef::new(FlexRef::new(&self.blob[self.value_offset..]))
     }
 
     pub fn children(&self) -> &TreeChildrenRef<S> {
         self.children
-        // TreeChildrenRef::new(FlexRef::new(&self.blob[self.children_offset..]))
     }
 
     pub fn is_empty(&self) -> bool {
