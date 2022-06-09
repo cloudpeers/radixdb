@@ -483,6 +483,10 @@ impl<S: BlobStore> TreeValueOptRef<S> {
         })
     }
 
+    pub fn read(value: &[u8]) -> Option<&Self> {
+        Some(Self::new(FlexRef::read(value)?))
+    }
+
     fn read_one<'a>(value: &'a [u8]) -> Option<(&'a Self, &'a [u8])> {
         let (f, rest): (&'a FlexRef<Vec<u8>>, &'a [u8]) = FlexRef::read_one(value)?;
         Some((Self::new(f), rest))
@@ -543,6 +547,10 @@ impl<S: BlobStore> TreeChildrenRef<S> {
 
     pub fn is_valid(&self) -> bool {
         self.bytes().len() > 0 && self.1.tpe() != Type::Inline
+    }
+
+    pub fn read(value: &[u8]) -> Option<&Self> {
+        Some(Self::new(FlexRef::read(value)?))
     }
 
     fn read_one<'a>(value: &'a [u8]) -> Option<(&'a Self, &'a [u8])> {
@@ -716,26 +724,14 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
 
     pub fn read_one(buffer: &'a [u8]) -> Option<(Self, &'a [u8])> {
         let rest = buffer;
-        let prefix_offset = 0;
-        let value_offset = 1 + len(*rest.get(prefix_offset)?);
-        let children_offset = value_offset + len(*rest.get(value_offset)?) + 1;
-        let prefix_offset = children_offset + len(*rest.get(children_offset)?) + 1;
-        let prefix = TreePrefixRef::new(FlexRef::new(rest));
-        let value = TreeValueOptRef::new(FlexRef::new(&rest[value_offset..]));
-        let children = TreeChildrenRef::new(FlexRef::new(&rest[children_offset..]));
-        let rest = &rest[prefix_offset..];
-        // let (prefix, rest) = TreePrefixRef::<S>::read_one(rest)?;
-        // let (value, rest) = TreeValueOptRef::<S>::read_one(rest)?;
-        // let (children, rest) = TreeChildrenRef::<S>::read_one(rest)?;
+        let (prefix, rest) = TreePrefixRef::<S>::read_one(rest)?;
+        let (value, rest) = TreeValueOptRef::<S>::read_one(rest)?;
+        let (children, rest) = TreeChildrenRef::<S>::read_one(rest)?;
         Some((
             Self {
                 prefix,
                 value,
                 children,
-                // blob: Blob::empty(),
-                // value_offset,
-                // children_offset,
-                // p: PhantomData,
             },
             &rest,
         ))
