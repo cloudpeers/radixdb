@@ -802,7 +802,7 @@ impl<'a> Debug for Raw<'a> {
         } else if self.is_id() {
             write!(f, "Id{}", Hex::new(self.slice()))
         } else {
-            write!(f, "Data{}", Hex::new(self.slice()))   
+            write!(f, "Data{}", Hex::new(self.slice()))
         }
     }
 }
@@ -834,12 +834,12 @@ impl<'a> Raw<'a> {
     }
 }
 
-struct IdOrInline<'a> {
+struct IdOrData<'a> {
     hdr: Header,
     data: &'a u8,
 }
 
-impl<'a> IdOrInline<'a> {
+impl<'a> IdOrData<'a> {
     fn new(hdr: Header, data: &'a u8) -> Self {
         Self { hdr, data }
     }
@@ -857,12 +857,12 @@ impl<'a> IdOrInline<'a> {
     }
 }
 
-enum IdOrInlineOrRaw<'a> {
+enum IdOrDataOrRaw<'a> {
     Raw(Raw<'a>),
-    IdOrInline(IdOrInline<'a>),
+    IdOrInline(IdOrData<'a>),
 }
 
-impl<'a> IdOrInlineOrRaw<'a> {
+impl<'a> IdOrDataOrRaw<'a> {
     fn is_id(&self) -> bool {
         match self {
             Self::Raw(x) => x.is_id(),
@@ -920,6 +920,17 @@ pub struct OwnedTreeNode<S> {
     p: PhantomData<S>,
 }
 
+impl OwnedTreeNode<NoStore> {
+    fn downcast<S2: BlobStore>(&self) -> OwnedTreeNode<S2> {
+        let res = self.clone();
+        unsafe { std::mem::transmute(res) }
+    }
+
+    fn downcast_ref<S2: BlobStore>(&self) -> &OwnedTreeNode<S2> {
+        unsafe { std::mem::transmute(&self) }
+    }
+}
+
 impl<S> Debug for OwnedTreeNode<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OwnedTreeNode")
@@ -946,7 +957,7 @@ impl<S: BlobStore> OwnedTreeNode<S> {
     fn clone_shortened(&self, store: &S, n: usize) -> Result<Self, S::Error> {
         let prefix = self.load_prefix(store)?;
         let mut res = self.clone();
-        res.set_prefix_slice(&prefix[0..n]);
+        res.set_prefix_slice(&prefix[n..]);
         Ok(res)
     }
 
@@ -1031,12 +1042,12 @@ impl<S> OwnedTreeNode<S> {
         self.value = value.data.manual_clone(value.hdr.len());
     }
 
-    fn set_prefix_id_or_inline(&mut self, prefix: IdOrInline) {
+    fn set_prefix_id_or_inline(&mut self, prefix: IdOrData) {
         self.prefix_hdr = prefix.hdr;
         self.prefix = ArcOrInline::copy_from_slice(prefix.slice());
     }
 
-    fn set_value_id_or_inline(&mut self, value: IdOrInline) {
+    fn set_value_id_or_inline(&mut self, value: IdOrData) {
         self.value_hdr = value.hdr;
         self.value = ArcOrInline::copy_from_slice(value.slice());
     }
@@ -1163,12 +1174,12 @@ impl<S: 'static> BorrowedTreeNode<'static, S> {
 }
 
 impl<'a, S> BorrowedTreeNode<'a, S> {
-    fn prefix(&self) -> IdOrInline<'a> {
-        IdOrInline::new(self.prefix_hdr, self.prefix)
+    fn prefix(&self) -> IdOrData<'a> {
+        IdOrData::new(self.prefix_hdr, self.prefix)
     }
 
-    fn value(&self) -> IdOrInline<'a> {
-        IdOrInline::new(self.value_hdr, self.value)
+    fn value(&self) -> IdOrData<'a> {
+        IdOrData::new(self.value_hdr, self.value)
     }
 
     pub fn read(buffer: &'a [u8]) -> Option<Self> {
@@ -1245,15 +1256,15 @@ trait NodeConverter<A, B> {
 }
 
 #[derive(Clone, Copy)]
-struct IdentityConverter;
+struct DowncastConverter;
 
-impl NodeConverter<NoStore, NoStore> for IdentityConverter {
+impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
     fn convert_node(
         &self,
         node: &OwnedTreeNode<NoStore>,
         store: &NoStore,
-    ) -> Result<OwnedTreeNode<NoStore>, NoError> {
-        Ok(node.clone())
+    ) -> Result<OwnedTreeNode<B>, NoError> {
+        Ok(node.downcast())
     }
 
     fn convert_node_shortened(
@@ -1261,15 +1272,17 @@ impl NodeConverter<NoStore, NoStore> for IdentityConverter {
         node: &OwnedTreeNode<NoStore>,
         store: &NoStore,
         n: usize,
-    ) -> Result<OwnedTreeNode<NoStore>, NoError>
+    ) -> Result<OwnedTreeNode<B>, NoError>
     where
-        NoStore: BlobStore {
-        node.clone_shortened(store, n)
+        NoStore: BlobStore,
+    {
+        node.clone_shortened(store, n).map(|x| x.downcast())
     }
 
-    fn convert_value(&self, bv: &ValueRef<NoStore>, store: &NoStore) -> Result<Value<NoStore>, NoError>
+    fn convert_value(&self, bv: &ValueRef<NoStore>, store: &NoStore) -> Result<Value<B>, NoError>
     where
-        NoStore: BlobStore {
+        NoStore: BlobStore,
+    {
         todo!()
     }
 }
@@ -1415,11 +1428,31 @@ fn sizes2() {
 
 #[test]
 fn new_smoke() {
-    let mut a = OwnedTreeNode::<NoStore>::single(b"a", b"1");
-    let mut b = OwnedTreeNode::<NoStore>::single(b"b", b"2");
-    println!("{:?}", a);
-    println!("{:?}", b);
-    outer_combine_with(&mut a, NoStore, &b, NoStore, IdentityConverter, f).unwrap();
+    {
+        let a = OwnedTreeNode::<NoStore>::single(b"a", b"1");
+        let b = OwnedTreeNode::<NoStore>::single(b"b", b"2");
+        println!("a={:?}", a);
+        println!("b={:?}", b);
+        let mut r = a;
+        outer_combine_with(&mut r, NoStore, &b, NoStore, DowncastConverter, |a, b| {
+            Ok(())
+        })
+        .unwrap();
+        println!("r={:?}", r);
+    }
+
+    {
+        let a = OwnedTreeNode::<NoStore>::single(b"aa", b"1");
+        let b = OwnedTreeNode::<NoStore>::single(b"ab", b"2");
+        println!("a={:?}", a);
+        println!("b={:?}", b);
+        let mut r = a;
+        outer_combine_with(&mut r, NoStore, &b, NoStore, DowncastConverter, |a, b| {
+            Ok(())
+        })
+        .unwrap();
+        println!("r={:?}", r);
+    }
 }
 
 pub struct TreeNode<'a, S: BlobStore = NoStore> {
