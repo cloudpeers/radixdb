@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, fmt, marker::PhantomData, ops::Deref, sync::Arc};
+use std::{cmp::Ordering, fmt, marker::PhantomData, mem::ManuallyDrop, ops::Deref, sync::Arc};
 
 use crate::{
     store::{unwrap_safe, Blob2 as Blob, BlobStore2 as BlobStore, NoError, NoStore, OwnedBlob},
@@ -656,17 +656,430 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
     }
 }
 
+const PTR_SIZE: usize = std::mem::size_of::<*const u8>();
+
+union ArcOrInline {
+    arc: ManuallyDrop<Arc<Vec<u8>>>,
+    inline: [u8; PTR_SIZE],
+}
+
+impl ArcOrInline {
+    const EMPTY: Self = Self {
+        inline: [0u8; PTR_SIZE],
+    };
+
+    fn copy_from_slice(data: &[u8]) -> Self {
+        if data.len() > PTR_SIZE {
+            let arc = Arc::new(data.to_vec());
+            Self {
+                arc: ManuallyDrop::new(arc),
+            }
+        } else {
+            let mut inline = [0u8; PTR_SIZE];
+            inline[0..data.len()].copy_from_slice(data);
+            Self { inline }
+        }
+    }
+
+    fn slice(&self, len: usize) -> &[u8] {
+        unsafe {
+            if len <= PTR_SIZE {
+                &self.inline[..len]
+            } else {
+                self.arc.as_ref().as_ref()
+            }
+        }
+    }
+
+    fn manual_clone(&self, len: usize) -> Self {
+        unsafe {
+            if len > PTR_SIZE {
+                Self {
+                    arc: self.arc.clone(),
+                }
+            } else {
+                Self {
+                    inline: self.inline,
+                }
+            }
+        }
+    }
+
+    fn manual_drop(&mut self, len: usize) {
+        unsafe {
+            if len > PTR_SIZE {
+                ManuallyDrop::drop(&mut self.arc);
+                // just to be on the safe side, dropping twice will be like dropping a null ptr
+                self.inline = [0; PTR_SIZE];
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct Header(u8);
+
+impl From<u8> for Header {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Header> for u8 {
+    fn from(value: Header) -> Self {
+        value.0
+    }
+}
+
+impl Header {
+    const EMPTY: Header = Header(0x00);
+    const NONE: Header = Header(0x80);
+
+    const fn id(len: usize) -> Self {
+        debug_assert!(len < 0x80);
+        Self((len as u8) | 0x80)
+    }
+
+    const fn inline(len: usize) -> Self {
+        debug_assert!(len < 0x80);
+        Self(len as u8)
+    }
+
+    const fn data(len: usize) -> Self {
+        if len <= PTR_SIZE {
+            Self(len as u8)
+        } else {
+            Self(0x7f)
+        }
+    }
+
+    fn is_id(&self) -> bool {
+        (self.0 & 0x80) != 0
+    }
+
+    fn is_data(&self) -> bool {
+        !self.is_id()
+    }
+
+    fn is_none(&self) -> bool {
+        self.0 == 0x80
+    }
+
+    fn len(&self) -> usize {
+        self.len_u8() as usize
+    }
+
+    fn len_u8(&self) -> u8 {
+        self.0 & 0x7f
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Raw<'a> {
+    hdr: Header,
+    data: &'a ArcOrInline,
+}
+
+impl<'a> Raw<'a> {
+    fn new(hdr: Header, data: &'a ArcOrInline) -> Self {
+        Self { hdr, data }
+    }
+
+    fn len(&self) -> usize {
+        self.hdr.len()
+    }
+
+    fn is_id(&self) -> bool {
+        self.hdr.is_id()
+    }
+
+    fn is_none(&self) -> bool {
+        self.hdr.is_none()
+    }
+
+    fn slice(&self) -> &'a [u8] {
+        self.data.slice(self.len())
+    }
+}
+
+struct IdOrInline<'a> {
+    hdr: Header,
+    data: &'a u8,
+}
+
+impl<'a> IdOrInline<'a> {
+    fn new(hdr: Header, data: &'a u8) -> Self {
+        Self { hdr, data }
+    }
+
+    fn is_id(&self) -> bool {
+        self.hdr.is_id()
+    }
+
+    fn is_none(&self) -> bool {
+        self.hdr.is_none()
+    }
+
+    fn slice(&self) -> &'a [u8] {
+        unsafe { std::slice::from_raw_parts(self.data, self.hdr.len()) }
+    }
+}
+
+enum IdOrInlineOrRaw<'a> {
+    Raw(Raw<'a>),
+    IdOrInline(IdOrInline<'a>),
+}
+
+impl<'a> IdOrInlineOrRaw<'a> {
+    fn is_id(&self) -> bool {
+        match self {
+            Self::Raw(x) => x.is_id(),
+            Self::IdOrInline(x) => x.is_id(),
+        }
+    }
+    fn is_none(&self) -> bool {
+        match self {
+            Self::Raw(x) => x.is_none(),
+            Self::IdOrInline(x) => x.is_none(),
+        }
+    }
+    fn slice(&self) -> &'a [u8] {
+        match self {
+            Self::Raw(x) => x.slice(),
+            Self::IdOrInline(x) => x.slice(),
+        }
+    }
+}
+
+#[repr(C)]
+pub struct OwnedTreeNode<S> {
+    dummy: u8,
+    prefix_hdr: Header,
+    value_hdr: Header,
+    prefix: ArcOrInline,
+    value: ArcOrInline,
+    children: Option<Arc<Vec<OwnedTreeNode<S>>>>,
+    p: PhantomData<S>,
+}
+
+impl<S> OwnedTreeNode<S> {
+    const EMPTY: Self = Self {
+        dummy: 0,
+        prefix_hdr: Header::EMPTY,
+        prefix: ArcOrInline::EMPTY,
+        value_hdr: Header::NONE,
+        value: ArcOrInline::EMPTY,
+        children: None,
+        p: PhantomData,
+    };
+
+    fn leaf(prefix: &[u8], value: &[u8]) -> Self {
+        let mut res = Self::EMPTY;
+        res.set_prefix_slice(prefix);
+        res.set_value_slice(Some(value));
+        res
+    }
+
+    fn single(prefix: &[u8], value: &[u8]) -> Self {
+        let mut res = Self::EMPTY;
+        res.set_value_slice(Some(value));
+        res
+    }
+
+    fn prefix(&self) -> Raw<'_> {
+        Raw::new(self.prefix_hdr, &self.prefix)
+    }
+
+    fn value(&self) -> Raw<'_> {
+        Raw::new(self.value_hdr, &self.value)
+    }
+
+    fn set_prefix_raw(&mut self, prefix: Raw) {
+        self.prefix_hdr = prefix.hdr;
+        self.prefix = prefix.data.manual_clone(prefix.hdr.len());
+    }
+
+    fn set_value_raw(&mut self, value: Raw) {
+        self.value_hdr = value.hdr;
+        self.value = value.data.manual_clone(value.hdr.len());
+    }
+
+    fn set_prefix_id_or_inline(&mut self, prefix: IdOrInline) {
+        self.prefix_hdr = prefix.hdr;
+        self.prefix = ArcOrInline::copy_from_slice(prefix.slice());
+    }
+
+    fn set_value_id_or_inline(&mut self, value: IdOrInline) {
+        self.value_hdr = value.hdr;
+        self.value = ArcOrInline::copy_from_slice(value.slice());
+    }
+
+    fn set_prefix_slice(&mut self, prefix: &[u8]) {
+        self.prefix_hdr = Header::data(prefix.len());
+        self.prefix = ArcOrInline::copy_from_slice(prefix);
+    }
+
+    fn set_value_slice(&mut self, value: Option<&[u8]>) {
+        if let Some(value) = value {
+            self.value_hdr = Header::data(value.len());
+            self.value = ArcOrInline::copy_from_slice(value);
+        } else {
+            self.value_hdr = Header::NONE;
+            self.value = ArcOrInline::EMPTY;
+        }
+    }
+
+    fn load_prefix(&self, store: &S) -> Result<Blob<'_>, S::Error>
+    where
+        S: BlobStore,
+    {
+        if self.prefix().is_id() {
+            store.read(self.prefix().slice())
+        } else {
+            Ok(Blob::new(self.prefix().slice()))
+        }
+    }
+
+    fn load_value(&self, store: &S) -> Result<Option<Blob<'_>>, S::Error>
+    where
+        S: BlobStore,
+    {
+        if self.value().is_id() {
+            if self.value().is_none() {
+                Ok(None)
+            } else {
+                store.read(self.value().slice()).map(Some)
+            }
+        } else {
+            Ok(Some(Blob::new(self.value().slice())))
+        }
+    }
+}
+
+impl<S> Drop for OwnedTreeNode<S> {
+    fn drop(&mut self) {
+        self.prefix.manual_drop(self.prefix_hdr.len());
+        self.value.manual_drop(self.value_hdr.len());
+        // just to be on the safe side
+        self.value_hdr = Header::NONE;
+        self.prefix_hdr = Header::EMPTY;
+        self.children = None;
+    }
+}
+
+impl<S> Clone for OwnedTreeNode<S> {
+    fn clone(&self) -> Self {
+        Self {
+            dummy: 0,
+            prefix_hdr: self.prefix_hdr,
+            value_hdr: self.value_hdr,
+            prefix: self.prefix.manual_clone(self.prefix_hdr.len()),
+            value: self.value.manual_clone(self.value_hdr.len()),
+            children: self.children.clone(),
+            p: PhantomData,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct BorrowedTreeNode<'a, S> {
+    dummy: u8,
+    prefix_hdr: Header,
+    value_hdr: Header,
+    children_hdr: Header,
+    prefix: &'a u8,
+    value: &'a u8,
+    children: &'a u8,
+    p: PhantomData<&'a S>,
+}
+
+const EMPTY_BYTES: &'static [u8] = &[Header::EMPTY.0, Header::NONE.0, Header::NONE.0];
+
+impl<S: 'static> BorrowedTreeNode<'static, S> {
+    const EMPTY: Self = Self {
+        dummy: 1,
+        prefix: &EMPTY_BYTES[0],
+        value: &EMPTY_BYTES[1],
+        children: &EMPTY_BYTES[2],
+        prefix_hdr: Header::EMPTY,
+        value_hdr: Header::NONE,
+        children_hdr: Header::NONE,
+        p: PhantomData,
+    };
+}
+
+impl<'a, S> BorrowedTreeNode<'a, S> {
+    fn prefix(&self) -> IdOrInline<'a> {
+        IdOrInline::new(self.prefix_hdr, self.prefix)
+    }
+
+    fn value(&self) -> IdOrInline<'a> {
+        IdOrInline::new(self.value_hdr, self.value)
+    }
+
+    pub fn read(buffer: &'a [u8]) -> Option<Self> {
+        Some(Self::read_one(buffer)?.0)
+    }
+
+    pub fn read_one(rest: &'a [u8]) -> Option<(Self, &'a [u8])> {
+        let prefix_hdr = Header::from(*rest.get(0)?);
+        let len = prefix_hdr.len() + 1;
+        if rest.len() < len {
+            return None;
+        }
+        let (prefix, rest) = (&rest[0], &rest[len..]);
+
+        let value_hdr = Header::from(*rest.get(0)?);
+        let len = value_hdr.len() + 1;
+        if rest.len() < len {
+            return None;
+        }
+        let (value, rest) = (&rest[0], &rest[len..]);
+
+        let children_hdr = Header::from(*rest.get(0)?);
+        let len = children_hdr.len() + 1;
+        if rest.len() < len {
+            return None;
+        }
+        let (children, rest) = (&rest[0], &rest[len..]);
+
+        Some((
+            Self {
+                dummy: 1,
+                prefix_hdr,
+                prefix,
+                value_hdr,
+                value,
+                children_hdr,
+                children,
+                p: PhantomData,
+            },
+            &rest,
+        ))
+    }
+}
+
+pub enum TreeNode2<'a, S: BlobStore = NoStore> {
+    Borrowed(BorrowedTreeNode<'a, S>),
+    Owned(OwnedTreeNode<S>),
+}
+
+#[test]
+fn sizes2() {
+    println!("{}", std::mem::size_of::<OwnedTreeNode<NoStore>>());
+    println!("{}", std::mem::size_of::<BorrowedTreeNode<NoStore>>());
+    println!("{}", std::mem::size_of::<TreeNode2<NoStore>>());
+}
+
 pub struct TreeNode<'a, S: BlobStore = NoStore> {
     prefix_len: u8,
     value_len: u8,
     children_len: u8,
-    prefix: *const u8,
-    value: *const u8,
-    children: *const u8,
-    p: PhantomData<&'a S>,
-    // prefix: &'a TreePrefixRef<S>,
-    // value: &'a TreeValueOptRef<S>,
-    // children: &'a TreeChildrenRef<S>,
+    prefix: &'a u8,
+    value: &'a u8,
+    children: &'a u8,
+    p: PhantomData<S>,
 }
 
 impl<'a, S: BlobStore> std::fmt::Debug for TreeNode<'a, S> {
@@ -685,25 +1098,28 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
             prefix_len: 1,
             value_len: 1,
             children_len: 1,
-            prefix: &TreePrefixRef::<S>::empty().1.1[0],
-            value: &TreeValueOptRef::<S>::none().1.1[0],
-            children: &TreeChildrenRef::<S>::empty().1.1[0],
-            p: PhantomData
+            prefix: &TreePrefixRef::<S>::empty().1 .1[0],
+            value: &TreeValueOptRef::<S>::none().1 .1[0],
+            children: &TreeChildrenRef::<S>::empty().1 .1[0],
+            p: PhantomData,
         }
     }
 
     pub fn prefix(&self) -> &TreePrefixRef<S> {
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(self.prefix, self.prefix_len as usize) };
+        let slice: &[u8] =
+            unsafe { std::slice::from_raw_parts(self.prefix, self.prefix_len as usize) };
         unsafe { std::mem::transmute(slice) }
     }
 
     pub fn value(&self) -> &TreeValueOptRef<S> {
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(self.value, self.value_len as usize) };
+        let slice: &[u8] =
+            unsafe { std::slice::from_raw_parts(self.value, self.value_len as usize) };
         unsafe { std::mem::transmute(slice) }
     }
 
     pub fn children(&self) -> &TreeChildrenRef<S> {
-        let slice: &[u8] = unsafe { std::slice::from_raw_parts(self.children, self.children_len as usize) };
+        let slice: &[u8] =
+            unsafe { std::slice::from_raw_parts(self.children, self.children_len as usize) };
         unsafe { std::mem::transmute(slice) }
     }
 
@@ -723,11 +1139,11 @@ impl<'a, S: BlobStore + 'static> TreeNode<'a, S> {
         Some((
             Self {
                 prefix_len: prefix.bytes().len() as u8,
-                prefix: &prefix.1.1[0],
+                prefix: &prefix.1 .1[0],
                 value_len: value.bytes().len() as u8,
-                value: &value.1.1[0],
+                value: &value.1 .1[0],
                 children_len: children.bytes().len() as u8,
-                children: &children.1.1[0],
+                children: &children.1 .1[0],
                 p: PhantomData,
             },
             &rest,
