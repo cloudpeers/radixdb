@@ -1144,7 +1144,7 @@ impl<S> Drop for OwnedValue<S> {
 
 #[repr(C)]
 pub struct OwnedTreeNode<S> {
-    dummy: u8,
+    discriminator: u8,
     prefix_hdr: Header,
     value_hdr: Header,
     children_hdr: Header,
@@ -1341,7 +1341,7 @@ impl<S: BlobStore> OwnedTreeNode<S> {
 
 impl<S> OwnedTreeNode<S> {
     const EMPTY: Self = Self {
-        dummy: 0,
+        discriminator: 0,
         prefix_hdr: Header::EMPTY,
         prefix: ArcOrInlineBlob::EMPTY,
         value_hdr: Header::NONE,
@@ -1525,7 +1525,7 @@ impl<S> Drop for OwnedTreeNode<S> {
 impl<S> Clone for OwnedTreeNode<S> {
     fn clone(&self) -> Self {
         Self {
-            dummy: 0,
+            discriminator: 0,
             prefix_hdr: self.prefix_hdr,
             value_hdr: self.value_hdr,
             children_hdr: self.children_hdr,
@@ -1538,6 +1538,7 @@ impl<S> Clone for OwnedTreeNode<S> {
 
 #[repr(C)]
 pub struct BorrowedTreeNode<'a, S> {
+    discriminator: u8,
     prefix_hdr: Header,
     value_hdr: Header,
     children_hdr: Header,
@@ -1550,6 +1551,7 @@ pub struct BorrowedTreeNode<'a, S> {
 impl<'a, S> Clone for BorrowedTreeNode<'a, S> {
     fn clone(&self) -> Self {
         Self {
+            discriminator: 1,
             prefix_hdr: self.prefix_hdr,
             value_hdr: self.value_hdr,
             children_hdr: self.children_hdr,
@@ -1577,6 +1579,7 @@ const EMPTY_BYTES: &'static [u8] = &[Header::EMPTY.0, Header::NONE.0, Header::NO
 
 impl<S: 'static> BorrowedTreeNode<'static, S> {
     const EMPTY: Self = Self {
+        discriminator: 1,
         prefix: &EMPTY_BYTES[0],
         value: &EMPTY_BYTES[1],
         children: &EMPTY_BYTES[2],
@@ -1684,6 +1687,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
 
         Some((
             Self {
+                discriminator: 1,
                 prefix_hdr,
                 prefix,
                 value_hdr,
@@ -1705,69 +1709,76 @@ pub enum TreeNodeRef<'a, S: BlobStore = NoStore> {
 
 impl<'a, S: BlobStore> Debug for TreeNodeRef<'a, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Owned(owned) => f.debug_tuple("Owned").field(owned).finish(),
-            Self::Borrowed(borrowed) => f.debug_tuple("Borrowed").field(borrowed).finish(),
+        match self.dispatch() {
+            Ok(owned) => f.debug_tuple("Owned").field(owned).finish(),
+            Err(borrowed) => f.debug_tuple("Borrowed").field(borrowed).finish(),
         }
     }
 }
 
 impl<'a> TreeNodeRef<'a, NoStore> {
     fn downcast<S2: BlobStore>(&self) -> OwnedTreeNode<S2> {
-        match self {
-            Self::Owned(owned) => owned.downcast(),
-            Self::Borrowed(borrowed) => todo!(),
+        match self.dispatch() {
+            Ok(owned) => owned.downcast(),
+            Err(borrowed) => todo!(),
         }
     }
 }
 
 impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
-    fn to_owned(self) -> OwnedTreeNode<S> {
+    fn dispatch(&self) -> Result<&'a OwnedTreeNode<S>, &'a BorrowedTreeNode<S>> {
         match self {
-            Self::Owned(owned) => owned.clone(),
-            Self::Borrowed(borrowed) => todo!(),
+            Self::Owned(inner) => Ok(inner),
+            Self::Borrowed(inner) => Err(inner),
+        }
+    }
+
+    fn to_owned(self) -> OwnedTreeNode<S> {
+        match self.dispatch() {
+            Ok(owned) => owned.clone(),
+            Err(borrowed) => todo!(),
         }
     }
 
     fn dump(self, indent: usize, store: &S) -> Result<(), S::Error> {
-        match self {
-            Self::Owned(owned) => owned.dump(indent, store),
-            Self::Borrowed(borrowed) => borrowed.dump(indent, store),
+        match self.dispatch() {
+            Ok(owned) => owned.dump(indent, store),
+            Err(borrowed) => borrowed.dump(indent, store),
         }
     }
 
     fn load_prefix(&self, store: &S) -> Result<Blob, S::Error> {
-        match self {
-            Self::Owned(owned) => owned.load_prefix(store),
-            Self::Borrowed(borrowed) => borrowed.load_prefix(store),
+        match self.dispatch() {
+            Ok(owned) => owned.load_prefix(store),
+            Err(borrowed) => borrowed.load_prefix(store),
         }
     }
 
     fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error> {
-        match self {
-            Self::Owned(owned) => owned.load_children(store),
-            Self::Borrowed(borrowed) => borrowed.load_children(store),
+        match self.dispatch() {
+            Ok(owned) => owned.load_children(store),
+            Err(borrowed) => borrowed.load_children(store),
         }
     }
 
     fn value_opt(&self) -> Option<ValueRef<S>> {
-        match self {
-            Self::Owned(owned) => owned.value_opt().map(|x| ValueRef::Raw(x.raw, PhantomData)),
-            Self::Borrowed(borrowed) => borrowed.value_opt(),
+        match self.dispatch() {
+            Ok(owned) => owned.value_opt().map(|x| ValueRef::Raw(x.raw, PhantomData)),
+            Err(borrowed) => borrowed.value_opt(),
         }
     }
 
     fn first_prefix_byte(&self) -> Option<u8> {
-        match self {
-            Self::Owned(owned) => owned.first_prefix_byte(),
-            Self::Borrowed(borrowed) => borrowed.first_prefix_byte(),
+        match self.dispatch() {
+            Ok(owned) => owned.first_prefix_byte(),
+            Err(borrowed) => borrowed.first_prefix_byte(),
         }
     }
 
     fn clone_shortened(&self, store: &S, n: usize) -> Result<OwnedTreeNode<S>, S::Error> {
-        match self {
-            Self::Owned(owned) => owned.clone_shortened(store, n),
-            _ => todo!(),
+        match self.dispatch() {
+            Ok(owned) => owned.clone_shortened(store, n),
+            Err(borrowed) => todo!(),
         }
     }
 }
