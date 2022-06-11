@@ -711,13 +711,15 @@ impl ArcOrInlineBlob {
         }
     }
 
-    fn manual_drop(&mut self, hdr: &mut Header) {
+    fn manual_drop(&mut self, hdr: Header) {
         unsafe {
             if hdr.len() > PTR_SIZE {
                 ManuallyDrop::drop(&mut self.arc);
-                // just to be on the safe side, dropping twice will be like dropping a null ptr
-                self.inline = [0; PTR_SIZE];
             }
+        }
+        if cfg!(debug_assertions) {
+            // just to be on the safe side, dropping twice will be like dropping a null ptr
+            self.inline = [0; PTR_SIZE];
         }
     }
 }
@@ -805,7 +807,7 @@ impl<S> ChildRef<S> {
         }
     }
 
-    fn manual_drop(&mut self, hdr: &mut Header) {
+    fn manual_drop(&mut self, hdr: Header) {
         unsafe {
             if hdr.len() > PTR_SIZE {
                 if hdr.is_id() {
@@ -814,9 +816,10 @@ impl<S> ChildRef<S> {
                     ManuallyDrop::drop(&mut self.arc_data);
                 }
             }
+        }
+        if cfg!(debug_assertions) {
             // just to be on the safe side, dropping twice will be like dropping a null ptr
             self.inline = [0; PTR_SIZE];
-            *hdr = Header::NONE;
         }
     }
 }
@@ -852,10 +855,10 @@ impl From<Header> for u8 {
 impl Header {
     const EMPTY: Header = Header::data(0);
     const NONE: Header = Header::id(0);
-    const ARCDATA: Header = Header::data(PTR_SIZE + 1);
+    const ARCDATA: Header = Header::data(0x7f);
 
     const fn id(len: usize) -> Self {
-        debug_assert!(len < 0x80);
+        assert!(len < 0x80);
         Self((len as u8) | 0x80)
     }
 
@@ -1032,7 +1035,7 @@ impl<S> Value<S> {
 
 impl<S> Drop for Value<S> {
     fn drop(&mut self) {
-        self.data.manual_drop(&mut self.hdr);
+        self.data.manual_drop(self.hdr);
     }
 }
 
@@ -1188,37 +1191,37 @@ impl<S> OwnedTreeNode<S> {
     }
 
     fn set_prefix_raw(&mut self, prefix: Raw) {
-        self.prefix.manual_drop(&mut self.prefix_hdr);
+        self.prefix.manual_drop(self.prefix_hdr);
         self.prefix_hdr = prefix.hdr;
         self.prefix = prefix.data.manual_clone(prefix.hdr);
     }
 
     fn set_value_raw(&mut self, value: Raw) {
-        self.value.manual_drop(&mut self.value_hdr);
+        self.value.manual_drop(self.value_hdr);
         self.value_hdr = value.hdr;
         self.value = value.data.manual_clone(value.hdr);
     }
 
     fn set_prefix_id_or_inline(&mut self, prefix: IdOrData) {
-        self.prefix.manual_drop(&mut self.prefix_hdr);
+        self.prefix.manual_drop(self.prefix_hdr);
         self.prefix_hdr = prefix.hdr;
         self.prefix = ArcOrInlineBlob::copy_from_slice(prefix.slice());
     }
 
     fn set_value_id_or_inline(&mut self, value: IdOrData) {
-        self.value.manual_drop(&mut self.value_hdr);
+        self.value.manual_drop(self.value_hdr);
         self.value_hdr = value.hdr;
         self.value = ArcOrInlineBlob::copy_from_slice(value.slice());
     }
 
     fn set_prefix_slice(&mut self, prefix: &[u8]) {
-        self.prefix.manual_drop(&mut self.prefix_hdr);
+        self.prefix.manual_drop(self.prefix_hdr);
         self.prefix_hdr = Header::data(prefix.len());
         self.prefix = ArcOrInlineBlob::copy_from_slice(prefix);
     }
 
     fn set_value_slice(&mut self, value: Option<&[u8]>) {
-        self.value.manual_drop(&mut self.value_hdr);
+        self.value.manual_drop(self.value_hdr);
         if let Some(value) = value {
             self.value_hdr = Header::data(value.len());
             self.value = ArcOrInlineBlob::copy_from_slice(value);
@@ -1237,7 +1240,7 @@ impl<S> OwnedTreeNode<S> {
     }
 
     fn set_children_arc(&mut self, arc: Arc<Vec<OwnedTreeNode<S>>>) {
-        self.children.manual_drop(&mut self.children_hdr);
+        self.children.manual_drop(self.children_hdr);
         self.children_hdr = Header::ARCDATA;
         self.children = ChildRef::data_from_arc(arc);
     }
@@ -1312,9 +1315,9 @@ impl<S> OwnedTreeNode<S> {
 
 impl<S> Drop for OwnedTreeNode<S> {
     fn drop(&mut self) {
-        self.prefix.manual_drop(&mut self.prefix_hdr);
-        self.value.manual_drop(&mut self.value_hdr);
-        self.children.manual_drop(&mut self.children_hdr);
+        self.prefix.manual_drop(self.prefix_hdr);
+        self.value.manual_drop(self.value_hdr);
+        self.children.manual_drop(self.children_hdr);
     }
 }
 
