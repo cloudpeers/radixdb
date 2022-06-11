@@ -1,13 +1,24 @@
 use core::borrow;
 use std::{
-    cmp::Ordering, collections::BTreeMap, fmt, marker::PhantomData, mem::ManuallyDrop,
-    num::NonZeroU8, ops::Deref, process::Child, sync::Arc, time::Instant,
+    any::{self, Any},
+    cmp::Ordering,
+    collections::BTreeMap,
+    fmt,
+    marker::PhantomData,
+    mem::ManuallyDrop,
+    num::NonZeroU8,
+    ops::Deref,
+    process::Child,
+    sync::Arc,
+    time::Instant,
 };
 
 use inplace_vec_builder::InPlaceVecBuilder;
 
 use crate::{
-    store::{unwrap_safe, Blob2 as Blob, BlobStore2 as BlobStore, NoError, NoStore, OwnedBlob},
+    store::{
+        unwrap_safe, Blob2 as Blob, BlobStore2 as BlobStore, MemStore2, NoError, NoStore, OwnedBlob,
+    },
     Hex,
 };
 use std::fmt::Debug;
@@ -687,7 +698,16 @@ impl ArcOrInlineBlob {
         }
     }
 
-    fn slice(&self, len: usize) -> &[u8] {
+    fn ref_count(&self, hdr: Header) -> Option<usize> {
+        if hdr.len() <= PTR_SIZE {
+            None
+        } else {
+            Some(Arc::strong_count(unsafe { &self.arc }))
+        }
+    }
+
+    fn slice(&self, hdr: Header) -> &[u8] {
+        let len = hdr.len();
         unsafe {
             if len <= PTR_SIZE {
                 &self.inline[..len]
@@ -724,17 +744,29 @@ impl ArcOrInlineBlob {
     }
 }
 
-union ChildRef<S> {
+union ChildrenRef<S> {
     arc_id: ManuallyDrop<Arc<Vec<u8>>>,
     arc_data: ManuallyDrop<Arc<Vec<OwnedTreeNode<S>>>>,
     inline: [u8; PTR_SIZE],
     p: PhantomData<S>,
 }
 
-impl<S> ChildRef<S> {
+impl<S> ChildrenRef<S> {
     const EMPTY: Self = Self {
         inline: [0u8; PTR_SIZE],
     };
+
+    fn ref_count(&self, hdr: Header) -> Option<usize> {
+        if hdr.len() > PTR_SIZE {
+            Some(if hdr.is_id() {
+                Arc::strong_count(unsafe { &self.arc_id })
+            } else {
+                Arc::strong_count(unsafe { &self.arc_data })
+            })
+        } else {
+            None
+        }
+    }
 
     fn id_from_slice(data: &[u8]) -> Self {
         if data.len() > PTR_SIZE {
@@ -863,7 +895,7 @@ impl Header {
     }
 
     const fn data(len: usize) -> Self {
-        if len <= PTR_SIZE {
+        if len <= 0x7f {
             Self(len as u8)
         } else {
             Self(0x7f)
@@ -882,6 +914,9 @@ impl Header {
         self.0 == 0x80
     }
 
+    /// Note that this is the length that fits in the header.
+    ///
+    /// The actual length can be larger!
     fn len(&self) -> usize {
         self.len_u8() as usize
     }
@@ -915,12 +950,12 @@ impl<'a> Raw<'a> {
         data: &ArcOrInlineBlob::EMPTY,
     };
 
-    fn new(hdr: Header, data: &'a ArcOrInlineBlob) -> Self {
-        Self { hdr, data }
+    fn ref_count(&self) -> Option<usize> {
+        self.data.ref_count(self.hdr)
     }
 
-    fn len(&self) -> usize {
-        self.hdr.len()
+    fn new(hdr: Header, data: &'a ArcOrInlineBlob) -> Self {
+        Self { hdr, data }
     }
 
     fn is_id(&self) -> bool {
@@ -932,13 +967,43 @@ impl<'a> Raw<'a> {
     }
 
     fn slice(&self) -> &'a [u8] {
-        self.data.slice(self.len())
+        self.data.slice(self.hdr)
+    }
+
+    fn serialize<S: BlobStore>(&self, target: &mut Vec<u8>, store: &S) -> Result<(), S::Error> {
+        let slice = self.slice();
+        if self.is_id() || slice.len() < 0x80 {
+            target.push(self.hdr.into());
+            target.extend_from_slice(slice);
+        } else {
+            let id = store.write(slice)?;
+            target.push(Header::id(id.len()).into());
+            target.extend_from_slice(&id);
+        }
+        Ok(())
     }
 }
 
 struct IdOrData<'a> {
     hdr: Header,
     data: &'a u8,
+}
+
+impl<'a> Debug for IdOrData<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.read() {
+            Ok(value) => {
+                write!(f, "Data{}", Hex::new(value))
+            }
+            Err(id) => {
+                if id.is_empty() {
+                    write!(f, "None")
+                } else {
+                    write!(f, "Id{}", Hex::new(id))
+                }
+            }
+        }
+    }
 }
 
 impl<'a> IdOrData<'a> {
@@ -954,8 +1019,21 @@ impl<'a> IdOrData<'a> {
         self.hdr.is_none()
     }
 
+    fn bytes(&self) -> &'a [u8] {
+        unsafe { std::slice::from_raw_parts(self.data, self.hdr.len() + 1) }
+    }
+
     fn slice(&self) -> &'a [u8] {
-        unsafe { std::slice::from_raw_parts(self.data, self.hdr.len()) }
+        &self.bytes()[1..]
+    }
+
+    /// OK is data, Err is id
+    fn read(&self) -> Result<&'a [u8], &'a [u8]> {
+        if !self.is_id() {
+            Ok(self.slice())
+        } else {
+            Err(self.slice())
+        }
     }
 }
 
@@ -1031,6 +1109,14 @@ impl<S> Value<S> {
             data: &self.data,
         })
     }
+
+    fn read(&self) -> Result<&[u8], &[u8]> {
+        if self.hdr.is_data() {
+            Ok(self.data.slice(self.hdr))
+        } else {
+            Err(self.data.slice(self.hdr))
+        }
+    }
 }
 
 impl<S> Drop for Value<S> {
@@ -1047,7 +1133,7 @@ pub struct OwnedTreeNode<S> {
     children_hdr: Header,
     prefix: ArcOrInlineBlob,
     value: ArcOrInlineBlob,
-    children: ChildRef<S>,
+    children: ChildrenRef<S>,
 }
 
 impl<S: BlobStore> OwnedTreeNode<S> {
@@ -1078,6 +1164,92 @@ impl<S> Debug for OwnedTreeNode<S> {
 }
 
 impl<S: BlobStore> OwnedTreeNode<S> {
+    fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error> {
+        let spacer = std::iter::repeat(" ").take(indent).collect::<String>();
+        let child_ref_count = self.children.ref_count(self.children_hdr);
+        let format_ref_count =
+            |x: Option<usize>| x.map(|n| format!(" rc={}", n)).unwrap_or_default();
+        println!("{}TreeNode", spacer);
+        println!(
+            "{}  prefix={:?}{}",
+            spacer,
+            self.prefix(),
+            format_ref_count(self.prefix().ref_count())
+        );
+        println!(
+            "{}  value={:?}{}",
+            spacer,
+            self.value(),
+            format_ref_count(self.value().ref_count())
+        );
+        let mut iter = self.load_children(store)?;
+        if !iter.is_empty() {
+            println!("{}  children {}", spacer, format_ref_count(child_ref_count));
+            while let Some(child) = iter.next() {
+                child.dump(indent + 4, store)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn deserialize(data: &[u8]) -> anyhow::Result<Self> {
+        if let Some((node, rest)) = BorrowedTreeNode::<S>::read_one(data) {
+            anyhow::ensure!(rest.is_empty());
+            let mut res = Self::EMPTY;
+            res.set_prefix_id_or_data(node.prefix());
+            res.set_value_id_or_data(node.value());
+            res.set_children_id(node.children().read().unwrap_err());
+            Ok(res)
+        } else {
+            anyhow::bail!("Unable to deserialize {}!", Hex::new(data));
+        }
+    }
+
+    fn serialize<S2: BlobStore>(&self, target: &mut Vec<u8>, store: &S2) -> Result<(), S2::Error> {
+        self.prefix().serialize(target, store)?;
+        self.value().serialize(target, store)?;
+        match self.get_children() {
+            Ok(children) => {
+                assert!(!children.is_empty());
+                let mut serialized = Vec::new();
+                for child in children.iter() {
+                    child.serialize(&mut serialized, store)?;
+                }
+                let id = store.write(&serialized)?;
+                target.push(Header::id(id.len()).into());
+                target.extend_from_slice(&id);
+            }
+            Err(id) => {
+                target.push(self.children_hdr.into());
+                target.extend_from_slice(id);
+            }
+        }
+        Ok(())
+    }
+
+    /// True if key is contained in this set
+    fn contains_key(&self, key: &[u8], store: &S) -> Result<bool, S::Error> {
+        // if we find a tree at exactly the location, and it has a value, we have a hit
+        find(store, &TreeNodeRef::Owned(&self), key, |r| {
+            Ok(if let FindResult::Found(tree) = r {
+                tree.value_opt().is_some()
+            } else {
+                false
+            })
+        })
+    }
+
+    fn get(&self, key: &[u8], store: &S) -> Result<Option<Value<S>>, S::Error> {
+        // if we find a tree at exactly the location, and it has a value, we have a hit
+        find(store, &TreeNodeRef::Owned(&self), key, |r| {
+            Ok(if let FindResult::Found(tree) = r {
+                tree.value_opt().map(|x| x.to_owned())
+            } else {
+                None
+            })
+        })
+    }
+
     fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error> {
         match self.get_children() {
             Ok(children) => Ok(TreeNodeIter::Owned(children.iter())),
@@ -1145,7 +1317,7 @@ impl<S: BlobStore> OwnedTreeNode<S> {
         if !self.has_value() && self.child_count() == 0 {
             self.set_prefix_raw(Raw::EMPTY);
             self.children_hdr = Header::NONE;
-            self.children = ChildRef::EMPTY;
+            self.children = ChildrenRef::EMPTY;
         }
     }
 }
@@ -1158,7 +1330,7 @@ impl<S> OwnedTreeNode<S> {
         value_hdr: Header::NONE,
         value: ArcOrInlineBlob::EMPTY,
         children_hdr: Header::NONE,
-        children: ChildRef::EMPTY,
+        children: ChildrenRef::EMPTY,
     };
 
     fn first_prefix_byte(&self) -> Option<u8> {
@@ -1202,13 +1374,13 @@ impl<S> OwnedTreeNode<S> {
         self.value = value.data.manual_clone(value.hdr);
     }
 
-    fn set_prefix_id_or_inline(&mut self, prefix: IdOrData) {
+    fn set_prefix_id_or_data(&mut self, prefix: IdOrData) {
         self.prefix.manual_drop(self.prefix_hdr);
         self.prefix_hdr = prefix.hdr;
         self.prefix = ArcOrInlineBlob::copy_from_slice(prefix.slice());
     }
 
-    fn set_value_id_or_inline(&mut self, value: IdOrData) {
+    fn set_value_id_or_data(&mut self, value: IdOrData) {
         self.value.manual_drop(self.value_hdr);
         self.value_hdr = value.hdr;
         self.value = ArcOrInlineBlob::copy_from_slice(value.slice());
@@ -1242,7 +1414,13 @@ impl<S> OwnedTreeNode<S> {
     fn set_children_arc(&mut self, arc: Arc<Vec<OwnedTreeNode<S>>>) {
         self.children.manual_drop(self.children_hdr);
         self.children_hdr = Header::ARCDATA;
-        self.children = ChildRef::data_from_arc(arc);
+        self.children = ChildrenRef::data_from_arc(arc);
+    }
+
+    fn set_children_id(&mut self, id: &[u8]) {
+        self.children.manual_drop(self.children_hdr);
+        self.children_hdr = Header::id(id.len());
+        self.children = ChildrenRef::id_from_slice(id);
     }
 
     fn load_prefix(&self, store: &S) -> Result<Blob<'_>, S::Error>
@@ -1308,7 +1486,13 @@ impl<S> OwnedTreeNode<S> {
     fn child_count(&self) -> usize {
         match self.get_children() {
             Ok(data) => data.len(),
-            Err(id) => panic!(),
+            Err(id) => {
+                if id.is_empty() {
+                    0
+                } else {
+                    panic!()
+                }
+            }
         }
     }
 }
@@ -1365,13 +1549,9 @@ impl<'a, S> Copy for BorrowedTreeNode<'a, S> {}
 impl<'a, S> Debug for BorrowedTreeNode<'a, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BorrowedTreeNode")
-            .field("prefix_hdr", &self.prefix_hdr)
-            .field("value_hdr", &self.value_hdr)
-            .field("children_hdr", &self.children_hdr)
-            .field("prefix", &self.prefix)
-            .field("value", &self.value)
-            .field("children", &self.children)
-            .field("p", &self.p)
+            .field("prefix", &self.prefix())
+            .field("value", &self.value())
+            .field("children_hdr", &self.children())
             .finish()
     }
 }
@@ -1391,6 +1571,22 @@ impl<S: 'static> BorrowedTreeNode<'static, S> {
 }
 
 impl<'a, S> BorrowedTreeNode<'a, S> {
+    fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error>
+    where
+        S: BlobStore,
+    {
+        let spacer = std::iter::repeat(" ").take(indent).collect::<String>();
+        println!("{}TreeNode", spacer);
+        println!("{}  prefix={:?}", spacer, self.prefix(),);
+        println!("{}  value={:?}", spacer, self.value(),);
+        let mut iter = self.load_children(store)?;
+        println!("{}", spacer);
+        while let Some(child) = iter.next() {
+            child.dump(indent + 4, store)?;
+        }
+        Ok(())
+    }
+
     fn first_prefix_byte(&self) -> Option<u8> {
         self.prefix().slice().get(0).cloned()
     }
@@ -1403,6 +1599,10 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         IdOrData::new(self.value_hdr, self.value)
     }
 
+    fn children(&self) -> IdOrData<'a> {
+        IdOrData::new(self.children_hdr, self.children)
+    }
+
     fn bytes_len(&self) -> usize {
         self.prefix_hdr.len() + self.value_hdr.len() + self.children_hdr.len() + 3
     }
@@ -1411,14 +1611,24 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
     where
         S: BlobStore,
     {
-        todo!()
+        match self.prefix().read() {
+            Ok(data) => Ok(Blob::new(data)),
+            Err(id) => store.read(id),
+        }
     }
 
     fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error>
     where
         S: BlobStore,
     {
-        todo!()
+        Ok(if self.children_hdr.is_none() {
+            TreeNodeIter::Owned([].iter())
+        } else {
+            assert!(self.children_hdr.is_id());
+            let id = self.children().slice();
+            let blob = store.read(id)?;
+            TreeNodeIter::Borrowed(blob, 0)
+        })
     }
 
     pub fn read(buffer: &'a [u8]) -> Option<Self> {
@@ -1494,6 +1704,13 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
         }
     }
 
+    fn dump(self, indent: usize, store: &S) -> Result<(), S::Error> {
+        match self {
+            Self::Owned(owned) => owned.dump(indent, store),
+            Self::Borrowed(borrowed) => borrowed.dump(indent, store),
+        }
+    }
+
     fn load_prefix(&self, store: &S) -> Result<Blob, S::Error> {
         match self {
             Self::Owned(owned) => owned.load_prefix(store),
@@ -1528,6 +1745,58 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
             _ => todo!(),
         }
     }
+}
+
+enum FindResult<T> {
+    // Found an exact match
+    Found(T),
+    // found a tree for which the path is a prefix, with n remaining chars in the prefix of T
+    Prefix {
+        // a tree of which the searched path is a prefix
+        tree: T,
+        // number of bytes in the prefix of tree that are matching the end of the searched for prefix
+        matching: usize,
+    },
+    // did not find anything, T is the closest match, with n remaining (unmatched) in the prefix of T
+    NotFound,
+}
+
+/// find a prefix in a tree. Will either return
+/// - Found(tree) if we found the tree exactly,
+/// - Prefix if we found a tree of which prefix is a prefix
+/// - NotFound if there is no tree
+fn find<S: BlobStore, T>(
+    store: &S,
+    tree: &TreeNodeRef<S>,
+    prefix: &[u8],
+    f: impl Fn(FindResult<&TreeNodeRef<S>>) -> Result<T, S::Error>,
+) -> Result<T, S::Error> {
+    let tree_prefix = tree.load_prefix(store)?;
+    let n = common_prefix(&tree_prefix, prefix);
+    // remaining in tree prefix
+    let rt = tree_prefix.len() - n;
+    // remaining in prefix
+    let rp = prefix.len() - n;
+    let fr = if rp == 0 && rt == 0 {
+        // direct hit
+        FindResult::Found(tree)
+    } else if rp == 0 {
+        // tree is a subtree of prefix
+        FindResult::Prefix { tree, matching: n }
+    } else if rt == 0 {
+        // prefix is a subtree of tree
+        let c = prefix[n];
+        let tree_children = tree.load_children(store)?;
+        if let Some(child) = tree_children.find(c) {
+            return find(store, &child, &prefix[n..], f);
+        } else {
+            FindResult::NotFound
+        }
+    } else {
+        // disjoint, but we still need to store how far we matched
+        FindResult::NotFound
+    };
+    f(fr)
 }
 
 // common prefix of two slices.
@@ -1620,6 +1889,23 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         }
     }
 
+    fn find(&self, prefix: u8) -> Option<TreeNodeRef<S>> {
+        match self {
+            Self::Owned(inner) => {
+                let slice = inner.as_slice();
+                if slice.len() == 256 {
+                    Some(TreeNodeRef::Owned(&slice[prefix as usize]))
+                } else {
+                    slice
+                        .binary_search_by_key(&Some(prefix), |x| x.first_prefix_byte())
+                        .ok()
+                        .map(|i| TreeNodeRef::Owned(&slice[i]))
+                }
+            }
+            Self::Borrowed(x, o) => todo!(),
+        }
+    }
+
     fn first_prefix_byte_opt(&mut self) -> Option<Option<u8>> {
         match self {
             Self::Owned(x) => x.as_slice().get(0).map(|x| x.first_prefix_byte()),
@@ -1633,7 +1919,7 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         match self {
             Self::Owned(x) => x.next().map(TreeNodeRef::Owned),
             Self::Borrowed(slice, offset) => {
-                if let Some(node) = BorrowedTreeNode::read(slice) {
+                if let Some(node) = BorrowedTreeNode::read(&slice[*offset..]) {
                     *offset += node.bytes_len();
                     Some(TreeNodeRef::Borrowed(node))
                 } else {
@@ -1794,6 +2080,8 @@ fn new_build_bench() {
         })
         .collect::<Vec<_>>();
     let elems2 = elems.clone();
+    let elems3 = elems.clone();
+    let elems_bt = elems.iter().cloned().collect::<BTreeMap<_, _>>();
     let mut t = OwnedTreeNode::<NoStore>::EMPTY;
     let t0 = Instant::now();
     for (k, v) in elems.clone() {
@@ -1808,10 +2096,47 @@ fn new_build_bench() {
         )
         .unwrap();
     }
-    println!("build {:#?}", t0.elapsed().as_secs_f64());
+    println!("build {}", t0.elapsed().as_secs_f64());
+
     let t0 = Instant::now();
     let r: BTreeMap<_, _> = elems2.into_iter().collect();
-    println!("ref {:#?}", t0.elapsed().as_secs_f64());
+    println!("build ref {:#?}", t0.elapsed().as_secs_f64());
+
+    let t0 = Instant::now();
+    for (key, value) in &elems3 {
+        assert!(t.contains_key(&key, &NoStore).unwrap());
+    }
+    println!("validate contains_key {}", t0.elapsed().as_secs_f64());
+
+    let t0 = Instant::now();
+    for (key, value) in &elems3 {
+        assert!(elems_bt.contains_key(key));
+    }
+    println!("validate contains_key ref {}", t0.elapsed().as_secs_f64());
+
+    let t0 = Instant::now();
+    for (key, value) in &elems3 {
+        let v: Value<NoStore> = t.get(&key, &NoStore).unwrap().unwrap();
+        assert_eq!(v.read().unwrap(), &value[..]);
+    }
+    println!("validate get {}", t0.elapsed().as_secs_f64());
+
+    let t0 = Instant::now();
+    for (key, value) in &elems3 {
+        let v = elems_bt.get(key).unwrap();
+        assert_eq!(v, value);
+    }
+    println!("validate get ref {}", t0.elapsed().as_secs_f64());
+
+    let store = MemStore2::default();
+    let mut target = Vec::new();
+    let t0 = Instant::now();
+    // t.dump(0, &NoStore).unwrap();
+    t.serialize(&mut target, &store).unwrap();
+    println!("{} {}", Hex::new(&target), t0.elapsed().as_secs_f64());
+    let d = OwnedTreeNode::<MemStore2>::deserialize(&target).unwrap();
+    println!("{:?}", d);
+    // d.dump(0, &store).unwrap();
 }
 
 #[test]
