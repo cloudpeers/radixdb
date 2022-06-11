@@ -1,6 +1,7 @@
+use core::borrow;
 use std::{
     cmp::Ordering, collections::BTreeMap, fmt, marker::PhantomData, mem::ManuallyDrop,
-    num::NonZeroU8, ops::Deref, sync::Arc, time::Instant,
+    num::NonZeroU8, ops::Deref, process::Child, sync::Arc, time::Instant,
 };
 
 use inplace_vec_builder::InPlaceVecBuilder;
@@ -663,12 +664,12 @@ impl<'a, S: BlobStore> NodeSeq<'a, S> {
 
 const PTR_SIZE: usize = std::mem::size_of::<*const u8>();
 
-union ArcOrInline {
+union ArcOrInlineBlob {
     arc: ManuallyDrop<Arc<Vec<u8>>>,
     inline: [u8; PTR_SIZE],
 }
 
-impl ArcOrInline {
+impl ArcOrInlineBlob {
     const EMPTY: Self = Self {
         inline: [0u8; PTR_SIZE],
     };
@@ -696,9 +697,9 @@ impl ArcOrInline {
         }
     }
 
-    fn manual_clone(&self, len: usize) -> Self {
+    fn manual_clone(&self, hdr: Header) -> Self {
         unsafe {
-            if len > PTR_SIZE {
+            if hdr.len() > PTR_SIZE {
                 Self {
                     arc: self.arc.clone(),
                 }
@@ -710,13 +711,112 @@ impl ArcOrInline {
         }
     }
 
-    fn manual_drop(&mut self, len: usize) {
+    fn manual_drop(&mut self, hdr: &mut Header) {
         unsafe {
-            if len > PTR_SIZE {
+            if hdr.len() > PTR_SIZE {
                 ManuallyDrop::drop(&mut self.arc);
                 // just to be on the safe side, dropping twice will be like dropping a null ptr
                 self.inline = [0; PTR_SIZE];
             }
+        }
+    }
+}
+
+union ChildRef<S> {
+    arc_id: ManuallyDrop<Arc<Vec<u8>>>,
+    arc_data: ManuallyDrop<Arc<Vec<OwnedTreeNode<S>>>>,
+    inline: [u8; PTR_SIZE],
+    p: PhantomData<S>,
+}
+
+impl<S> ChildRef<S> {
+    const EMPTY: Self = Self {
+        inline: [0u8; PTR_SIZE],
+    };
+
+    fn id_from_slice(data: &[u8]) -> Self {
+        if data.len() > PTR_SIZE {
+            let arc = Arc::new(data.to_vec());
+            Self {
+                arc_id: ManuallyDrop::new(arc),
+            }
+        } else {
+            let mut inline = [0u8; PTR_SIZE];
+            inline[0..data.len()].copy_from_slice(data);
+            Self { inline }
+        }
+    }
+
+    fn data_from_arc(arc: Arc<Vec<OwnedTreeNode<S>>>) -> Self {
+        Self {
+            arc_data: ManuallyDrop::new(arc),
+        }
+    }
+
+    fn deref(&self, hdr: Header) -> Result<&Arc<Vec<OwnedTreeNode<S>>>, &[u8]> {
+        let len = hdr.len();
+        unsafe {
+            if hdr.is_id() {
+                Err(if len <= PTR_SIZE {
+                    &self.inline[..len]
+                } else {
+                    self.arc_id.as_ref().as_ref()
+                })
+            } else {
+                assert!(len > PTR_SIZE);
+                Ok(&self.arc_data)
+            }
+        }
+    }
+
+    fn deref_mut(&mut self, hdr: Header) -> Result<&mut Arc<Vec<OwnedTreeNode<S>>>, &[u8]> {
+        let len = hdr.len();
+        unsafe {
+            if hdr.is_id() {
+                Err(if len <= PTR_SIZE {
+                    &self.inline[..len]
+                } else {
+                    self.arc_id.as_ref().as_ref()
+                })
+            } else {
+                assert!(len > PTR_SIZE);
+                Ok(&mut self.arc_data)
+            }
+        }
+    }
+
+    fn manual_clone(&self, hdr: Header) -> Self {
+        unsafe {
+            if hdr.len() > PTR_SIZE {
+                if hdr.is_id() {
+                    Self {
+                        arc_id: self.arc_id.clone(),
+                    }
+                } else {
+                    Self {
+                        arc_data: self.arc_data.clone(),
+                    }
+                }
+            } else {
+                Self {
+                    inline: self.inline,
+                }
+            }
+        }
+    }
+
+    fn manual_drop(&mut self, hdr: &mut Header) {
+        unsafe {
+            if hdr.len() > PTR_SIZE {
+                if hdr.is_id() {
+                    ManuallyDrop::drop(&mut self.arc_id);
+                } else {
+                    ManuallyDrop::drop(&mut self.arc_data);
+                }
+            }
+            // just to be on the safe side, dropping twice will be like dropping a null ptr
+            self.inline = [0; PTR_SIZE];
+            *hdr = Header::NONE;
         }
     }
 }
@@ -750,17 +850,13 @@ impl From<Header> for u8 {
 }
 
 impl Header {
-    const EMPTY: Header = Header(0x00);
-    const NONE: Header = Header(0x80);
+    const EMPTY: Header = Header::data(0);
+    const NONE: Header = Header::id(0);
+    const ARCDATA: Header = Header::data(PTR_SIZE + 1);
 
     const fn id(len: usize) -> Self {
         debug_assert!(len < 0x80);
         Self((len as u8) | 0x80)
-    }
-
-    const fn inline(len: usize) -> Self {
-        debug_assert!(len < 0x80);
-        Self(len as u8)
     }
 
     const fn data(len: usize) -> Self {
@@ -795,7 +891,7 @@ impl Header {
 #[derive(Clone, Copy)]
 struct Raw<'a> {
     hdr: Header,
-    data: &'a ArcOrInline,
+    data: &'a ArcOrInlineBlob,
 }
 
 impl<'a> Debug for Raw<'a> {
@@ -813,10 +909,10 @@ impl<'a> Debug for Raw<'a> {
 impl<'a> Raw<'a> {
     const EMPTY: Raw<'static> = Raw {
         hdr: Header::EMPTY,
-        data: &ArcOrInline::EMPTY,
+        data: &ArcOrInlineBlob::EMPTY,
     };
 
-    fn new(hdr: Header, data: &'a ArcOrInline) -> Self {
+    fn new(hdr: Header, data: &'a ArcOrInlineBlob) -> Self {
         Self { hdr, data }
     }
 
@@ -907,7 +1003,7 @@ impl<'a, S> ValueRef<'a, S> {
     fn to_owned(&self) -> Value<S> {
         Value {
             hdr: self.raw.hdr,
-            data: self.raw.data.manual_clone(self.raw.hdr.len()),
+            data: self.raw.data.manual_clone(self.raw.hdr),
             p: PhantomData,
         }
     }
@@ -915,14 +1011,14 @@ impl<'a, S> ValueRef<'a, S> {
 
 pub struct Value<S> {
     hdr: Header,
-    data: ArcOrInline,
+    data: ArcOrInlineBlob,
     p: PhantomData<S>,
 }
 
 impl<S> Value<S> {
     const EMPTY: Self = Self {
         hdr: Header::NONE,
-        data: ArcOrInline::EMPTY,
+        data: ArcOrInlineBlob::EMPTY,
         p: PhantomData,
     };
 
@@ -934,15 +1030,21 @@ impl<S> Value<S> {
     }
 }
 
+impl<S> Drop for Value<S> {
+    fn drop(&mut self) {
+        self.data.manual_drop(&mut self.hdr);
+    }
+}
+
 #[repr(C)]
 pub struct OwnedTreeNode<S> {
     dummy: u8,
     prefix_hdr: Header,
     value_hdr: Header,
-    prefix: ArcOrInline,
-    value: ArcOrInline,
-    children: Option<Arc<Vec<OwnedTreeNode<S>>>>,
-    p: PhantomData<S>,
+    children_hdr: Header,
+    prefix: ArcOrInlineBlob,
+    value: ArcOrInlineBlob,
+    children: ChildRef<S>,
 }
 
 impl<S: BlobStore> OwnedTreeNode<S> {
@@ -967,27 +1069,30 @@ impl<S> Debug for OwnedTreeNode<S> {
         f.debug_struct("OwnedTreeNode")
             .field("prefix", &self.prefix())
             .field("value", &self.value())
-            .field("children", &self.children)
+            .field("children", &self.get_children())
             .finish()
     }
 }
 
 impl<S: BlobStore> OwnedTreeNode<S> {
-    fn load_children(&self, store: &S) -> &[OwnedTreeNode<S>] {
-        self.children
-            .as_ref()
-            .map(|x| x.as_ref().as_ref())
-            .unwrap_or(&[])
+    fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error> {
+        match self.get_children() {
+            Ok(children) => Ok(TreeNodeIter::Owned(children.iter())),
+            Err(id) => TreeNodeIter::load(id, store),
+        }
     }
 
-    fn load_children_mut(&mut self, store: &S) -> &mut Vec<OwnedTreeNode<S>> {
-        let t = self.children.get_or_insert_with(|| Arc::new(Vec::new()));
-        Arc::make_mut(t)
-    }
-
-    fn get_children_mut(&mut self) -> Option<&mut Vec<OwnedTreeNode<S>>> {
-        let t = self.children.get_or_insert_with(|| Arc::new(Vec::new()));
-        Some(Arc::make_mut(t))
+    fn load_children_mut(&mut self, store: &S) -> Result<&mut Vec<OwnedTreeNode<S>>, S::Error> {
+        if let Err(id) = self.get_children() {
+            let mut iter = TreeNodeIter::load(id, store)?;
+            let mut items = Vec::new();
+            while let Some(item) = iter.next() {
+                items.push(item.to_owned());
+            }
+            self.set_children_arc(Arc::new(items));
+        };
+        let children = self.get_children_mut().unwrap();
+        Ok(Arc::make_mut(children))
     }
 
     fn clone_shortened(&self, store: &S, n: usize) -> Result<Self, S::Error> {
@@ -1004,13 +1109,14 @@ impl<S: BlobStore> OwnedTreeNode<S> {
         child.set_prefix_slice(&prefix[n..]);
         self.set_prefix_slice(&prefix[..n]);
         // child.childen = self.children, self.children = empty
+        std::mem::swap(&mut self.children_hdr, &mut child.children_hdr);
         std::mem::swap(&mut self.children, &mut child.children);
         // child.value = self.value, self.value = none
         std::mem::swap(&mut self.value, &mut child.value);
         std::mem::swap(&mut self.value_hdr, &mut child.value_hdr);
         // now, self is a degenerate empty node with first being the prefix
         // child is the former self (value and children) with rest as prefix
-        self.children = Some(Arc::new(vec![child]));
+        self.set_children_arc(Arc::new(vec![child]));
         Ok(())
     }
 
@@ -1018,6 +1124,7 @@ impl<S: BlobStore> OwnedTreeNode<S> {
         let cc = self.child_count();
         if !self.has_value() && cc == 1 {
             let children = self.get_children_mut().expect("children must be loaded");
+            let children = Arc::make_mut(children);
             let mut child = children.pop().unwrap();
             debug_assert!(!self.prefix().is_id(), "prefix must be loaded");
             debug_assert!(!child.prefix().is_id(), "child prefix must be loaded");
@@ -1029,11 +1136,13 @@ impl<S: BlobStore> OwnedTreeNode<S> {
             std::mem::swap(&mut self.value_hdr, &mut child.value_hdr);
             std::mem::swap(&mut self.value, &mut child.value);
             // take children from child
-            self.children = child.children.take();
+            std::mem::swap(&mut self.children_hdr, &mut child.children_hdr);
+            std::mem::swap(&mut self.children, &mut child.children);
         }
         if !self.has_value() && self.child_count() == 0 {
             self.set_prefix_raw(Raw::EMPTY);
-            self.children = None;
+            self.children_hdr = Header::NONE;
+            self.children = ChildRef::EMPTY;
         }
     }
 }
@@ -1042,11 +1151,11 @@ impl<S> OwnedTreeNode<S> {
     const EMPTY: Self = Self {
         dummy: 0,
         prefix_hdr: Header::EMPTY,
-        prefix: ArcOrInline::EMPTY,
+        prefix: ArcOrInlineBlob::EMPTY,
         value_hdr: Header::NONE,
-        value: ArcOrInline::EMPTY,
-        children: None,
-        p: PhantomData,
+        value: ArcOrInlineBlob::EMPTY,
+        children_hdr: Header::NONE,
+        children: ChildRef::EMPTY,
     };
 
     fn first_prefix_byte(&self) -> Option<u8> {
@@ -1079,38 +1188,58 @@ impl<S> OwnedTreeNode<S> {
     }
 
     fn set_prefix_raw(&mut self, prefix: Raw) {
+        self.prefix.manual_drop(&mut self.prefix_hdr);
         self.prefix_hdr = prefix.hdr;
-        self.prefix = prefix.data.manual_clone(prefix.hdr.len());
+        self.prefix = prefix.data.manual_clone(prefix.hdr);
     }
 
     fn set_value_raw(&mut self, value: Raw) {
+        self.value.manual_drop(&mut self.value_hdr);
         self.value_hdr = value.hdr;
-        self.value = value.data.manual_clone(value.hdr.len());
+        self.value = value.data.manual_clone(value.hdr);
     }
 
     fn set_prefix_id_or_inline(&mut self, prefix: IdOrData) {
+        self.prefix.manual_drop(&mut self.prefix_hdr);
         self.prefix_hdr = prefix.hdr;
-        self.prefix = ArcOrInline::copy_from_slice(prefix.slice());
+        self.prefix = ArcOrInlineBlob::copy_from_slice(prefix.slice());
     }
 
     fn set_value_id_or_inline(&mut self, value: IdOrData) {
+        self.value.manual_drop(&mut self.value_hdr);
         self.value_hdr = value.hdr;
-        self.value = ArcOrInline::copy_from_slice(value.slice());
+        self.value = ArcOrInlineBlob::copy_from_slice(value.slice());
     }
 
     fn set_prefix_slice(&mut self, prefix: &[u8]) {
+        self.prefix.manual_drop(&mut self.prefix_hdr);
         self.prefix_hdr = Header::data(prefix.len());
-        self.prefix = ArcOrInline::copy_from_slice(prefix);
+        self.prefix = ArcOrInlineBlob::copy_from_slice(prefix);
     }
 
     fn set_value_slice(&mut self, value: Option<&[u8]>) {
+        self.value.manual_drop(&mut self.value_hdr);
         if let Some(value) = value {
             self.value_hdr = Header::data(value.len());
-            self.value = ArcOrInline::copy_from_slice(value);
+            self.value = ArcOrInlineBlob::copy_from_slice(value);
         } else {
             self.value_hdr = Header::NONE;
-            self.value = ArcOrInline::EMPTY;
+            self.value = ArcOrInlineBlob::EMPTY;
         }
+    }
+
+    fn get_children(&self) -> Result<&Arc<Vec<OwnedTreeNode<S>>>, &[u8]> {
+        self.children.deref(self.children_hdr)
+    }
+
+    fn get_children_mut(&mut self) -> Result<&mut Arc<Vec<OwnedTreeNode<S>>>, &[u8]> {
+        self.children.deref_mut(self.children_hdr)
+    }
+
+    fn set_children_arc(&mut self, arc: Arc<Vec<OwnedTreeNode<S>>>) {
+        self.children.manual_drop(&mut self.children_hdr);
+        self.children_hdr = Header::ARCDATA;
+        self.children = ChildRef::data_from_arc(arc);
     }
 
     fn load_prefix(&self, store: &S) -> Result<Blob<'_>, S::Error>
@@ -1170,22 +1299,22 @@ impl<S> OwnedTreeNode<S> {
     }
 
     fn is_leaf(&self) -> bool {
-        self.children.is_none()
+        self.children_hdr == Header::NONE
     }
 
     fn child_count(&self) -> usize {
-        self.children.as_ref().map(|x| x.len()).unwrap_or_default()
+        match self.get_children() {
+            Ok(data) => data.len(),
+            Err(id) => panic!(),
+        }
     }
 }
 
 impl<S> Drop for OwnedTreeNode<S> {
     fn drop(&mut self) {
-        self.prefix.manual_drop(self.prefix_hdr.len());
-        self.value.manual_drop(self.value_hdr.len());
-        // just to be on the safe side
-        self.value_hdr = Header::NONE;
-        self.prefix_hdr = Header::EMPTY;
-        self.children = None;
+        self.prefix.manual_drop(&mut self.prefix_hdr);
+        self.value.manual_drop(&mut self.value_hdr);
+        self.children.manual_drop(&mut self.children_hdr);
     }
 }
 
@@ -1195,10 +1324,10 @@ impl<S> Clone for OwnedTreeNode<S> {
             dummy: 0,
             prefix_hdr: self.prefix_hdr,
             value_hdr: self.value_hdr,
-            prefix: self.prefix.manual_clone(self.prefix_hdr.len()),
-            value: self.value.manual_clone(self.value_hdr.len()),
-            children: self.children.clone(),
-            p: PhantomData,
+            children_hdr: self.children_hdr,
+            prefix: self.prefix.manual_clone(self.prefix_hdr),
+            value: self.value.manual_clone(self.value_hdr),
+            children: self.children.manual_clone(self.children_hdr),
         }
     }
 }
@@ -1259,12 +1388,34 @@ impl<S: 'static> BorrowedTreeNode<'static, S> {
 }
 
 impl<'a, S> BorrowedTreeNode<'a, S> {
+    fn first_prefix_byte(&self) -> Option<u8> {
+        self.prefix().slice().get(0).cloned()
+    }
+
     fn prefix(&self) -> IdOrData<'a> {
         IdOrData::new(self.prefix_hdr, self.prefix)
     }
 
     fn value(&self) -> IdOrData<'a> {
         IdOrData::new(self.value_hdr, self.value)
+    }
+
+    fn bytes_len(&self) -> usize {
+        self.prefix_hdr.len() + self.value_hdr.len() + self.children_hdr.len() + 3
+    }
+
+    fn load_prefix(&self, store: &S) -> Result<Blob, S::Error>
+    where
+        S: BlobStore,
+    {
+        todo!()
+    }
+
+    fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error>
+    where
+        S: BlobStore,
+    {
+        todo!()
     }
 
     pub fn read(buffer: &'a [u8]) -> Option<Self> {
@@ -1311,7 +1462,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
 #[derive(Clone, Copy)]
 pub enum TreeNodeRef<'a, S: BlobStore = NoStore> {
     Owned(&'a OwnedTreeNode<S>),
-    Borrowed(&'a BorrowedTreeNode<'a, S>),
+    Borrowed(BorrowedTreeNode<'a, S>),
 }
 
 impl<'a, S: BlobStore> Debug for TreeNodeRef<'a, S> {
@@ -1333,31 +1484,38 @@ impl<'a> TreeNodeRef<'a, NoStore> {
 }
 
 impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
+    fn to_owned(self) -> OwnedTreeNode<S> {
+        match self {
+            Self::Owned(owned) => owned.clone(),
+            Self::Borrowed(borrowed) => todo!(),
+        }
+    }
+
     fn load_prefix(&self, store: &S) -> Result<Blob, S::Error> {
         match self {
             Self::Owned(owned) => owned.load_prefix(store),
-            _ => todo!(),
+            Self::Borrowed(borrowed) => borrowed.load_prefix(store),
         }
     }
 
     fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error> {
         match self {
-            Self::Owned(owned) => Ok(TreeNodeIter::Owned(owned.load_children(store).iter())),
-            _ => todo!(),
+            Self::Owned(owned) => owned.load_children(store),
+            Self::Borrowed(borrowed) => borrowed.load_children(store),
         }
     }
 
     fn value_opt(&self) -> Option<ValueRef<'_, S>> {
         match self {
             Self::Owned(owned) => owned.value_opt(),
-            _ => todo!(),
+            Self::Borrowed(borrowed) => todo!(),
         }
     }
 
     fn first_prefix_byte(&self) -> Option<u8> {
         match self {
             Self::Owned(owned) => owned.first_prefix_byte(),
-            _ => todo!(),
+            Self::Borrowed(borrowed) => borrowed.first_prefix_byte(),
         }
     }
 
@@ -1425,10 +1583,10 @@ impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
 
 fn cmp<A, B: BlobStore>(
     a: &InPlaceVecBuilder<'_, OwnedTreeNode<A>>,
-    b: &TreeNodeIter<'_, B>,
+    b: &mut TreeNodeIter<'_, B>,
 ) -> Option<Ordering> {
     let ap = a.source_slice().get(0).map(|x| x.first_prefix_byte());
-    let bp = b.peek();
+    let bp = b.first_prefix_byte_opt();
     match (ap, bp) {
         (Some(a), Some(b)) => Some(a.cmp(&b)),
         (Some(_), None) => Some(Ordering::Less),
@@ -1439,28 +1597,46 @@ fn cmp<A, B: BlobStore>(
 
 enum TreeNodeIter<'a, S> {
     Owned(std::slice::Iter<'a, OwnedTreeNode<S>>),
+    Borrowed(OwnedBlob, usize),
 }
 
 impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
+    fn load(id: &[u8], store: &S) -> Result<Self, S::Error> {
+        Ok(if id.is_empty() {
+            TreeNodeIter::Owned([].iter())
+        } else {
+            let data = store.read(id)?;
+            TreeNodeIter::<S>::Borrowed(data, 0)
+        })
+    }
+
     fn is_empty(&self) -> bool {
         match self {
             Self::Owned(x) => x.as_slice().is_empty(),
+            Self::Borrowed(slice, offset) => *offset == slice.len(),
         }
     }
 
-    fn peek(&self) -> Option<Option<u8>> {
+    fn first_prefix_byte_opt(&mut self) -> Option<Option<u8>> {
         match self {
             Self::Owned(x) => x.as_slice().get(0).map(|x| x.first_prefix_byte()),
+            Self::Borrowed(slice, offset) => {
+                BorrowedTreeNode::<S>::read(&slice[*offset..]).map(|x| x.first_prefix_byte())
+            }
         }
     }
-}
 
-impl<'a, S: BlobStore> Iterator for TreeNodeIter<'a, S> {
-    type Item = TreeNodeRef<'a, S>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next(&mut self) -> Option<TreeNodeRef<'_, S>> {
         match self {
             Self::Owned(x) => x.next().map(TreeNodeRef::Owned),
+            Self::Borrowed(slice, offset) => {
+                if let Some(node) = BorrowedTreeNode::read(slice) {
+                    *offset += node.bytes_len();
+                    Some(TreeNodeRef::Borrowed(node))
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -1495,14 +1671,14 @@ where
                 a.set_value_raw(av.as_ref().raw);
             }
         }
-        let ac = a.load_children_mut(&ab);
+        let ac = a.load_children_mut(&ab)?;
         let bc = b.load_children(&bb)?;
         outer_combine_children_with(ac, ab, bc, bb, c, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
-        let ac = a.load_children_mut(&ab);
-        let bc = &[b.clone_shortened(&bb, n)?];
+        let ac = a.load_children_mut(&ab)?;
+        let bc = [b.clone_shortened(&bb, n)?];
         outer_combine_children_with(ac, ab, TreeNodeIter::Owned(bc.iter()), bb, c, f)?;
     } else if n == bp.len() {
         // b is a prefix of a
@@ -1518,13 +1694,13 @@ where
                 a.set_value_raw(av.as_ref().raw);
             }
         }
-        let ac = a.load_children_mut(&ab);
+        let ac = a.load_children_mut(&ab)?;
         let bc = b.load_children(&bb)?;
         outer_combine_children_with(ac, ab, bc, bb, c, f)?;
     } else {
         // the two nodes are disjoint
         a.split(&ab, n)?;
-        let ac = a.load_children_mut(&ab);
+        let ac = a.load_children_mut(&ab)?;
         ac.push(c.convert_node_shortened(b, &bb, n)?);
         ac.sort_by_key(|x| x.first_prefix_byte());
     }
@@ -1535,7 +1711,7 @@ where
 fn outer_combine_children_with<'a, A, B, C, F>(
     ac: &'a mut Vec<OwnedTreeNode<A>>,
     ab: A,
-    bc: TreeNodeIter<'a, B>,
+    mut bc: TreeNodeIter<'a, B>,
     bb: B,
     c: C,
     f: F,
@@ -1548,14 +1724,14 @@ where
     A::Error: From<B::Error>,
 {
     if ac.is_empty() || bc.is_empty() {
-        for bc in bc {
+        while let Some(bc) = bc.next() {
             ac.push(c.convert_node(&bc, &bb)?);
         }
         Ok(())
     } else {
         let mut acb = InPlaceVecBuilder::from(ac);
-        let mut bci = bc.into_iter();
-        while let Some(ordering) = cmp(&acb, &bci) {
+        let mut bci = bc;
+        while let Some(ordering) = cmp(&acb, &mut bci) {
             match ordering {
                 Ordering::Less => {
                     acb.consume(1, true);
@@ -1594,7 +1770,7 @@ fn sizes2() {
     // todo: get this to 4xusize with some union magic?
     assert_eq!(
         std::mem::size_of::<TreeNodeRef<NoStore>>(),
-        2 * std::mem::size_of::<usize>()
+        5 * std::mem::size_of::<usize>()
     );
     println!("{}", std::mem::size_of::<OwnedTreeNode<NoStore>>());
     println!("{}", std::mem::size_of::<BorrowedTreeNode<NoStore>>());
