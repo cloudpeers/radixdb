@@ -1037,35 +1037,9 @@ impl<'a> IdOrData<'a> {
     }
 }
 
-enum IdOrDataOrRaw<'a> {
-    Raw(Raw<'a>),
-    IdOrInline(IdOrData<'a>),
-}
-
-impl<'a> IdOrDataOrRaw<'a> {
-    fn is_id(&self) -> bool {
-        match self {
-            Self::Raw(x) => x.is_id(),
-            Self::IdOrInline(x) => x.is_id(),
-        }
-    }
-    fn is_none(&self) -> bool {
-        match self {
-            Self::Raw(x) => x.is_none(),
-            Self::IdOrInline(x) => x.is_none(),
-        }
-    }
-    fn slice(&self) -> &'a [u8] {
-        match self {
-            Self::Raw(x) => x.slice(),
-            Self::IdOrInline(x) => x.slice(),
-        }
-    }
-}
-
-pub struct ValueRef<'a, S> {
-    raw: Raw<'a>,
-    p: PhantomData<S>,
+enum ValueRef<'a, S> {
+    Raw(Raw<'a>, PhantomData<S>),
+    IdOrData(IdOrData<'a>),
 }
 
 impl<'a> ValueRef<'a, NoStore> {
@@ -1075,14 +1049,57 @@ impl<'a> ValueRef<'a, NoStore> {
 }
 
 impl<'a, S> ValueRef<'a, S> {
+    fn to_owned(&self) -> OwnedValue<S> {
+        match self {
+            Self::Raw(x, _) => OwnedValueRef::new(*x).to_owned(),
+            Self::IdOrData(x) => OwnedValue {
+                hdr: x.hdr,
+                data: ArcOrInlineBlob::copy_from_slice(x.slice()),
+                p: PhantomData,
+            },
+        }
+    }
+
+    fn is_id(&self) -> bool {
+        match self {
+            Self::Raw(x, _) => x.is_id(),
+            Self::IdOrData(x) => x.is_id(),
+        }
+    }
+    fn is_none(&self) -> bool {
+        match self {
+            Self::Raw(x, _) => x.is_none(),
+            Self::IdOrData(x) => x.is_none(),
+        }
+    }
+    fn slice(&self) -> &'a [u8] {
+        match self {
+            Self::Raw(x, _) => x.slice(),
+            Self::IdOrData(x) => x.slice(),
+        }
+    }
+}
+
+pub struct OwnedValueRef<'a, S> {
+    raw: Raw<'a>,
+    p: PhantomData<S>,
+}
+
+impl<'a> OwnedValueRef<'a, NoStore> {
+    fn downcast<S2: BlobStore>(&self) -> &OwnedValueRef<'a, S2> {
+        unsafe { std::mem::transmute(self) }
+    }
+}
+
+impl<'a, S> OwnedValueRef<'a, S> {
     fn new(raw: Raw<'a>) -> Self {
         Self {
             raw,
             p: PhantomData,
         }
     }
-    fn to_owned(&self) -> Value<S> {
-        Value {
+    fn to_owned(&self) -> OwnedValue<S> {
+        OwnedValue {
             hdr: self.raw.hdr,
             data: self.raw.data.manual_clone(self.raw.hdr),
             p: PhantomData,
@@ -1090,21 +1107,21 @@ impl<'a, S> ValueRef<'a, S> {
     }
 }
 
-pub struct Value<S> {
+pub struct OwnedValue<S> {
     hdr: Header,
     data: ArcOrInlineBlob,
     p: PhantomData<S>,
 }
 
-impl<S> Value<S> {
+impl<S> OwnedValue<S> {
     const EMPTY: Self = Self {
         hdr: Header::NONE,
         data: ArcOrInlineBlob::EMPTY,
         p: PhantomData,
     };
 
-    fn as_ref(&self) -> ValueRef<S> {
-        ValueRef::new(Raw {
+    fn as_ref(&self) -> OwnedValueRef<S> {
+        OwnedValueRef::new(Raw {
             hdr: self.hdr,
             data: &self.data,
         })
@@ -1119,7 +1136,7 @@ impl<S> Value<S> {
     }
 }
 
-impl<S> Drop for Value<S> {
+impl<S> Drop for OwnedValue<S> {
     fn drop(&mut self) {
         self.data.manual_drop(self.hdr);
     }
@@ -1239,7 +1256,7 @@ impl<S: BlobStore> OwnedTreeNode<S> {
         })
     }
 
-    fn get(&self, key: &[u8], store: &S) -> Result<Option<Value<S>>, S::Error> {
+    fn get(&self, key: &[u8], store: &S) -> Result<Option<OwnedValue<S>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(store, &TreeNodeRef::Owned(&self), key, |r| {
             Ok(if let FindResult::Found(tree) = r {
@@ -1453,17 +1470,17 @@ impl<S> OwnedTreeNode<S> {
         self.value_hdr != Header::NONE
     }
 
-    fn value_opt(&self) -> Option<ValueRef<'_, S>> {
+    fn value_opt(&self) -> Option<OwnedValueRef<'_, S>> {
         if self.has_value() {
-            Some(ValueRef::new(self.value()))
+            Some(OwnedValueRef::new(self.value()))
         } else {
             None
         }
     }
 
-    fn take_value_opt(&mut self) -> Option<Value<S>> {
+    fn take_value_opt(&mut self) -> Option<OwnedValue<S>> {
         if self.has_value() {
-            let mut value = Value::EMPTY;
+            let mut value = OwnedValue::EMPTY;
             std::mem::swap(&mut self.value_hdr, &mut value.hdr);
             std::mem::swap(&mut self.value, &mut value.data);
             Some(value)
@@ -1472,8 +1489,8 @@ impl<S> OwnedTreeNode<S> {
         }
     }
 
-    fn take_value(&mut self) -> Value<S> {
-        let mut value = Value::EMPTY;
+    fn take_value(&mut self) -> OwnedValue<S> {
+        let mut value = OwnedValue::EMPTY;
         std::mem::swap(&mut self.value_hdr, &mut value.hdr);
         std::mem::swap(&mut self.value, &mut value.data);
         value
@@ -1617,6 +1634,14 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         }
     }
 
+    fn value_opt(&self) -> Option<ValueRef<S>> {
+        if self.value_hdr != Header::NONE {
+            Some(ValueRef::IdOrData(self.value()))
+        } else {
+            None
+        }
+    }
+
     fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error>
     where
         S: BlobStore,
@@ -1725,10 +1750,10 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
         }
     }
 
-    fn value_opt(&self) -> Option<ValueRef<'_, S>> {
+    fn value_opt(&self) -> Option<ValueRef<S>> {
         match self {
-            Self::Owned(owned) => owned.value_opt(),
-            Self::Borrowed(borrowed) => todo!(),
+            Self::Owned(owned) => owned.value_opt().map(|x| ValueRef::Raw(x.raw, PhantomData)),
+            Self::Borrowed(borrowed) => borrowed.value_opt(),
         }
     }
 
@@ -1816,7 +1841,7 @@ trait NodeConverter<A, B> {
     ) -> Result<OwnedTreeNode<B>, A::Error>
     where
         A: BlobStore;
-    fn convert_value(&self, bv: &ValueRef<A>, store: &A) -> Result<Value<B>, A::Error>
+    fn convert_value(&self, bv: &ValueRef<A>, store: &A) -> Result<OwnedValue<B>, A::Error>
     where
         A: BlobStore;
 }
@@ -1845,7 +1870,7 @@ impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
         node.clone_shortened(store, n).map(|x| x.downcast())
     }
 
-    fn convert_value(&self, bv: &ValueRef<NoStore>, _: &NoStore) -> Result<Value<B>, NoError>
+    fn convert_value(&self, bv: &ValueRef<NoStore>, _: &NoStore) -> Result<OwnedValue<B>, NoError>
     where
         NoStore: BlobStore,
     {
@@ -1902,7 +1927,17 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
                         .map(|i| TreeNodeRef::Owned(&slice[i]))
                 }
             }
-            Self::Borrowed(x, o) => todo!(),
+            Self::Borrowed(x, o) => {
+                let mut offset = *o;
+                while let Some(node) = BorrowedTreeNode::<S>::read(&x[offset..]) {
+                    match node.first_prefix_byte().cmp(&Some(prefix)) {
+                        Ordering::Less => offset += node.bytes_len(),
+                        Ordering::Equal => return Some(TreeNodeRef::Borrowed(node)),
+                        Ordering::Greater => return None,
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -1944,7 +1979,7 @@ where
     B: BlobStore + Clone,
     C: NodeConverter<B, A> + Clone,
     A::Error: From<B::Error>,
-    F: Fn(&mut Value<A>, &ValueRef<B>) -> Result<(), B::Error> + Copy,
+    F: Fn(&mut OwnedValue<A>, &ValueRef<B>) -> Result<(), B::Error> + Copy,
 {
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
@@ -2009,7 +2044,7 @@ where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     C: NodeConverter<B, A> + Clone,
-    F: Fn(&mut Value<A>, &ValueRef<B>) -> Result<(), B::Error> + Copy,
+    F: Fn(&mut OwnedValue<A>, &ValueRef<B>) -> Result<(), B::Error> + Copy,
     A::Error: From<B::Error>,
 {
     if ac.is_empty() || bc.is_empty() {
@@ -2116,7 +2151,7 @@ fn new_build_bench() {
 
     let t0 = Instant::now();
     for (key, value) in &elems3 {
-        let v: Value<NoStore> = t.get(&key, &NoStore).unwrap().unwrap();
+        let v: OwnedValue<NoStore> = t.get(&key, &NoStore).unwrap().unwrap();
         assert_eq!(v.read().unwrap(), &value[..]);
     }
     println!("validate get {}", t0.elapsed().as_secs_f64());
@@ -2137,6 +2172,13 @@ fn new_build_bench() {
     let d = OwnedTreeNode::<MemStore2>::deserialize(&target).unwrap();
     println!("{:?}", d);
     // d.dump(0, &store).unwrap();
+
+    let t0 = Instant::now();
+    for (key, value) in &elems3 {
+        let v: OwnedValue<MemStore2> = d.get(&key, &store).unwrap().unwrap();
+        assert_eq!(v.read().unwrap(), &value[..]);
+    }
+    println!("validate get attached {}", t0.elapsed().as_secs_f64());
 }
 
 #[test]
