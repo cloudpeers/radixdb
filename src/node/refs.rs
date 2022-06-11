@@ -1229,11 +1229,20 @@ impl<S: BlobStore> OwnedTreeNode<S> {
             Ok(children) => {
                 assert!(!children.is_empty());
                 let mut serialized = Vec::new();
+                let mut record_size = 0usize;
                 for child in children.iter() {
+                    let ofs = serialized.len();
                     child.serialize(&mut serialized, store)?;
+                    let len = serialized.len() - ofs;
+                    if record_size == 0 {
+                        record_size = len;
+                    } else if record_size != len {
+                        record_size = usize::max_value()
+                    }
                 }
                 let id = store.write(&serialized)?;
-                target.push(Header::id(id.len()).into());
+                target.push(Header::id(id.len() + 1).into());
+                target.push(record_size.try_into().unwrap_or_default());
                 target.extend_from_slice(&id);
             }
             Err(id) => {
@@ -1654,8 +1663,8 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         } else {
             assert!(self.children_hdr.is_id());
             let id = self.children().slice();
-            let blob = store.read(id)?;
-            TreeNodeIter::Borrowed(blob, 0)
+            let blob = store.read(&id[1..])?;
+            TreeNodeIter::Borrowed(blob, 0, id[0])
         })
     }
 
@@ -1905,7 +1914,7 @@ fn cmp<A, B: BlobStore>(
 
 enum TreeNodeIter<'a, S> {
     Owned(std::slice::Iter<'a, OwnedTreeNode<S>>),
-    Borrowed(OwnedBlob, usize),
+    Borrowed(OwnedBlob, usize, u8),
 }
 
 impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
@@ -1913,15 +1922,15 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         Ok(if id.is_empty() {
             TreeNodeIter::Owned([].iter())
         } else {
-            let data = store.read(id)?;
-            TreeNodeIter::<S>::Borrowed(data, 0)
+            let data = store.read(&id[1..])?;
+            TreeNodeIter::<S>::Borrowed(data, 0, id[0])
         })
     }
 
     fn is_empty(&self) -> bool {
         match self {
             Self::Owned(x) => x.as_slice().is_empty(),
-            Self::Borrowed(slice, offset) => *offset == slice.len(),
+            Self::Borrowed(slice, offset, _) => *offset == slice.len(),
         }
     }
 
@@ -1938,7 +1947,15 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
                         .map(|i| TreeNodeRef::Owned(&slice[i]))
                 }
             }
-            Self::Borrowed(x, o) => {
+            Self::Borrowed(x, o, rs) => {
+                let elems = if *rs != 0 {
+                    (x.len() - o) / (*rs as usize)
+                } else {
+                    0
+                };
+                // if elems == 256 {
+                //     todo!()
+                // }
                 let mut offset = *o;
                 while let Some(node) = BorrowedTreeNode::<S>::read(&x[offset..]) {
                     match node.first_prefix_byte().cmp(&Some(prefix)) {
@@ -1955,7 +1972,7 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
     fn first_prefix_byte_opt(&mut self) -> Option<Option<u8>> {
         match self {
             Self::Owned(x) => x.as_slice().get(0).map(|x| x.first_prefix_byte()),
-            Self::Borrowed(slice, offset) => {
+            Self::Borrowed(slice, offset, _) => {
                 BorrowedTreeNode::<S>::read(&slice[*offset..]).map(|x| x.first_prefix_byte())
             }
         }
@@ -1964,7 +1981,7 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
     fn next(&mut self) -> Option<TreeNodeRef<'_, S>> {
         match self {
             Self::Owned(x) => x.next().map(TreeNodeRef::Owned),
-            Self::Borrowed(slice, offset) => {
+            Self::Borrowed(slice, offset, _) => {
                 if let Some(node) = BorrowedTreeNode::read(&slice[*offset..]) {
                     *offset += node.bytes_len();
                     Some(TreeNodeRef::Borrowed(node))
