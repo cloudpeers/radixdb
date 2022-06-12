@@ -465,6 +465,20 @@ pub struct OwnedValue<S> {
     p: PhantomData<S>,
 }
 
+impl AsRef<[u8]> for OwnedValue<NoStore> {
+    fn as_ref(&self) -> &[u8] {
+        self.data.slice(self.hdr)
+    }
+}
+
+impl Deref for OwnedValue<NoStore> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.data.slice(self.hdr)
+    }
+}
+
 impl<S> OwnedValue<S> {
     const EMPTY: Self = Self {
         hdr: Header::NONE,
@@ -1479,12 +1493,47 @@ impl Tree {
         Self::new(OwnedTreeNode::single(key, value), NoStore)
     }
 
+    pub fn get(&self, key: &[u8]) -> Option<OwnedValue<NoStore>> {
+        unwrap_safe(self.try_get(key))
+    }
+
+    pub fn contains_key(&self, key: &[u8]) -> bool {
+        unwrap_safe(self.try_contains_key(key))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (OwnedBlob, OwnedValue<NoStore>)> {
+        self.try_iter().map(unwrap_safe)
+    }
+
+    // pub fn values(&self) -> impl Iterator<Item = TreeValueRefWrapper> {
+    //     self.try_values().map(unwrap_safe)
+    // }
+
+    // pub fn scan_prefix(
+    //     &self,
+    //     prefix: &[u8],
+    // ) -> impl Iterator<Item = (OwnedBlob, TreeValueRefWrapper)> + '_ {
+    //     unwrap_safe(self.try_scan_prefix(prefix)).map(unwrap_safe)
+    // }
+
     pub fn outer_combine_with(
         &mut self,
         that: &Tree,
         f: impl Fn(&mut OwnedValue<NoStore>, &ValueRef<NoStore>) + Copy,
     ) {
         unwrap_safe(self.try_outer_combine_with(that, DowncastConverter, |a, b| Ok(f(a, b))))
+    }
+}
+
+pub struct Iter<S> {
+    p: PhantomData<S>,
+}
+
+impl<S: BlobStore> Iterator for Iter<S> {
+    type Item = Result<(OwnedBlob, OwnedValue<S>), S::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        todo!()
     }
 }
 
@@ -1520,6 +1569,10 @@ impl<S: BlobStore + Clone> Tree<S> {
     /// True if key is contained in this set
     pub fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
         self.node.contains_key(key, &self.store)
+    }
+
+    pub fn try_iter(&self) -> Iter<S> {
+        todo!()
     }
 
     pub fn try_outer_combine_with<S2, C, F>(

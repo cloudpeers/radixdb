@@ -51,6 +51,10 @@ fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> Tree {
     v.clone().into_iter().collect()
 }
 
+fn to_btree_map(t: &Tree) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    t.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect()
+}
+
 #[test]
 fn sizes2() {
     assert_eq!(
@@ -187,5 +191,17 @@ fn new_smoke() {
         )
         .unwrap();
         println!("r={:?}", r);
+    }
+}
+
+proptest! {
+    #[test]
+    fn get_contains(x in arb_tree_contents()) {
+        let reference = x;
+        let tree = mk_owned_tree(&reference);
+        for (k, v) in reference {
+            prop_assert!(tree.contains_key(&k));
+            prop_assert_eq!(tree.get(&k).map(|x| x.to_vec()), Some(v));
+        }
     }
 }
