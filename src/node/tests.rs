@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use crate::store::{MemStore, MemStore2};
+use crate::store::MemStore;
 
 use super::*;
 
@@ -137,19 +137,19 @@ fn new_build_bench() {
     }
     println!("validate get ref {}", t0.elapsed().as_secs_f64());
 
-    let store = MemStore2::default();
+    let store = MemStore::default();
     let mut target = Vec::new();
     let t0 = Instant::now();
     // t.dump(0, &NoStore).unwrap();
     t.serialize(&mut target, &store).unwrap();
     println!("{} {}", Hex::new(&target), t0.elapsed().as_secs_f64());
-    let d = OwnedTreeNode::<MemStore2>::deserialize(&target).unwrap();
+    let d = OwnedTreeNode::<MemStore>::deserialize(&target).unwrap();
     println!("{:?}", d);
     // d.dump(0, &store).unwrap();
 
     let t0 = Instant::now();
     for (key, value) in &elems3 {
-        let v: OwnedValue<MemStore2> = d.get(&key, &store).unwrap().unwrap();
+        let v: OwnedValue<MemStore> = d.get(&key, &store).unwrap().unwrap();
         assert_eq!(v.read().unwrap(), &value[..]);
     }
     println!("validate get attached {}", t0.elapsed().as_secs_f64());

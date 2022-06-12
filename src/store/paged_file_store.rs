@@ -2,7 +2,6 @@ use fnv::FnvHashMap;
 use memmap::{Mmap, MmapOptions};
 use parking_lot::Mutex;
 
-use crate::store::{Blob, BlobOwner, BlobStore};
 use std::{
     fmt::Debug,
     fs::File,
@@ -10,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{BlobStore2, OwnedBlob};
+use super::{BlobStore, OwnedBlob};
 
 #[derive(Clone)]
 pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
@@ -51,24 +50,6 @@ impl<const SIZE: usize> PageInner<SIZE> {
     fn new(mmap: Mmap) -> Self {
         assert!(mmap.len() == SIZE);
         Self { mmap }
-    }
-}
-
-impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
-    fn get_slice(&self, offset: usize) -> &[u8] {
-        let data = self.mmap.as_ref();
-        let base = offset + 4;
-        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        &data[base..base + length]
-    }
-    fn validate(&self, offset: usize) -> bool {
-        let data = self.mmap.as_ref();
-        if offset + 4 <= data.len() {
-            let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-            offset + 4 + length <= data.len()
-        } else {
-            false
-        }
     }
 }
 
@@ -201,7 +182,7 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
     }
 }
 
-impl<const SIZE: usize> BlobStore2 for PagedFileStore<SIZE> {
+impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
     type Error = anyhow::Error;
 
     fn read(&self, id: &[u8]) -> anyhow::Result<OwnedBlob> {
@@ -227,7 +208,7 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::store::{DynBlobStore, DynBlobStore2};
+    use crate::store::DynBlobStore2;
 
     use super::*;
     use log::info;

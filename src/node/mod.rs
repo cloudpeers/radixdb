@@ -1,6 +1,7 @@
 use core::borrow;
 use std::{
     any::{self, Any},
+    borrow::Borrow,
     cmp::Ordering,
     collections::BTreeMap,
     fmt,
@@ -16,9 +17,7 @@ use std::{
 use inplace_vec_builder::InPlaceVecBuilder;
 
 use crate::{
-    store::{
-        unwrap_safe, Blob2 as Blob, BlobStore2 as BlobStore, MemStore2, NoError, NoStore, OwnedBlob,
-    },
+    store::{unwrap_safe, Blob, BlobStore, MemStore, NoError, NoStore, OwnedBlob},
     Hex,
 };
 use std::fmt::Debug;
@@ -1501,7 +1500,7 @@ impl Tree {
         unwrap_safe(self.try_contains_key(key))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (OwnedBlob, OwnedValue<NoStore>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (OwnedBlob, OwnedValue<NoStore>)> + '_ {
         self.try_iter().map(unwrap_safe)
     }
 
@@ -1525,15 +1524,115 @@ impl Tree {
     }
 }
 
-pub struct Iter<S> {
-    p: PhantomData<S>,
+#[derive(Debug, Clone, Default)]
+pub struct IterKey(Arc<Vec<u8>>);
+
+impl IterKey {
+    fn new(root: &[u8]) -> Self {
+        Self(Arc::new(root.to_vec()))
+    }
+
+    fn append(&mut self, data: &[u8]) {
+        // for typical iterator use, a reference is not kept for a long time, so this will be very cheap
+        //
+        // in the case a reference is kept, this will make a copy.
+        let elems = Arc::make_mut(&mut self.0);
+        elems.extend_from_slice(data);
+    }
+
+    fn pop(&mut self, n: usize) {
+        let elems = Arc::make_mut(&mut self.0);
+        elems.truncate(elems.len().saturating_sub(n));
+    }
 }
 
-impl<S: BlobStore> Iterator for Iter<S> {
+impl AsRef<[u8]> for IterKey {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl Borrow<[u8]> for IterKey {
+    fn borrow(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl Deref for IterKey {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+pub struct Iter<'a, S: BlobStore> {
+    path: IterKey,
+    stack: Vec<(usize, Option<OwnedBlob>, TreeNodeIter<'a, S>)>,
+    store: S,
+}
+
+impl<'a, S: BlobStore> Iter<'a, S> {
+    fn empty(store: S) -> Self {
+        Self {
+            stack: Vec::new(),
+            path: IterKey::default(),
+            store,
+        }
+    }
+
+    fn new(iter: TreeNodeIter<'a, S>, store: S, prefix: IterKey) -> Self {
+        Self {
+            stack: vec![(0, None, iter)],
+            path: prefix,
+            store,
+        }
+    }
+
+    fn top_value(&mut self) -> &mut Option<OwnedBlob> {
+        &mut self.stack.last_mut().unwrap().1
+    }
+
+    fn top_prefix_len(&self) -> usize {
+        self.stack.last().unwrap().0
+    }
+
+    fn next0(&mut self) -> Result<Option<(OwnedBlob, OwnedValue<S>)>, S::Error> {
+        todo!()
+        // while !self.stack.is_empty() {
+        //     if let Some((value, node)) = self.stack.last_mut().unwrap().2.next() {
+        //         let prefix = node.prefix().load(&self.store)?;
+        //         let prefix_len = prefix.len();
+        //         let children = node.children().load_owned(&self.store)?.owned_iter();
+        //         self.path.append(prefix.as_ref());
+        //         self.stack.push((prefix_len, value, children));
+        //     } else {
+        //         if let Some(value) = self.top_value().take() {
+        //             let value = TreeValueRefWrapper::new(value);
+        //             return Ok(Some((self.path.as_owned_blob(), value)));
+        //         } else {
+        //             self.path.pop(self.top_prefix_len());
+        //             self.stack.pop();
+        //         }
+        //     }
+        // }
+        // Ok(None)
+    }
+}
+
+impl<'a, S: BlobStore> Iterator for Iter<'a, S> {
     type Item = Result<(OwnedBlob, OwnedValue<S>), S::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        match self.next0() {
+            Ok(Some(x)) => Some(Ok(x)),
+            Ok(None) => None,
+            Err(cause) => {
+                // ensure that the next call to next will terminate
+                self.stack.clear();
+                Some(Err(cause))
+            }
+        }
     }
 }
 
@@ -1571,7 +1670,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         self.node.contains_key(key, &self.store)
     }
 
-    pub fn try_iter(&self) -> Iter<S> {
+    pub fn try_iter(&self) -> Iter<'_, S> {
         todo!()
     }
 
