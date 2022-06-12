@@ -195,6 +195,15 @@ fn new_smoke() {
 }
 
 proptest! {
+
+    #[test]
+    fn btreemap_tree_roundtrip(x in arb_tree_contents()) {
+        let reference = x;
+        let tree = mk_owned_tree(&reference);
+        let actual = to_btree_map(&tree);
+        prop_assert_eq!(reference, actual);
+    }
+
     #[test]
     fn get_contains(x in arb_tree_contents()) {
         let reference = x;
