@@ -22,6 +22,8 @@ use crate::{
     Hex,
 };
 use std::fmt::Debug;
+#[cfg(test)]
+mod tests;
 
 const PTR_SIZE: usize = std::mem::size_of::<*const u8>();
 
@@ -277,7 +279,7 @@ impl Header {
 }
 
 #[derive(Clone, Copy)]
-struct Raw<'a> {
+pub struct Raw<'a> {
     hdr: Header,
     data: &'a ArcOrInlineBlob,
 }
@@ -334,7 +336,7 @@ impl<'a> Raw<'a> {
     }
 }
 
-struct IdOrData<'a> {
+pub struct IdOrData<'a> {
     hdr: Header,
     data: &'a u8,
 }
@@ -387,7 +389,7 @@ impl<'a> IdOrData<'a> {
     }
 }
 
-enum ValueRef<'a, S> {
+pub enum ValueRef<'a, S> {
     Raw(Raw<'a>, PhantomData<S>),
     IdOrData(IdOrData<'a>),
 }
@@ -698,6 +700,28 @@ impl<S: BlobStore> OwnedTreeNode<S> {
     }
 }
 
+impl<S: BlobStore> OwnedTreeNode<S> {
+    fn load_prefix(&self, store: &S) -> Result<Blob<'_>, S::Error> {
+        if self.prefix().is_id() {
+            store.read(self.prefix().slice())
+        } else {
+            Ok(Blob::new(self.prefix().slice()))
+        }
+    }
+
+    fn load_value(&self, store: &S) -> Result<Option<Blob<'_>>, S::Error> {
+        if self.value().is_id() {
+            if self.value().is_none() {
+                Ok(None)
+            } else {
+                store.read(self.value().slice()).map(Some)
+            }
+        } else {
+            Ok(Some(Blob::new(self.value().slice())))
+        }
+    }
+}
+
 impl<S> OwnedTreeNode<S> {
     const EMPTY: Self = Self {
         discriminator: 0,
@@ -797,32 +821,6 @@ impl<S> OwnedTreeNode<S> {
         self.children.manual_drop(self.children_hdr);
         self.children_hdr = Header::id(id.len());
         self.children = ChildrenRef::id_from_slice(id);
-    }
-
-    fn load_prefix(&self, store: &S) -> Result<Blob<'_>, S::Error>
-    where
-        S: BlobStore,
-    {
-        if self.prefix().is_id() {
-            store.read(self.prefix().slice())
-        } else {
-            Ok(Blob::new(self.prefix().slice()))
-        }
-    }
-
-    fn load_value(&self, store: &S) -> Result<Option<Blob<'_>>, S::Error>
-    where
-        S: BlobStore,
-    {
-        if self.value().is_id() {
-            if self.value().is_none() {
-                Ok(None)
-            } else {
-                store.read(self.value().slice()).map(Some)
-            }
-        } else {
-            Ok(Some(Blob::new(self.value().slice())))
-        }
     }
 
     fn has_value(&self) -> bool {
@@ -1199,7 +1197,7 @@ fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
     a.iter().zip(b).take_while(|(a, b)| a == b).count()
 }
 
-trait NodeConverter<A, B> {
+pub trait NodeConverter<A, B> {
     fn convert_node(&self, node: &TreeNodeRef<A>, store: &A) -> Result<OwnedTreeNode<B>, A::Error>
     where
         A: BlobStore;
@@ -1459,141 +1457,90 @@ where
     }
 }
 
-#[test]
-fn sizes2() {
-    assert_eq!(
-        std::mem::size_of::<OwnedTreeNode<NoStore>>(),
-        4 * std::mem::size_of::<usize>()
-    );
-    assert_eq!(
-        std::mem::size_of::<BorrowedTreeNode<NoStore>>(),
-        4 * std::mem::size_of::<usize>()
-    );
-    // todo: get this to 4xusize with some union magic?
-    assert_eq!(
-        std::mem::size_of::<TreeNodeRef<NoStore>>(),
-        5 * std::mem::size_of::<usize>()
-    );
-    println!("{}", std::mem::size_of::<OwnedTreeNode<NoStore>>());
-    println!("{}", std::mem::size_of::<BorrowedTreeNode<NoStore>>());
-    println!("{}", std::mem::size_of::<TreeNodeRef<NoStore>>());
+#[derive(Debug, Clone)]
+pub struct Tree<S: BlobStore = NoStore> {
+    node: OwnedTreeNode<S>,
+    /// The associated store
+    store: S,
 }
 
-#[test]
-fn new_build_bench() {
-    let elems = (0..2000_000u64)
-        .map(|i| {
-            if i % 100000 == 0 {
-                println!("{}", i);
-            }
-            (
-                i.to_string().as_bytes().to_vec(),
-                i.to_string().as_bytes().to_vec(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let elems2 = elems.clone();
-    let elems3 = elems.clone();
-    let elems_bt = elems.iter().cloned().collect::<BTreeMap<_, _>>();
-    let mut t = OwnedTreeNode::<NoStore>::EMPTY;
-    let t0 = Instant::now();
-    for (k, v) in elems.clone() {
-        let b = OwnedTreeNode::<NoStore>::single(&k, &v);
-        outer_combine_with(
-            &mut t,
-            NoStore,
-            &b.as_ref(),
-            NoStore,
-            DowncastConverter,
-            |_, _| Ok(()),
-        )
-        .unwrap();
+impl<S: BlobStore + Default> Default for Tree<S> {
+    fn default() -> Self {
+        Self::empty(S::default())
     }
-    println!("build {}", t0.elapsed().as_secs_f64());
-
-    let t0 = Instant::now();
-    let r: BTreeMap<_, _> = elems2.into_iter().collect();
-    println!("build ref {:#?}", t0.elapsed().as_secs_f64());
-
-    let t0 = Instant::now();
-    for (key, value) in &elems3 {
-        assert!(t.contains_key(&key, &NoStore).unwrap());
-    }
-    println!("validate contains_key {}", t0.elapsed().as_secs_f64());
-
-    let t0 = Instant::now();
-    for (key, value) in &elems3 {
-        assert!(elems_bt.contains_key(key));
-    }
-    println!("validate contains_key ref {}", t0.elapsed().as_secs_f64());
-
-    let t0 = Instant::now();
-    for (key, value) in &elems3 {
-        let v: OwnedValue<NoStore> = t.get(&key, &NoStore).unwrap().unwrap();
-        assert_eq!(v.read().unwrap(), &value[..]);
-    }
-    println!("validate get {}", t0.elapsed().as_secs_f64());
-
-    let t0 = Instant::now();
-    for (key, value) in &elems3 {
-        let v = elems_bt.get(key).unwrap();
-        assert_eq!(v, value);
-    }
-    println!("validate get ref {}", t0.elapsed().as_secs_f64());
-
-    let store = MemStore2::default();
-    let mut target = Vec::new();
-    let t0 = Instant::now();
-    // t.dump(0, &NoStore).unwrap();
-    t.serialize(&mut target, &store).unwrap();
-    println!("{} {}", Hex::new(&target), t0.elapsed().as_secs_f64());
-    let d = OwnedTreeNode::<MemStore2>::deserialize(&target).unwrap();
-    println!("{:?}", d);
-    // d.dump(0, &store).unwrap();
-
-    let t0 = Instant::now();
-    for (key, value) in &elems3 {
-        let v: OwnedValue<MemStore2> = d.get(&key, &store).unwrap().unwrap();
-        assert_eq!(v.read().unwrap(), &value[..]);
-    }
-    println!("validate get attached {}", t0.elapsed().as_secs_f64());
 }
 
-#[test]
-fn new_smoke() {
-    {
-        let a = OwnedTreeNode::single(b"a", b"1");
-        let b = OwnedTreeNode::single(b"b", b"2");
-        println!("a={:?}", a);
-        println!("b={:?}", b);
-        let mut r = a;
-        outer_combine_with(
-            &mut r,
-            NoStore,
-            &b.as_ref(),
-            NoStore,
-            DowncastConverter,
-            |a, b| Ok(()),
-        )
-        .unwrap();
-        println!("r={:?}", r);
+impl Tree {
+    pub fn leaf(value: &[u8]) -> Self {
+        Self::new(OwnedTreeNode::leaf(value), NoStore)
     }
 
+    pub fn single(key: &[u8], value: &[u8]) -> Self {
+        Self::new(OwnedTreeNode::single(key, value), NoStore)
+    }
+
+    pub fn outer_combine_with(
+        &mut self,
+        that: &Tree,
+        f: impl Fn(&mut OwnedValue<NoStore>, &ValueRef<NoStore>) + Copy,
+    ) {
+        unwrap_safe(self.try_outer_combine_with(that, DowncastConverter, |a, b| Ok(f(a, b))))
+    }
+}
+
+impl<S: BlobStore> Tree<S> {
+    pub fn empty(store: S) -> Self {
+        Self::new(OwnedTreeNode::<S>::EMPTY, store)
+    }
+
+    fn new(node: OwnedTreeNode<S>, store: S) -> Self {
+        Self { node, store }
+    }
+}
+
+impl FromIterator<(Vec<u8>, Vec<u8>)> for Tree {
+    fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
+        let mut tree = Tree::default();
+        for (k, v) in iter.into_iter() {
+            tree.outer_combine_with(&Tree::single(k.as_ref(), v.as_ref()), |_, _| {});
+        }
+        tree
+    }
+}
+impl<S: BlobStore + Clone> Tree<S> {
+    pub(crate) fn dump(&self) -> Result<(), S::Error> {
+        self.node.dump(0, &self.store)
+    }
+
+    /// Get the value for a given key
+    pub fn try_get(&self, key: &[u8]) -> Result<Option<OwnedValue<S>>, S::Error> {
+        self.node.get(key, &self.store)
+    }
+
+    /// True if key is contained in this set
+    pub fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
+        self.node.contains_key(key, &self.store)
+    }
+
+    pub fn try_outer_combine_with<S2, C, F>(
+        &mut self,
+        that: &Tree<S2>,
+        c: C,
+        f: F,
+    ) -> Result<(), S::Error>
+    where
+        S2: BlobStore + Clone,
+        C: NodeConverter<S2, S> + Clone,
+        F: Fn(&mut OwnedValue<S>, &ValueRef<S2>) -> Result<(), S::Error> + Copy,
+        S::Error: From<S2::Error> + From<NoError>,
     {
-        let a = OwnedTreeNode::<NoStore>::single(b"aa", b"1");
-        let b = OwnedTreeNode::<NoStore>::single(b"ab", b"2");
-        println!("a={:?}", a);
-        println!("b={:?}", b);
-        let mut r = a;
         outer_combine_with(
-            &mut r,
-            NoStore,
-            &b.as_ref(),
-            NoStore,
-            DowncastConverter,
-            |a, b| Ok(()),
+            &mut self.node,
+            self.store.clone(),
+            &TreeNodeRef::Owned(&that.node),
+            that.store.clone(),
+            c,
+            f,
         )
-        .unwrap();
-        println!("r={:?}", r);
     }
 }
