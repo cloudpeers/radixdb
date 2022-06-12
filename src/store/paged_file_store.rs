@@ -227,10 +227,7 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::{
-        store::{DynBlobStore, DynBlobStore2},
-        VSRadixTree,
-    };
+    use crate::store::{DynBlobStore, DynBlobStore2};
 
     use super::*;
     use log::info;
@@ -264,66 +261,66 @@ mod tests {
         data
     }
 
-    fn do_test(store: DynBlobStore2) -> anyhow::Result<()> {
-        let elems = (0..2000000u64).map(|i| {
-            if i % 100000 == 0 {
-                info!("{}", i);
-            }
-            (
-                i.to_string().as_bytes().to_vec(),
-                i.to_string().as_bytes().to_vec(),
-            )
-        });
-        let t0 = Instant::now();
-        info!("building tree");
-        let tree: VSRadixTree = elems.collect();
-        info!(
-            "unattached tree {:?} {} s",
-            tree,
-            t0.elapsed().as_secs_f64()
-        );
-        info!("traversing unattached tree...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for _ in tree.iter() {
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        info!("attaching tree...");
-        let t0 = Instant::now();
-        // let tree = tree.attached(store.clone())?;
-        store.sync()?;
-        info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
-        info!("traversing attached tree values...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for item in tree.try_values() {
-            if item.is_err() {
-                info!("{:?}", item);
-            }
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        info!("traversing attached tree...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for _ in tree.try_iter() {
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        info!("detaching tree...");
-        let t0 = Instant::now();
-        // let tree = tree.detached()?;
-        info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
-        info!("traversing unattached tree...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for _ in tree.iter() {
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        Ok(())
-    }
+    // fn do_test(store: DynBlobStore2) -> anyhow::Result<()> {
+    //     let elems = (0..2000000u64).map(|i| {
+    //         if i % 100000 == 0 {
+    //             info!("{}", i);
+    //         }
+    //         (
+    //             i.to_string().as_bytes().to_vec(),
+    //             i.to_string().as_bytes().to_vec(),
+    //         )
+    //     });
+    //     let t0 = Instant::now();
+    //     info!("building tree");
+    //     let tree: VSRadixTree = elems.collect();
+    //     info!(
+    //         "unattached tree {:?} {} s",
+    //         tree,
+    //         t0.elapsed().as_secs_f64()
+    //     );
+    //     info!("traversing unattached tree...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for _ in tree.iter() {
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     info!("attaching tree...");
+    //     let t0 = Instant::now();
+    //     // let tree = tree.attached(store.clone())?;
+    //     store.sync()?;
+    //     info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+    //     info!("traversing attached tree values...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for item in tree.try_values() {
+    //         if item.is_err() {
+    //             info!("{:?}", item);
+    //         }
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     info!("traversing attached tree...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for _ in tree.try_iter() {
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     info!("detaching tree...");
+    //     let t0 = Instant::now();
+    //     // let tree = tree.detached()?;
+    //     info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+    //     info!("traversing unattached tree...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for _ in tree.iter() {
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     Ok(())
+    // }
 
     fn init_logger() {
         let _ = env_logger::builder()
@@ -348,7 +345,8 @@ mod tests {
             .open(&path)?;
         let db = PagedFileStore::<1048576>::new(file).unwrap();
         let store: DynBlobStore2 = Arc::new(db);
-        do_test(store)
+        // do_test(store)
+        todo!()
     }
 
     #[test]

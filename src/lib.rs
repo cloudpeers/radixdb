@@ -1,6 +1,6 @@
 pub mod node;
 pub mod store;
-pub use node::VSTree as VSRadixTree;
+// pub use node::VSTree as VSRadixTree;
 
 #[cfg(test)]
 #[macro_use]
