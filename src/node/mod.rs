@@ -2026,21 +2026,11 @@ where
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    if n == bp.len() {
-        // ensure that prefixes are identical even if ap.len() > n
-        if n != ap.len() {
-            a.set_value_slice(None);
-            a.split(&ab, n)?;
-        }
+    if n == ap.len() && n == bp.len() {
         // prefixes are now identical
-        if let Some(bv) = b.value_opt() {
-            if let Some(mut av) = a.take_value_opt() {
-                f(&mut av, &bv)?;
-            } else {
-                a.set_value_slice(None);
-            }
-        } else {
-            a.set_value_slice(None);
+        if let (Some(mut av), Some(bv)) = (a.take_value_opt(), b.value_opt()) {
+            f(&mut av, &bv)?;
+            a.set_value_raw(av.as_value_ref().raw);
         }
         let ac = a.load_children_mut(&ab)?;
         let bc = b.load_children(&bb)?;
@@ -2049,6 +2039,12 @@ where
         // a is a prefix of b
         // value is none
         a.set_value_slice(None);
+        let ac = a.load_children_mut(&ab)?;
+        let bc = [b.clone_shortened(&bb, n)?];
+        inner_combine_children_with(ac, ab, TreeNodeIter::from_slice(&bc), bb, c, f)?;
+    } else if n == bp.len() {
+        // b is a prefix of b
+        a.split(&ab, n)?;
         let ac = a.load_children_mut(&ab)?;
         let bc = [b.clone_shortened(&bb, n)?];
         inner_combine_children_with(ac, ab, TreeNodeIter::from_slice(&bc), bb, c, f)?;
@@ -2085,7 +2081,7 @@ where
         while let Some(ordering) = cmp(&acb, &mut bci) {
             match ordering {
                 Ordering::Less => {
-                    acb.consume(0, false);
+                    acb.consume(1, false);
                 }
                 Ordering::Equal => {
                     // the .unwrap() are safe because cmp guarantees that there is a value on both sides
@@ -2102,6 +2098,8 @@ where
                 }
             }
         }
+    } else {
+        ac.clear();
     }
     Ok(())
 }

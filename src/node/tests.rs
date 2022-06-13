@@ -326,10 +326,61 @@ proptest! {
         let mut r2 = a.clone();
         r2.inner_combine_with(&b, |a, b| a.set(b));
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
-        // left biased intersection
-        let r1 = a.inner_combine(&b, |a, _| Some(a.to_owned()));
-        let mut r2 = a.clone();
-        r2.inner_combine_with(&b, |a, _| {});
-        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+        // // left biased intersection
+        // let r1 = a.inner_combine(&b, |a, _| Some(a.to_owned()));
+        // let mut r2 = a.clone();
+        // r2.inner_combine_with(&b, |a, _| {});
+        // prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
+}
+
+#[test]
+fn intersection_with1() {
+    let a = btreemap! { vec![1,2] => vec![] };
+    let b = btreemap! { vec![1] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.inner_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = BTreeMap::new();
+    for (k, v) in b.clone() {
+        if a.contains_key(&k) {
+            rbu_reference.insert(k, v);
+        }
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn intersection_with2() {
+    let a = btreemap! { vec![1,2] => vec![] };
+    let b = btreemap! { vec![1,3] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.inner_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = BTreeMap::new();
+    for (k, v) in b.clone() {
+        if a.contains_key(&k) {
+            rbu_reference.insert(k, v);
+        }
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn intersection_with3() {
+    let a = btreemap! { vec![] => vec![], vec![1] => vec![] };
+    let b = btreemap! { vec![] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.inner_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = BTreeMap::new();
+    for (k, v) in b.clone() {
+        if a.contains_key(&k) {
+            rbu_reference.insert(k, v);
+        }
+    }
+    assert_eq!(rbu, rbu_reference);
 }
