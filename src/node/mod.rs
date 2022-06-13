@@ -2066,13 +2066,10 @@ impl<S: BlobStore> Iter<S> {
         }
     }
 
-    fn top_prefix_len(&self) -> usize {
-        self.stack.last().unwrap().0
-    }
-
     fn next0(&mut self) -> Result<Option<(IterKey, OwnedValue<S>)>, S::Error> {
         while !self.stack.is_empty() {
-            let iter_opt = &mut self.stack.last_mut().unwrap().1;
+            let (last_prefix_len, iter_opt) = &mut self.stack.last_mut().unwrap();
+            let last_prefix_len = *last_prefix_len;
             if let Some(iter) = iter_opt {
                 if let Some(node) = iter.next() {
                     let value = node.value_opt().map(|x| x.to_owned());
@@ -2084,12 +2081,11 @@ impl<S: BlobStore> Iter<S> {
                     if let Some(value) = value {
                         return Ok(Some((self.path.clone(), value)));
                     }
-                    continue;
                 } else {
                     *iter_opt = None;
                 }
             } else {
-                self.path.pop(self.top_prefix_len());
+                self.path.pop(last_prefix_len);
                 self.stack.pop();
             }
         }
