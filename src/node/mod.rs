@@ -618,8 +618,8 @@ impl<S: BlobStore> OwnedTreeNode<S> {
             self.value(),
             format_ref_count(self.value().ref_count())
         );
-        let mut iter = self.load_children(store)?;
-        if !iter.is_empty() {
+        let iter = self.load_children(store)?;
+        if let Some(mut iter) = iter {
             println!("{}  children {}", spacer, format_ref_count(child_ref_count));
             while let Some(child) = iter.next() {
                 child.dump(indent + 4, store)?;
@@ -695,17 +695,17 @@ impl<S: BlobStore> OwnedTreeNode<S> {
         })
     }
 
-    fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error> {
+    fn load_children(&self, store: &S) -> Result<Option<TreeNodeIter<S>>, S::Error> {
         match self.get_children() {
             Ok(children) => Ok(TreeNodeIter::from_slice(children)),
-            Err(id) => TreeNodeIter::load(id, store),
+            Err(id) => TreeNodeIter::load(id, store).map(Some),
         }
     }
 
-    fn load_children_owned(&self, store: &S) -> Result<TreeNodeIter<'static, S>, S::Error> {
+    fn load_children_owned(&self, store: &S) -> Result<Option<TreeNodeIter<'static, S>>, S::Error> {
         match self.get_children() {
-            Ok(children) => Ok(TreeNodeIter::from_arc(children.clone())),
-            Err(id) => TreeNodeIter::load(id, store),
+            Ok(children) => Ok(Some(TreeNodeIter::from_arc(children.clone()))),
+            Err(id) => TreeNodeIter::load(id, store).map(Some),
         }
     }
 
@@ -1060,8 +1060,10 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         println!("{}  value={:?}", spacer, self.value(),);
         let mut iter = self.load_children(store)?;
         println!("{}", spacer);
-        while let Some(child) = iter.next() {
-            child.dump(indent + 4, store)?;
+        if let Some(mut iter) = iter {
+            while let Some(child) = iter.next() {
+                child.dump(indent + 4, store)?;
+            }
         }
         Ok(())
     }
@@ -1104,7 +1106,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         }
     }
 
-    fn load_children(&self, store: &S) -> Result<TreeNodeIter<'static, S>, S::Error>
+    fn load_children(&self, store: &S) -> Result<Option<TreeNodeIter<'static, S>>, S::Error>
     where
         S: BlobStore,
     {
@@ -1113,7 +1115,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         } else {
             assert!(self.children_hdr.is_id());
             let id = self.children().slice();
-            TreeNodeIter::load(id, store)
+            TreeNodeIter::load(id, store).map(Some)
         }
     }
 
@@ -1219,14 +1221,14 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
         }
     }
 
-    fn load_children(&self, store: &S) -> Result<TreeNodeIter<S>, S::Error> {
+    fn load_children(&self, store: &S) -> Result<Option<TreeNodeIter<S>>, S::Error> {
         match self.dispatch() {
             Ok(owned) => owned.load_children(store),
             Err(borrowed) => borrowed.load_children(store),
         }
     }
 
-    fn load_children_owned(&self, store: &S) -> Result<TreeNodeIter<'static, S>, S::Error> {
+    fn load_children_owned(&self, store: &S) -> Result<Option<TreeNodeIter<'static, S>>, S::Error> {
         match self {
             Self::Owned(owned) => owned.load_children_owned(store),
             Self::Borrowed(borrowed) => borrowed.load_children(store),
@@ -1295,8 +1297,12 @@ fn find<S: BlobStore, T>(
         // prefix is a subtree of tree
         let c = prefix[n];
         let tree_children = tree.load_children(store)?;
-        if let Some(child) = tree_children.find(c) {
-            return find(store, &child, &prefix[n..], f);
+        if let Some(tree_children) = tree_children {
+            if let Some(child) = tree_children.find(c) {
+                return find(store, &child, &prefix[n..], f);
+            } else {
+                FindResult::NotFound
+            }
         } else {
             FindResult::NotFound
         }
@@ -1626,8 +1632,12 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         Ok(Self::Borrowed(BorrowedTreeNodeIter::load(id, store)?))
     }
 
-    fn from_slice(slice: &'a [OwnedTreeNode<S>]) -> Self {
-        Self::Owned(OwnedTreeNodeIter::new(slice))
+    fn from_slice(slice: &'a [OwnedTreeNode<S>]) -> Option<Self> {
+        if !slice.is_empty() {
+            Some(Self::Owned(OwnedTreeNodeIter::new(slice)))
+        } else {
+            None
+        }
     }
 
     fn to_owned(self) -> Option<Arc<Vec<OwnedTreeNode<S>>>> {
@@ -1772,9 +1782,9 @@ where
 }
 
 fn outer_combine_children<'a, A, B, E, F>(
-    ac: TreeNodeIter<'a, A>,
+    ac: Option<TreeNodeIter<'a, A>>,
     ab: A,
-    bc: TreeNodeIter<'a, B>,
+    bc: Option<TreeNodeIter<'a, B>>,
     bb: B,
     f: F,
 ) -> Result<Option<Arc<Vec<OwnedTreeNode<NoStore>>>>, E>
@@ -1784,27 +1794,24 @@ where
     E: From<A::Error> + From<B::Error>,
     F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
 {
-    Ok(if ac.is_empty() {
-        if bc.is_empty() {
-            None
-        } else {
-            bc.detached(&bb)?
+    Ok(match (ac, bc) {
+        (Some(ac), Some(bc)) => {
+            let mut res = Vec::new();
+            let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
+            while let Some(x) = iter.next() {
+                let r = match x? {
+                    (Some(a), Some(b)) => outer_combine(&a, ab.clone(), &b, bb.clone(), f)?,
+                    (Some(a), None) => a.detached(&ab)?,
+                    (None, Some(b)) => b.detached(&bb)?,
+                    (None, None) => panic!(),
+                };
+                res.push(r);
+            }
+            Some(Arc::new(res))
         }
-    } else if bc.is_empty() {
-        ac.detached(&ab)?
-    } else {
-        let mut res = Vec::new();
-        let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
-        while let Some(x) = iter.next() {
-            let r = match x? {
-                (Some(a), Some(b)) => outer_combine(&a, ab.clone(), &b, bb.clone(), f)?,
-                (Some(a), None) => a.detached(&ab)?,
-                (None, Some(b)) => b.detached(&bb)?,
-                (None, None) => panic!(),
-            };
-            res.push(r);
-        }
-        Some(Arc::new(res))
+        (None, Some(bc)) => bc.detached(&bb)?,
+        (Some(ac), None) => ac.detached(&ab)?,
+        (None, None) => None,
     })
 }
 
@@ -1878,7 +1885,7 @@ where
 fn outer_combine_children_with<'a, A, B, C, F>(
     ac: &'a mut Vec<OwnedTreeNode<A>>,
     ab: A,
-    mut bc: TreeNodeIter<'a, B>,
+    bc: Option<TreeNodeIter<'a, B>>,
     bb: B,
     c: C,
     f: F,
@@ -1890,12 +1897,13 @@ where
     F: Fn(&mut OwnedValue<A>, &ValueRef<B>) -> Result<(), A::Error> + Copy,
     A::Error: From<B::Error>,
 {
-    if ac.is_empty() || bc.is_empty() {
-        while let Some(bc) = bc.next() {
-            ac.push(c.convert_node(&bc, &bb)?);
+    if let Some(mut bc) = bc {
+        if ac.is_empty() {
+            while let Some(bc) = bc.next() {
+                ac.push(c.convert_node(&bc, &bb)?);
+            }
+            return Ok(());
         }
-        Ok(())
-    } else {
         let mut acb = InPlaceVecBuilder::from(ac);
         let mut bci = bc;
         while let Some(ordering) = cmp(&acb, &mut bci) {
@@ -1920,8 +1928,8 @@ where
                 }
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -2034,7 +2042,11 @@ impl Deref for IterKey {
 
 pub struct Iter<S: BlobStore> {
     path: IterKey,
-    stack: Vec<(usize, Option<OwnedValue<S>>, TreeNodeIter<'static, S>)>,
+    stack: Vec<(
+        usize,
+        Option<OwnedValue<S>>,
+        Option<TreeNodeIter<'static, S>>,
+    )>,
     store: S,
 }
 
@@ -2049,7 +2061,7 @@ impl<S: BlobStore> Iter<S> {
 
     fn new(iter: TreeNodeIter<'static, S>, store: S, prefix: IterKey) -> Self {
         Self {
-            stack: vec![(0, None, iter)],
+            stack: vec![(0, None, Some(iter))],
             path: prefix,
             store,
         }
@@ -2065,20 +2077,24 @@ impl<S: BlobStore> Iter<S> {
 
     fn next0(&mut self) -> Result<Option<(IterKey, OwnedValue<S>)>, S::Error> {
         while !self.stack.is_empty() {
-            if let Some(node) = self.stack.last_mut().unwrap().2.next() {
-                let value = node.value_opt().map(|x| x.to_owned());
-                let prefix = node.load_prefix(&self.store)?;
-                let prefix_len = prefix.len();
-                let children = node.load_children_owned(&self.store)?;
-                self.path.append(prefix.as_ref());
-                self.stack.push((prefix_len, value, children));
-            } else {
-                if let Some(value) = self.top_value().take() {
-                    return Ok(Some((self.path.clone(), value)));
+            let iter_opt = &mut self.stack.last_mut().unwrap().2;
+            if let Some(iter) = iter_opt {
+                if let Some(node) = iter.next() {
+                    let value = node.value_opt().map(|x| x.to_owned());
+                    let prefix = node.load_prefix(&self.store)?;
+                    let prefix_len = prefix.len();
+                    let children = node.load_children_owned(&self.store)?;
+                    self.path.append(prefix.as_ref());
+                    self.stack.push((prefix_len, value, children));
+                    continue;
                 } else {
-                    self.path.pop(self.top_prefix_len());
-                    self.stack.pop();
+                    *iter_opt = None;
                 }
+            } else if let Some(value) = self.top_value().take() {
+                return Ok(Some((self.path.clone(), value)));
+            } else {
+                self.path.pop(self.top_prefix_len());
+                self.stack.pop();
             }
         }
         Ok(None)
@@ -2102,7 +2118,7 @@ impl<S: BlobStore> Iterator for Iter<S> {
 }
 
 pub struct Values<S: BlobStore> {
-    stack: Vec<(Option<OwnedValue<S>>, TreeNodeIter<'static, S>)>,
+    stack: Vec<TreeNodeIter<'static, S>>,
     store: S,
 }
 
@@ -2116,27 +2132,23 @@ impl<S: BlobStore> Values<S> {
 
     fn new(iter: TreeNodeIter<'static, S>, store: S) -> Self {
         Self {
-            stack: vec![(None, iter)],
+            stack: vec![iter],
             store,
         }
     }
 
-    fn top_value(&mut self) -> &mut Option<OwnedValue<S>> {
-        &mut self.stack.last_mut().unwrap().0
-    }
-
     fn next0(&mut self) -> Result<Option<OwnedValue<S>>, S::Error> {
         while !self.stack.is_empty() {
-            if let Some(node) = self.stack.last_mut().unwrap().1.next() {
+            if let Some(node) = self.stack.last_mut().unwrap().next() {
                 let value = node.value_opt().map(|x| x.to_owned());
-                let children = node.load_children_owned(&self.store)?;
-                self.stack.push((value, children));
-            } else {
-                if let Some(value) = self.top_value().take() {
-                    return Ok(Some(value));
-                } else {
-                    self.stack.pop();
+                if let Some(children) = node.load_children_owned(&self.store)? {
+                    self.stack.push(children);
                 }
+                if let Some(value) = value {
+                    return Ok(Some(value));
+                }
+            } else {
+                self.stack.pop();
             }
         }
         Ok(None)
