@@ -1654,13 +1654,6 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         }
     }
 
-    fn is_empty(&self) -> bool {
-        match self {
-            Self::Owned(x) => x.is_empty(),
-            Self::Borrowed(x) => x.is_empty(),
-        }
-    }
-
     fn find(&self, prefix: u8) -> Option<TreeNodeRef<S>> {
         match self {
             Self::Owned(x) => x.find(prefix).map(|x| TreeNodeRef::Owned(x)),
@@ -1805,9 +1798,15 @@ where
                     (None, Some(b)) => b.detached(&bb)?,
                     (None, None) => panic!(),
                 };
-                res.push(r);
+                if !r.is_empty() {
+                    res.push(r);
+                }
             }
-            Some(Arc::new(res))
+            if res.is_empty() {
+                None
+            } else {
+                Some(Arc::new(res))
+            }
         }
         (None, Some(bc)) => bc.detached(&bb)?,
         (Some(ac), None) => ac.detached(&ab)?,
@@ -1834,8 +1833,12 @@ where
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    if n == ap.len() && n == bp.len() {
-        // prefixes are identical
+    if n == bp.len() {
+        // ensure that prefixes are identical even if ap.len() > n
+        if n != ap.len() {
+            a.split(&ab, n)?;
+        }
+        // prefixes are now identical
         if let Some(bv) = b.value_opt() {
             if let Some(mut av) = a.take_value_opt() {
                 f(&mut av, &bv)?;
@@ -1854,23 +1857,6 @@ where
         let ac = a.load_children_mut(&ab)?;
         let bc = [b.clone_shortened(&bb, n)?];
         outer_combine_children_with(ac, ab, TreeNodeIter::from_slice(&bc), bb, c, f)?;
-    } else if n == bp.len() {
-        // b is a prefix of a
-        // value is value of b
-        a.split(&ab, n)?;
-        // prefixes are identical
-        if let Some(bv) = b.value_opt() {
-            if let Some(mut av) = a.take_value_opt() {
-                f(&mut av, &bv)?;
-                a.set_value_raw(av.as_value_ref().raw);
-            } else {
-                let av = c.convert_value(&bv, &bb)?;
-                a.set_value_raw(av.as_value_ref().raw);
-            }
-        }
-        let ac = a.load_children_mut(&ab)?;
-        let bc = b.load_children(&bb)?;
-        outer_combine_children_with(ac, ab, bc, bb, c, f)?;
     } else {
         // the two nodes are disjoint
         a.split(&ab, n)?;
@@ -2042,10 +2028,7 @@ impl Deref for IterKey {
 
 pub struct Iter<S: BlobStore> {
     path: IterKey,
-    stack: Vec<(
-        usize,
-        Option<TreeNodeIter<'static, S>>,
-    )>,
+    stack: Vec<(usize, Option<TreeNodeIter<'static, S>>)>,
     store: S,
 }
 
