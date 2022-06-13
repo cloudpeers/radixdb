@@ -2044,7 +2044,6 @@ pub struct Iter<S: BlobStore> {
     path: IterKey,
     stack: Vec<(
         usize,
-        Option<OwnedValue<S>>,
         Option<TreeNodeIter<'static, S>>,
     )>,
     store: S,
@@ -2061,14 +2060,10 @@ impl<S: BlobStore> Iter<S> {
 
     fn new(iter: TreeNodeIter<'static, S>, store: S, prefix: IterKey) -> Self {
         Self {
-            stack: vec![(0, None, Some(iter))],
+            stack: vec![(0, Some(iter))],
             path: prefix,
             store,
         }
-    }
-
-    fn top_value(&mut self) -> &mut Option<OwnedValue<S>> {
-        &mut self.stack.last_mut().unwrap().1
     }
 
     fn top_prefix_len(&self) -> usize {
@@ -2077,7 +2072,7 @@ impl<S: BlobStore> Iter<S> {
 
     fn next0(&mut self) -> Result<Option<(IterKey, OwnedValue<S>)>, S::Error> {
         while !self.stack.is_empty() {
-            let iter_opt = &mut self.stack.last_mut().unwrap().2;
+            let iter_opt = &mut self.stack.last_mut().unwrap().1;
             if let Some(iter) = iter_opt {
                 if let Some(node) = iter.next() {
                     let value = node.value_opt().map(|x| x.to_owned());
@@ -2085,13 +2080,14 @@ impl<S: BlobStore> Iter<S> {
                     let prefix_len = prefix.len();
                     let children = node.load_children_owned(&self.store)?;
                     self.path.append(prefix.as_ref());
-                    self.stack.push((prefix_len, value, children));
+                    self.stack.push((prefix_len, children));
+                    if let Some(value) = value {
+                        return Ok(Some((self.path.clone(), value)));
+                    }
                     continue;
                 } else {
                     *iter_opt = None;
                 }
-            } else if let Some(value) = self.top_value().take() {
-                return Ok(Some((self.path.clone(), value)));
             } else {
                 self.path.pop(self.top_prefix_len());
                 self.stack.pop();
