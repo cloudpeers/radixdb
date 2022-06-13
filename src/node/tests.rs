@@ -194,6 +194,26 @@ fn new_smoke() {
     }
 }
 
+impl TestSamples<Vec<u8>, Option<Vec<u8>>> for Tree {
+    fn samples(&self, res: &mut BTreeSet<Vec<u8>>) {
+        res.insert(vec![]);
+        for (k, _) in self.iter() {
+            let a = k.as_ref().to_vec();
+            let mut b = a.clone();
+            let mut c = a.clone();
+            b.push(0);
+            c.pop();
+            res.insert(a);
+            res.insert(b);
+            res.insert(c);
+        }
+    }
+
+    fn at(&self, elem: Vec<u8>) -> Option<Vec<u8>> {
+        self.get(&elem).map(|x| x.to_vec())
+    }
+}
+
 proptest! {
 
     #[test]
@@ -225,5 +245,50 @@ proptest! {
             let v = v.as_ref();
             prop_assert_eq!(v, t);
         }
+    }
+
+    #[test]
+    fn union(a in arb_tree_contents(), b in arb_tree_contents()) {
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        // check right biased union
+        let rbut = at.outer_combine(&bt, |_, b| Some(b.to_owned()));
+        let rbu = to_btree_map(&rbut);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            rbu_reference.insert(k, v);
+        }
+        prop_assert_eq!(rbu, rbu_reference);
+        // check left biased union
+        let lbut = at.outer_combine(&bt, |a, _| Some(a.to_owned()));
+        let lbu = to_btree_map(&lbut);
+        let mut lbu_reference = b.clone();
+        for (k, v) in a.clone() {
+            lbu_reference.insert(k, v);
+        }
+        prop_assert_eq!(lbu, lbu_reference);
+    }
+
+    #[test]
+    fn union_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+        let r = a.outer_combine(&b, |a, _| Some(a.to_owned()));
+        prop_assert!(binary_element_test(&a, &b, r, |a, b| a.or(b)));
+
+        let r = a.outer_combine(&b, |_, b| Some(b.to_owned()));
+        prop_assert!(binary_element_test(&a, &b, r, |a, b| b.or(a)));
+    }
+
+    #[test]
+    fn union_with(a in arb_owned_tree(), b in arb_owned_tree()) {
+        // check right biased union
+        let r1 = a.outer_combine(&b, |_, b| Some(b.to_owned()));
+        let mut r2 = a.clone();
+        r2.outer_combine_with(&b, |a, b| a.set(b));
+        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+        // check left biased union
+        let r1 = a.outer_combine(&b, |a, _| Some(a.to_owned()));
+        let mut r2 = a.clone();
+        r2.outer_combine_with(&b, |_, _| {});
+        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
 }
