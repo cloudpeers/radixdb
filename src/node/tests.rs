@@ -332,6 +332,53 @@ proptest! {
         // r2.inner_combine_with(&b, |a, _| {});
         // prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
+
+    #[test]
+    fn difference(a in arb_tree_contents(), b in arb_tree_contents()) {
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        // replace all values that are common with the b side
+        let rbut = at.left_combine(&bt, |_, b| Some(b.to_owned()));
+        let rbu = to_btree_map(&rbut);
+        let mut rbu_reference = a.clone();
+        for (k, v) in b.clone() {
+            if rbu_reference.contains_key(&k) {
+                rbu_reference.insert(k, v);
+            }
+        }
+        prop_assert_eq!(rbu, rbu_reference);
+        // compute the actual difference
+        let lbut = at.left_combine(&bt, |_, _| None);
+        let lbu = to_btree_map(&lbut);
+        let mut lbu_reference = a.clone();
+        lbu_reference.retain(|k, _| !b.contains_key(k));
+        prop_assert_eq!(lbu, lbu_reference);
+    }
+
+    #[test]
+    fn difference_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+        let r = a.left_combine(&b, |a, _| Some(a.to_owned()));
+        prop_assert!(binary_element_test(&a, &b, r, |a, _| a));
+
+        let r = a.left_combine(&b, |_, b| Some(b.to_owned()));
+        let right = |a: Option<Vec<u8>>, b: Option<Vec<u8>>| {
+            if a.is_some() && b.is_some() { b } else { a }
+        };
+        prop_assert!(binary_element_test(&a, &b, r, right));
+    }
+
+    #[test]
+    fn difference_with(a in arb_owned_tree(), b in arb_owned_tree()) {
+        let r1 = a.left_combine(&b, |a, _| Some(a.to_owned()));
+        let mut r2 = a.clone();
+        r2.left_combine_with(&b, |a, b| {});
+        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+
+        let r1 = a.left_combine(&b, |_, b| Some(b.to_owned()));
+        let mut r2 = a.clone();
+        r2.left_combine_with(&b, |a, b| a.set(b));
+        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+    }
 }
 
 #[test]
@@ -379,6 +426,74 @@ fn intersection_with3() {
     let mut rbu_reference = BTreeMap::new();
     for (k, v) in b.clone() {
         if a.contains_key(&k) {
+            rbu_reference.insert(k, v);
+        }
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn intersection_with4() {
+    let a = btreemap! { vec![1, 2] => vec![] };
+    let b = btreemap! { vec![] => vec![], vec![1, 2] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.inner_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = BTreeMap::new();
+    for (k, v) in b.clone() {
+        if a.contains_key(&k) {
+            rbu_reference.insert(k, v);
+        }
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn difference_with1() {
+    let a = btreemap! { vec![] => vec![] };
+    let b = btreemap! { vec![1] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.left_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = a.clone();
+    for (k, v) in b.clone() {
+        if rbu_reference.contains_key(&k) {
+            rbu_reference.insert(k, v);
+        }
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn difference_with2() {
+    let a = btreemap! { vec![0;130] => vec![] };
+    let b = btreemap! { vec![0;129] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.left_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = a.clone();
+    for (k, v) in b.clone() {
+        if rbu_reference.contains_key(&k) {
+            rbu_reference.insert(k, v);
+        }
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn difference_with3() {
+    let a = btreemap! { vec![1,2] => vec![0] };
+    let b = btreemap! { vec![] => vec![], vec![1,2] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.left_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = a.clone();
+    for (k, v) in b.clone() {
+        if rbu_reference.contains_key(&k) {
             rbu_reference.insert(k, v);
         }
     }

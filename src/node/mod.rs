@@ -2046,8 +2046,8 @@ where
         // b is a prefix of b
         a.split(&ab, n)?;
         let ac = a.load_children_mut(&ab)?;
-        let bc = [b.clone_shortened(&bb, n)?];
-        inner_combine_children_with(ac, ab, TreeNodeIter::from_slice(&bc), bb, c, f)?;
+        let bc = b.load_children(&bb)?;
+        inner_combine_children_with(ac, ab, bc, bb, c, f)?;
     } else {
         // the two nodes are disjoint
         a.set_value_slice(None);
@@ -2100,6 +2100,199 @@ where
         }
     } else {
         ac.clear();
+    }
+    Ok(())
+}
+
+/// Outer combine two trees with a function f
+fn left_combine<A, B, E, F>(
+    a: &TreeNodeRef<A>,
+    ab: A,
+    b: &TreeNodeRef<B>,
+    bb: B,
+    f: F,
+) -> Result<OwnedTreeNode<NoStore>, E>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    E: From<A::Error> + From<B::Error>,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
+{
+    let ap = a.load_prefix(&ab)?;
+    let bp = b.load_prefix(&bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    let value;
+    let children;
+    let mut res = OwnedTreeNode::EMPTY;
+    if n == ap.len() && n == bp.len() {
+        // prefixes are identical
+        value = if let Some(av) = a.value_opt() {
+            if let Some(bv) = b.value_opt() {
+                f(&av, &bv)?
+            } else {
+                Some(av.detached(&ab)?)
+            }
+        } else {
+            None
+        };
+        let ac = a.load_children(&ab)?;
+        let bc = b.load_children(&bb)?;
+        children = left_combine_children(ac, ab, bc, bb, f)?;
+    } else if n == ap.len() {
+        // a is a prefix of b
+        // value is value of a
+        value = a.value_opt().map(|x| x.detached(&ab)).transpose()?;
+        let ac = a.load_children(&ab)?;
+        let bc = [b.clone_shortened(&bb, n)?];
+        children = left_combine_children(ac, ab, TreeNodeIter::from_slice(&bc), bb, f)?;
+    } else if n == bp.len() {
+        // b is a prefix of a
+        // value is value of b
+        value = None;
+        let ac = [a.clone_shortened(&ab, n)?];
+        let bc = b.load_children(&bb)?;
+        children = left_combine_children(TreeNodeIter::from_slice(&ac), ab, bc, bb, f)?;
+    } else {
+        return Ok(a.detached(&ab)?);
+    }
+    res.set_prefix_slice(&ap[..n]);
+    res.set_value(value);
+    res.set_children_arc_opt(children);
+    res.canonicalize();
+    Ok(res)
+}
+
+fn left_combine_children<'a, A, B, E, F>(
+    ac: Option<TreeNodeIter<'a, A>>,
+    ab: A,
+    bc: Option<TreeNodeIter<'a, B>>,
+    bb: B,
+    f: F,
+) -> Result<Option<Arc<Vec<OwnedTreeNode<NoStore>>>>, E>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    E: From<A::Error> + From<B::Error>,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
+{
+    Ok(match (ac, bc) {
+        (Some(ac), Some(bc)) => {
+            let mut res = Vec::new();
+            let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
+            while let Some(x) = iter.next() {
+                match x? {
+                    (Some(a), Some(b)) => {
+                        let r = left_combine(&a, ab.clone(), &b, bb.clone(), f)?;
+                        if !r.is_empty() {
+                            res.push(r);
+                        }
+                    }
+                    (Some(a), None) => {
+                        res.push(a.detached(&ab)?);
+                    }
+                    _ => {}
+                };
+            }
+            if res.is_empty() {
+                None
+            } else {
+                Some(Arc::new(res))
+            }
+        }
+        (Some(ac), None) => ac.detached(&ab)?,
+        _ => None,
+    })
+}
+
+/// Outer combine two trees with a function f
+fn left_combine_with<A, B, C, F>(
+    a: &mut OwnedTreeNode<A>,
+    ab: A,
+    b: &TreeNodeRef<B>,
+    bb: B,
+    c: C,
+    f: F,
+) -> Result<(), A::Error>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    C: NodeConverter<B, A> + Clone,
+    A::Error: From<B::Error>,
+    F: Fn(&mut OwnedValue<A>, &ValueRef<B>) -> Result<(), A::Error> + Copy,
+{
+    let ap = a.load_prefix(&ab)?;
+    let bp = b.load_prefix(&bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    if n == ap.len() && n == bp.len() {
+        // prefixes are now identical
+        if let Some(bv) = b.value_opt() {
+            if let Some(mut av) = a.take_value_opt() {
+                f(&mut av, &bv)?;
+                a.set_value_raw(av.as_value_ref().raw);
+            }
+        }
+        let ac = a.load_children_mut(&ab)?;
+        let bc = b.load_children(&bb)?;
+        left_combine_children_with(ac, ab, bc, bb, c, f)?;
+    } else if n == ap.len() {
+        // a is a prefix of b
+        let ac = a.load_children_mut(&ab)?;
+        let bc = [b.clone_shortened(&bb, n)?];
+        left_combine_children_with(ac, ab, TreeNodeIter::from_slice(&bc), bb, c, f)?;
+    } else if n == bp.len() {
+        // b is a prefix of a
+        a.split(&ab, n)?;
+        let ac = a.load_children_mut(&ab)?;
+        let bc = b.load_children(&bb)?;
+        left_combine_children_with(ac, ab, bc, bb, c, f)?;
+    } else {
+        // the two nodes are disjoint
+    }
+    a.canonicalize();
+    Ok(())
+}
+
+fn left_combine_children_with<'a, A, B, C, F>(
+    ac: &'a mut Vec<OwnedTreeNode<A>>,
+    ab: A,
+    bc: Option<TreeNodeIter<'a, B>>,
+    bb: B,
+    c: C,
+    f: F,
+) -> Result<(), A::Error>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    C: NodeConverter<B, A> + Clone,
+    F: Fn(&mut OwnedValue<A>, &ValueRef<B>) -> Result<(), A::Error> + Copy,
+    A::Error: From<B::Error>,
+{
+    if let Some(bc) = bc {
+        if ac.is_empty() {
+            return Ok(());
+        }
+        let mut acb = InPlaceVecBuilder::from(ac);
+        let mut bci = bc;
+        while let Some(ordering) = cmp(&acb, &mut bci) {
+            match ordering {
+                Ordering::Less => {
+                    acb.consume(1, true);
+                }
+                Ordering::Equal => {
+                    // the .unwrap() are safe because cmp guarantees that there is a value on both sides
+                    let ac = acb.source_slice_mut().get_mut(0).unwrap();
+                    let bc = bci.next().unwrap();
+                    left_combine_with(ac, ab.clone(), &bc, bb.clone(), c.clone(), f)?;
+                    // only move if the child is non-empty
+                    let non_empty = !ac.is_empty();
+                    acb.consume(1, non_empty);
+                }
+                Ordering::Greater => {
+                    // the .unwrap() is safe because cmp guarantees that there is a value
+                    let _ = bci.next().unwrap();
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -2322,6 +2515,14 @@ impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
     ) -> Tree {
         unwrap_safe(self.try_inner_combine(that, |a, b| Ok(f(a, b))))
     }
+
+    pub fn left_combine(
+        &self,
+        that: &Tree<S>,
+        f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> Option<OwnedValue<NoStore>> + Copy,
+    ) -> Tree {
+        unwrap_safe(self.try_left_combine(that, |a, b| Ok(f(a, b))))
+    }
 }
 
 impl Tree<NoStore> {
@@ -2347,6 +2548,14 @@ impl Tree<NoStore> {
         f: impl Fn(&mut OwnedValue<NoStore>, &ValueRef<S2>) + Copy,
     ) {
         unwrap_safe(self.try_inner_combine_with(that, DetachConverter, |a, b| Ok(f(a, b))))
+    }
+
+    pub fn left_combine_with<S2: BlobStore<Error = NoError> + Clone>(
+        &mut self,
+        that: &Tree<S2>,
+        f: impl Fn(&mut OwnedValue<NoStore>, &ValueRef<S2>) + Copy,
+    ) {
+        unwrap_safe(self.try_left_combine_with(that, DetachConverter, |a, b| Ok(f(a, b))))
     }
 }
 
@@ -2473,6 +2682,46 @@ impl<S: BlobStore + Clone> Tree<S> {
         S::Error: From<S2::Error> + From<NoError>,
     {
         inner_combine_with(
+            &mut self.node,
+            self.store.clone(),
+            &TreeNodeRef::Owned(&that.node),
+            that.store.clone(),
+            c,
+            f,
+        )
+    }
+
+    pub fn try_left_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
+    where
+        S2: BlobStore + Clone,
+        E: From<S2::Error> + From<S::Error>,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
+    {
+        Ok(Tree {
+            node: left_combine(
+                &TreeNodeRef::Owned(&self.node),
+                self.store.clone(),
+                &TreeNodeRef::Owned(&that.node),
+                that.store.clone(),
+                f,
+            )?,
+            store: NoStore,
+        })
+    }
+
+    pub fn try_left_combine_with<S2, C, F>(
+        &mut self,
+        that: &Tree<S2>,
+        c: C,
+        f: F,
+    ) -> Result<(), S::Error>
+    where
+        S2: BlobStore + Clone,
+        C: NodeConverter<S2, S> + Clone,
+        F: Fn(&mut OwnedValue<S>, &ValueRef<S2>) -> Result<(), S::Error> + Copy,
+        S::Error: From<S2::Error> + From<NoError>,
+    {
+        left_combine_with(
             &mut self.node,
             self.store.clone(),
             &TreeNodeRef::Owned(&that.node),
