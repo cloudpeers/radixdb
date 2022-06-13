@@ -1,6 +1,6 @@
 use core::borrow;
 use std::{
-    any::{self, Any},
+    any::{self, Any, TypeId},
     borrow::Borrow,
     cmp::Ordering,
     collections::BTreeMap,
@@ -1043,6 +1043,13 @@ impl<S: 'static> BorrowedTreeNode<'static, S> {
 }
 
 impl<'a, S> BorrowedTreeNode<'a, S> {
+    fn detached(&self, store: &S) -> Result<OwnedTreeNode<NoStore>, S::Error>
+    where
+        S: BlobStore,
+    {
+        todo!()
+    }
+
     fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error>
     where
         S: BlobStore,
@@ -1180,7 +1187,7 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
     fn detached(&self, store: &S) -> Result<OwnedTreeNode<NoStore>, S::Error> {
         match self {
             Self::Owned(inner) => inner.detached(store),
-            Self::Borrowed(inner) => todo!(),
+            Self::Borrowed(inner) => inner.detached(store),
         }
     }
 
@@ -1457,7 +1464,7 @@ fn cmp<A, B: BlobStore>(
 }
 
 unsafe fn extend_lifetime<T>(value: &T) -> &'static T {
-    unsafe { std::mem::transmute(value) }
+    std::mem::transmute(value)
 }
 
 struct OwnedTreeNodeIter<'a, S>(
@@ -1472,9 +1479,41 @@ impl<S: BlobStore> OwnedTreeNodeIter<'static, S> {
     }
 }
 
+fn is_no_store<S: 'static>() -> bool {
+    TypeId::of::<S>() == TypeId::of::<NoStore>()
+}
+
 impl<'a, S: BlobStore> OwnedTreeNodeIter<'a, S> {
     fn new(slice: &'a [OwnedTreeNode<S>]) -> Self {
         Self(None, slice.iter())
+    }
+
+    fn to_owned(mut self) -> Option<Arc<Vec<OwnedTreeNode<S>>>> {
+        if let Some(arc) = self.0.as_ref() {
+            Some(arc.clone())
+        } else if self.is_empty() {
+            None
+        } else {
+            let mut res = Vec::with_capacity(self.1.len());
+            while let Some(x) = self.next() {
+                res.push(x.to_owned());
+            }
+            Some(Arc::new(res))
+        }
+    }
+
+    fn detached(mut self, store: &S) -> Result<Option<Arc<Vec<OwnedTreeNode<NoStore>>>>, S::Error> {
+        Ok(if self.is_empty() {
+            None
+        } else if self.0.is_some() && is_no_store::<S>() {
+            unsafe { std::mem::transmute(self.0.clone()) }
+        } else {
+            let mut res = Vec::with_capacity(self.1.len());
+            while let Some(x) = self.next() {
+                res.push(x.detached(store)?);
+            }
+            Some(Arc::new(res))
+        })
     }
 
     fn is_empty(&self) -> bool {
@@ -1522,6 +1561,18 @@ impl<S: BlobStore> BorrowedTreeNodeIter<S> {
             record_size,
             p: PhantomData,
         })
+    }
+
+    fn to_owned(self) -> Option<Arc<Vec<OwnedTreeNode<S>>>> {
+        if self.is_empty() {
+            None
+        } else {
+            todo!()
+        }
+    }
+
+    fn detached(self, store: &S) -> Result<Option<Arc<Vec<OwnedTreeNode<NoStore>>>>, S::Error> {
+        Ok(if self.is_empty() { None } else { todo!() })
     }
 
     fn is_empty(&self) -> bool {
@@ -1577,6 +1628,20 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
 
     fn from_slice(slice: &'a [OwnedTreeNode<S>]) -> Self {
         Self::Owned(OwnedTreeNodeIter::new(slice))
+    }
+
+    fn to_owned(self) -> Option<Arc<Vec<OwnedTreeNode<S>>>> {
+        match self {
+            Self::Owned(x) => x.to_owned(),
+            Self::Borrowed(x) => x.to_owned(),
+        }
+    }
+
+    fn detached(self, store: &S) -> Result<Option<Arc<Vec<OwnedTreeNode<NoStore>>>>, S::Error> {
+        match self {
+            Self::Owned(x) => x.detached(store),
+            Self::Borrowed(x) => x.detached(store),
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -1719,24 +1784,28 @@ where
     E: From<A::Error> + From<B::Error>,
     F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
 {
-    if ac.is_empty() {
+    Ok(if ac.is_empty() {
         if bc.is_empty() {
-            return Ok(None);
+            None
+        } else {
+            bc.detached(&bb)?
         }
-        // todo: shortcuts for other cases
-    }
-    let mut res = Vec::new();
-    let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
-    while let Some(x) = iter.next() {
-        let r = match x? {
-            (Some(a), Some(b)) => outer_combine(&a, ab.clone(), &b, bb.clone(), f)?,
-            (Some(a), None) => a.detached(&ab)?,
-            (None, Some(b)) => b.detached(&bb)?,
-            (None, None) => panic!(),
-        };
-        res.push(r);
-    }
-    Ok(Some(Arc::new(res)))
+    } else if bc.is_empty() {
+        ac.detached(&ab)?
+    } else {
+        let mut res = Vec::new();
+        let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
+        while let Some(x) = iter.next() {
+            let r = match x? {
+                (Some(a), Some(b)) => outer_combine(&a, ab.clone(), &b, bb.clone(), f)?,
+                (Some(a), None) => a.detached(&ab)?,
+                (None, Some(b)) => b.detached(&bb)?,
+                (None, None) => panic!(),
+            };
+            res.push(r);
+        }
+        Some(Arc::new(res))
+    })
 }
 
 /// Outer combine two trees with a function f
