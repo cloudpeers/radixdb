@@ -1716,11 +1716,11 @@ where
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
     let n = common_prefix(ap.as_ref(), bp.as_ref());
-    let mut res = OwnedTreeNode::EMPTY;
-    res.set_prefix_slice(&ap[..n]);
+    let value;
+    let children;
     if n == ap.len() && n == bp.len() {
         // prefixes are identical
-        res.set_value(if let Some(bv) = b.value_opt() {
+        value = if let Some(bv) = b.value_opt() {
             if let Some(av) = a.value_opt() {
                 f(&av, &bv)?
             } else {
@@ -1728,48 +1728,54 @@ where
             }
         } else {
             a.value_opt().map(|x| x.detached(&ab)).transpose()?
-        });
+        };
         let ac = a.load_children(&ab)?;
         let bc = b.load_children(&bb)?;
-        res.set_children_arc_opt(outer_combine_children(ac, ab, bc, bb, f)?);
+        children = outer_combine_children(ac, ab, bc, bb, f)?;
     } else if n == ap.len() {
         // a is a prefix of b
         // value is value of a
-        res.set_value(a.value_opt().map(|x| x.detached(&ab)).transpose()?);
+        value = a.value_opt().map(|x| x.detached(&ab)).transpose()?;
         let ac = a.load_children(&ab)?;
         let bc = [b.clone_shortened(&bb, n)?];
-        res.set_children_arc_opt(outer_combine_children(
+        children = outer_combine_children(
             ac,
             ab,
             TreeNodeIter::from_slice(&bc),
             bb,
             f,
-        )?);
+        )?;
     } else if n == bp.len() {
         // b is a prefix of a
         // value is value of b
-        res.set_value(b.value_opt().map(|x| x.detached(&bb)).transpose()?);
+        value = b.value_opt().map(|x| x.detached(&bb)).transpose()?;
         let ac = [a.clone_shortened(&ab, n)?];
         let bc = b.load_children(&bb)?;
-        res.set_children_arc_opt(outer_combine_children(
+        children = outer_combine_children(
             TreeNodeIter::from_slice(&ac),
             ab,
             bc,
             bb,
             f,
-        )?);
+        )?;
     } else {
         // the two nodes are disjoint
         // value is none
-        res.set_value_slice(None);
+        value = None;
         // children is just the shortened children a and b in the right order
-        let mut a: OwnedTreeNode<NoStore> = DetachConverter.convert_node_shortened(&a, &ab, n)?;
-        let mut b: OwnedTreeNode<NoStore> = DetachConverter.convert_node_shortened(&b, &bb, n)?;
-        if ap[n] > bp[n] {
-            std::mem::swap(&mut a, &mut b);
-        }
-        res.set_children_arc(Arc::new(vec![a, b]));
+        let a = DetachConverter.convert_node_shortened(&a, &ab, n)?;
+        let b = DetachConverter.convert_node_shortened(&b, &bb, n)?;
+        let vec = if ap[n] > bp[n] {
+            vec![b,a]
+        } else {
+            vec![a,b]
+        };
+        children = Some(Arc::new(vec));
     }
+    let mut res = OwnedTreeNode::EMPTY;
+    res.set_prefix_slice(&ap[..n]);
+    res.set_value(value);
+    res.set_children_arc_opt(children);
     res.canonicalize();
     Ok(res)
 }
