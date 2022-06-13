@@ -291,4 +291,45 @@ proptest! {
         r2.outer_combine_with(&b, |_, _| {});
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
+
+    #[test]
+    fn intersection(a in arb_tree_contents(), b in arb_tree_contents()) {
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        // check right biased intersection
+        let rbut = at.inner_combine(&bt, |_, b| Some(b.to_owned()));
+        let rbu = to_btree_map(&rbut);
+        let mut rbu_reference = b.clone();
+        rbu_reference.retain(|k, _| a.contains_key(k));
+        prop_assert_eq!(rbu, rbu_reference);
+        // check left biased intersection
+        let lbut = at.inner_combine(&bt, |a, _| Some(a.to_owned()));
+        let lbu = to_btree_map(&lbut);
+        let mut lbu_reference = a.clone();
+        lbu_reference.retain(|k, _| b.contains_key(k));
+        prop_assert_eq!(lbu, lbu_reference);
+    }
+
+    #[test]
+    fn intersection_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+        let r = a.inner_combine(&b, |a, _| Some(a.to_owned()));
+        prop_assert!(binary_element_test(&a, &b, r, |a, b| b.and_then(|_| a)));
+
+        let r = a.inner_combine(&b, |_, b| Some(b.to_owned()));
+        prop_assert!(binary_element_test(&a, &b, r, |a, b| a.and_then(|_| b)));
+    }
+
+    #[test]
+    fn intersection_with(a in arb_owned_tree(), b in arb_owned_tree()) {
+        // right biased intersection
+        let r1 = a.inner_combine(&b, |_, b| Some(b.to_owned()));
+        let mut r2 = a.clone();
+        r2.inner_combine_with(&b, |a, b| a.set(b));
+        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+        // left biased intersection
+        let r1 = a.inner_combine(&b, |a, _| Some(a.to_owned()));
+        let mut r2 = a.clone();
+        r2.inner_combine_with(&b, |a, _| {});
+        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+    }
 }
