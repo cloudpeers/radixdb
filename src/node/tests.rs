@@ -326,11 +326,11 @@ proptest! {
         let mut r2 = a.clone();
         r2.inner_combine_with(&b, |a, b| a.set(b));
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
-        // // left biased intersection
-        // let r1 = a.inner_combine(&b, |a, _| Some(a.to_owned()));
-        // let mut r2 = a.clone();
-        // r2.inner_combine_with(&b, |a, _| {});
-        // prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
+        // left biased intersection
+        let r1 = a.inner_combine(&b, |a, _| Some(a.to_owned()));
+        let mut r2 = a.clone();
+        r2.inner_combine_with(&b, |a, _| {});
+        prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
 
     #[test]
