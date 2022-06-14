@@ -484,6 +484,60 @@ proptest! {
         }
         prop_assert_eq!(a, leafs);
     }
+
+    #[test]
+    fn first_last_value_entry(a in arb_tree_contents()) {
+        let at = mk_owned_tree(&a);
+        prop_assert_eq!(at.first_value().map(|x| x.to_vec()), a.values().next().map(|v| v.to_vec()));
+        prop_assert_eq!(at.first_entry(Vec::new()).map(|(k, v)| (k.to_vec(), v.to_vec())), a.iter().next().map(|(k, v)| (k.to_vec(), v.to_vec())));
+        prop_assert_eq!(at.last_value().map(|x| x.to_vec()), a.values().last().map(|v| v.to_vec()));
+        prop_assert_eq!(at.last_entry(Vec::new()).map(|(k, v)| (k.to_vec(), v.to_vec())), a.iter().last().map(|(k, v)| (k.to_vec(), v.to_vec())));
+    }
+}
+
+#[test]
+fn union_with1() {
+    let a = btreemap! { vec![1] => vec![], vec![2] => vec![] };
+    let b = btreemap! { vec![1, 2] => vec![], vec![2] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.outer_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = a.clone();
+    for (k, v) in b.clone() {
+        rbu_reference.insert(k, v);
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn union_with2() {
+    let a = btreemap! { vec![] => vec![] };
+    let b = btreemap! { vec![] => vec![0] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.outer_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = a.clone();
+    for (k, v) in b.clone() {
+        rbu_reference.insert(k, v);
+    }
+    assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn union_with3() {
+    let a = btreemap! { vec![] => vec![] };
+    let b = btreemap! { vec![] => vec![], vec![1] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.outer_combine_with(&bt, |a, b| a.set(b));
+    let rbu = to_btree_map(&at);
+    let mut rbu_reference = a.clone();
+    for (k, v) in b.clone() {
+        rbu_reference.insert(k, v);
+    }
+    assert_eq!(rbu, rbu_reference);
 }
 
 #[test]
@@ -669,4 +723,103 @@ fn is_subset6() {
     let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
     let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
     assert_eq!(at_subset_bt, at_subset_bt_ref);
+}
+
+#[test]
+fn retain_prefix_with1() {
+    let a = btreemap! { vec![1] => vec![] };
+    let b = btreemap! { vec![2] => vec![], vec![3] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.retain_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! {});
+}
+
+#[test]
+fn retain_prefix_with2() {
+    let a = btreemap! { vec![1] => vec![], vec![1, 1] => vec![] };
+    let b = btreemap! { vec![1, 1] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.retain_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! { vec![1, 1] => vec![] });
+}
+
+#[test]
+fn retain_prefix_with3() {
+    let a = btreemap! { vec![1] => vec![] };
+    let b = btreemap! { vec![] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.retain_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! { vec![1] => vec![] });
+}
+
+#[test]
+fn retain_prefix_with4() {
+    let a = btreemap! { vec![1, 2] => vec![] };
+    let b = btreemap! { vec![1] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.retain_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! { vec![1, 2] => vec![] });
+}
+
+#[test]
+fn remove_prefix_with1() {
+    let a = btreemap! { vec![1] => vec![] };
+    let b = btreemap! { vec![2] => vec![], vec![3] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.remove_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! { vec![1] => vec![] });
+}
+
+#[test]
+fn remove_prefix_with2() {
+    let a = btreemap! { vec![] => vec![] };
+    let b = btreemap! {};
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.remove_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! { vec![] => vec![] });
+}
+
+#[test]
+fn remove_prefix_with3() {
+    let a = btreemap! { vec![1] => vec![], vec![1, 1] => vec![] };
+    let b = btreemap! { vec![1, 1] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.remove_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! { vec![1] => vec![] });
+}
+
+#[test]
+fn remove_prefix_with4() {
+    let a = btreemap! { vec![1, 2] => vec![] };
+    let b = btreemap! { vec![1] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.remove_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! {});
+}
+
+#[test]
+fn remove_prefix_with5() {
+    let a = btreemap! { vec![1, 2] => vec![] };
+    let b = btreemap! { vec![1, 2] => vec![], vec![1, 3] => vec![] };
+    let mut at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    at.remove_prefix_with(&bt, |_| true);
+    let r = to_btree_map(&at);
+    assert_eq!(r, btreemap! {});
 }

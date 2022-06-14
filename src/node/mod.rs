@@ -1349,6 +1349,60 @@ fn filter_prefix<S: BlobStore>(
     })
 }
 
+/// get the first value
+fn first_value<S: BlobStore>(
+    node: &TreeNodeRef<S>,
+    store: &S,
+) -> Result<Option<OwnedValue<S>>, S::Error> {
+    Ok(match node.value_opt() {
+        Some(value) => Some(value.to_owned()),
+        None => match node.load_children(store)? {
+            Some(mut children) => first_value(&children.next().unwrap(), store)?,
+            None => None,
+        },
+    })
+}
+
+/// get the last value
+fn last_value<S: BlobStore>(
+    node: &TreeNodeRef<S>,
+    store: &S,
+) -> Result<Option<OwnedValue<S>>, S::Error> {
+    Ok(match node.load_children(store)? {
+        Some(mut children) => last_value(&children.last().unwrap(), store)?,
+        None => node.value_opt().map(|x| x.to_owned()),
+    })
+}
+
+/// get the first value
+fn first_entry<S: BlobStore>(
+    mut prefix: Vec<u8>,
+    node: &TreeNodeRef<S>,
+    store: &S,
+) -> Result<Option<(Vec<u8>, OwnedValue<S>)>, S::Error> {
+    prefix.extend_from_slice(&node.load_prefix(store)?);
+    Ok(match node.value_opt() {
+        Some(value) => Some((prefix, value.to_owned())),
+        None => match node.load_children(store)? {
+            Some(mut children) => first_entry(prefix, &children.next().unwrap(), store)?,
+            None => None,
+        },
+    })
+}
+
+/// get the last value
+fn last_entry<S: BlobStore>(
+    mut prefix: Vec<u8>,
+    node: &TreeNodeRef<S>,
+    store: &S,
+) -> Result<Option<(Vec<u8>, OwnedValue<S>)>, S::Error> {
+    prefix.extend_from_slice(&node.load_prefix(store)?);
+    Ok(match node.load_children(store)? {
+        Some(mut children) => last_entry(prefix, &children.last().unwrap(), store)?,
+        None => node.value_opt().map(|x| (prefix, x.to_owned())),
+    })
+}
+
 // common prefix of two slices.
 fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
     a.iter().zip(b).take_while(|(a, b)| a == b).count()
@@ -1581,6 +1635,10 @@ impl<'a, S: BlobStore> OwnedTreeNodeIter<'a, S> {
     fn next(&mut self) -> Option<&OwnedTreeNode<S>> {
         self.1.next()
     }
+
+    fn last(&mut self) -> Option<&OwnedTreeNode<S>> {
+        self.1.as_slice().last()
+    }
 }
 
 struct BorrowedTreeNodeIter<S> {
@@ -1650,6 +1708,10 @@ impl<S: BlobStore> BorrowedTreeNodeIter<S> {
             None
         }
     }
+
+    fn last(&self) -> Option<BorrowedTreeNode<S>> {
+        todo!()
+    }
 }
 
 enum TreeNodeIter<'a, S> {
@@ -1708,6 +1770,13 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         match self {
             Self::Owned(x) => x.next().map(|x| TreeNodeRef::Owned(x)),
             Self::Borrowed(x) => x.next().map(|x| TreeNodeRef::Borrowed(x)),
+        }
+    }
+
+    fn last(&mut self) -> Option<TreeNodeRef<'_, S>> {
+        match self {
+            Self::Owned(x) => x.last().map(|x| TreeNodeRef::Owned(x)),
+            Self::Borrowed(x) => x.last().map(|x| TreeNodeRef::Borrowed(x)),
         }
     }
 }
@@ -3022,6 +3091,22 @@ impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
     ) -> bool {
         unwrap_safe(self.try_left_combine_pred(&that, |a, b| Ok(f(a, b))))
     }
+
+    pub fn first_value(&self) -> Option<OwnedValue<S>> {
+        unwrap_safe(self.try_first_value())
+    }
+
+    pub fn last_value(&self) -> Option<OwnedValue<S>> {
+        unwrap_safe(self.try_last_value())
+    }
+
+    pub fn first_entry(&self, prefix: Vec<u8>) -> Option<(Vec<u8>, OwnedValue<S>)> {
+        unwrap_safe(self.try_first_entry(prefix))
+    }
+
+    pub fn last_entry(&self, prefix: Vec<u8>) -> Option<(Vec<u8>, OwnedValue<S>)> {
+        unwrap_safe(self.try_last_entry(prefix))
+    }
 }
 
 impl Tree<NoStore> {
@@ -3331,5 +3416,27 @@ impl<S: BlobStore + Clone> Tree<S> {
     pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
         filter_prefix(&TreeNodeRef::Owned(&self.node), &self.store, prefix)
             .map(|node| Tree::new(node, self.store.clone()))
+    }
+
+    pub fn try_first_value(&self) -> Result<Option<OwnedValue<S>>, S::Error> {
+        first_value(&TreeNodeRef::Owned(&self.node), &self.store)
+    }
+
+    pub fn try_last_value(&self) -> Result<Option<OwnedValue<S>>, S::Error> {
+        last_value(&TreeNodeRef::Owned(&self.node), &self.store)
+    }
+
+    pub fn try_first_entry(
+        &self,
+        prefix: Vec<u8>,
+    ) -> Result<Option<(Vec<u8>, OwnedValue<S>)>, S::Error> {
+        first_entry(prefix, &TreeNodeRef::Owned(&self.node), &self.store)
+    }
+
+    pub fn try_last_entry(
+        &self,
+        prefix: Vec<u8>,
+    ) -> Result<Option<(Vec<u8>, OwnedValue<S>)>, S::Error> {
+        last_entry(prefix, &TreeNodeRef::Owned(&self.node), &self.store)
     }
 }
