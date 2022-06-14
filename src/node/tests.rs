@@ -379,6 +379,21 @@ proptest! {
         r2.left_combine_with(&b, |a, b| a.set(b));
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
+
+    #[test]
+    fn intersects(a in arb_tree_contents(), b in arb_tree_contents()) {
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let keys_intersect = at.inner_combine_pred(&bt, |_, _| true);
+        let keys_intersect_ref = a.keys().any(|ak| b.contains_key(ak));
+        prop_assert_eq!(keys_intersect, keys_intersect_ref);
+    }
+
+    #[test]
+    fn intersects_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+        let keys_intersect = a.inner_combine_pred(&b, |_, _| true);
+        prop_assert!(binary_property_test(&a, &b, !keys_intersect, |a, b| !(a.is_some() & b.is_some())));
+    }
 }
 
 #[test]
