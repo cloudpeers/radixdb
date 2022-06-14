@@ -655,11 +655,7 @@ impl<S: BlobStore> OwnedTreeNode<S> {
     fn deserialize(data: &[u8]) -> anyhow::Result<Self> {
         if let Some((node, rest)) = BorrowedTreeNode::<S>::read_one(data) {
             anyhow::ensure!(rest.is_empty());
-            let mut res = Self::EMPTY;
-            res.set_prefix_id_or_data(node.prefix());
-            res.set_value_id_or_data(node.value());
-            res.set_children_id(node.children().read().unwrap_err());
-            Ok(res)
+            Ok(node.to_owned())
         } else {
             anyhow::bail!("Unable to deserialize {}!", Hex::new(data));
         }
@@ -866,7 +862,7 @@ impl<S> OwnedTreeNode<S> {
     }
 
     fn is_empty(&self) -> bool {
-        !self.has_value() && self.child_count() == 0
+        !self.has_value() && self.is_leaf()
     }
 
     fn set_prefix_raw(&mut self, prefix: Raw) {
@@ -891,6 +887,13 @@ impl<S> OwnedTreeNode<S> {
         self.value.manual_drop(self.value_hdr);
         self.value_hdr = value.hdr;
         self.value = ArcOrInlineBlob::copy_from_slice(value.slice());
+    }
+
+    fn set_children_id_or_data(&mut self, value: IdOrData) {
+        assert!(value.hdr.is_id());
+        self.children.manual_drop(self.children_hdr);
+        self.children_hdr = value.hdr;
+        self.children = ChildrenRef::id_from_slice(value.slice());
     }
 
     fn set_prefix_slice(&mut self, prefix: &[u8]) {
@@ -986,7 +989,8 @@ impl<S> OwnedTreeNode<S> {
                 if id.is_empty() {
                     0
                 } else {
-                    panic!()
+                    // todo: what to do here? Why does this even happen?
+                    2
                 }
             }
         }
@@ -1070,6 +1074,14 @@ impl<S: 'static> BorrowedTreeNode<'static, S> {
 }
 
 impl<'a, S> BorrowedTreeNode<'a, S> {
+    fn to_owned(&self) -> OwnedTreeNode<S> {
+        let mut res = OwnedTreeNode::EMPTY;
+        res.set_prefix_id_or_data(self.prefix());
+        res.set_value_id_or_data(self.value());
+        res.set_children_id(self.children().read().unwrap_err());
+        res
+    }
+
     fn detached(&self, store: &S) -> Result<OwnedTreeNode<NoStore>, S::Error>
     where
         S: BlobStore,
@@ -1230,7 +1242,7 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
     fn to_owned(&self) -> OwnedTreeNode<S> {
         match self.dispatch() {
             Ok(owned) => owned.clone(),
-            Err(borrowed) => todo!(),
+            Err(borrowed) => borrowed.to_owned(),
         }
     }
 
@@ -1745,8 +1757,19 @@ impl<S: BlobStore> BorrowedTreeNodeIter<S> {
         }
     }
 
-    fn last(&self) -> Option<BorrowedTreeNode<S>> {
-        todo!()
+    fn last(&mut self) -> Option<BorrowedTreeNode<S>> {
+        let mut offset = self.offset;
+        let mut last = None;
+        // todo: special case for when we have a record size!
+        while offset < self.data.len() {
+            if let Some(x) = BorrowedTreeNode::<S>::read(&self.data[offset..]) {
+                last = Some(x);
+                offset += x.bytes_len();
+            } else {
+                break;
+            }
+        }
+        last
     }
 }
 
@@ -3474,5 +3497,12 @@ impl<S: BlobStore + Clone> Tree<S> {
         prefix: Vec<u8>,
     ) -> Result<Option<(Vec<u8>, OwnedValue<S>)>, S::Error> {
         last_entry(prefix, &TreeNodeRef::Owned(&self.node), &self.store)
+    }
+
+    pub fn try_reattach(&mut self) -> Result<(), S::Error> {
+        let mut data = Vec::new();
+        self.node.serialize(&mut data, &self.store)?;
+        self.node = OwnedTreeNode::deserialize(&data)?;
+        Ok(())
     }
 }

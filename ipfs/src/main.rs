@@ -215,7 +215,7 @@ impl Ipfs {
     }
 
     fn commit(&mut self) -> anyhow::Result<()> {
-        // self.root.try_reattach(self.store.clone())?;
+        self.root.try_reattach()?;
         self.store.sync()
     }
 
@@ -414,7 +414,7 @@ fn main() -> anyhow::Result<()> {
     }
     println!("done {} {}", res, t0.elapsed().as_secs_f64());
     hashes.sort();
-    for _ in 0..100 {
+    for _ in 0..10 {
         println!("traversing all (random)");
         let t0 = Instant::now();
         let mut res = 0u64;
