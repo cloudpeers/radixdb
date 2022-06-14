@@ -296,7 +296,7 @@ proptest! {
         // check right biased union
         let r1 = a.outer_combine(&b, |_, b| Some(b.to_owned()));
         let mut r2 = a.clone();
-        r2.outer_combine_with(&b, |a, b| a.set(b));
+        r2.outer_combine_with(&b, |a, b| a.set(Some(b)));
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
         // check left biased union
         let r1 = a.outer_combine(&b, |a, _| Some(a.to_owned()));
@@ -337,7 +337,7 @@ proptest! {
         // right biased intersection
         let r1 = a.inner_combine(&b, |_, b| Some(b.to_owned()));
         let mut r2 = a.clone();
-        r2.inner_combine_with(&b, |a, b| a.set(b));
+        r2.inner_combine_with(&b, |a, b| a.set(Some(b)));
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
         // left biased intersection
         let r1 = a.inner_combine(&b, |a, _| Some(a.to_owned()));
@@ -389,7 +389,7 @@ proptest! {
 
         let r1 = a.left_combine(&b, |_, b| Some(b.to_owned()));
         let mut r2 = a.clone();
-        r2.left_combine_with(&b, |a, b| a.set(b));
+        r2.left_combine_with(&b, |a, b| a.set(Some(b)));
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
 
@@ -501,7 +501,7 @@ fn union_with1() {
     let b = btreemap! { vec![1, 2] => vec![], vec![2] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.outer_combine_with(&bt, |a, b| a.set(b));
+    at.outer_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = a.clone();
     for (k, v) in b.clone() {
@@ -516,7 +516,7 @@ fn union_with2() {
     let b = btreemap! { vec![] => vec![0] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.outer_combine_with(&bt, |a, b| a.set(b));
+    at.outer_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = a.clone();
     for (k, v) in b.clone() {
@@ -531,7 +531,7 @@ fn union_with3() {
     let b = btreemap! { vec![] => vec![], vec![1] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.outer_combine_with(&bt, |a, b| a.set(b));
+    at.outer_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = a.clone();
     for (k, v) in b.clone() {
@@ -546,7 +546,7 @@ fn intersection_with1() {
     let b = btreemap! { vec![1] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.inner_combine_with(&bt, |a, b| a.set(b));
+    at.inner_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = BTreeMap::new();
     for (k, v) in b.clone() {
@@ -563,7 +563,7 @@ fn intersection_with2() {
     let b = btreemap! { vec![1,3] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.inner_combine_with(&bt, |a, b| a.set(b));
+    at.inner_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = BTreeMap::new();
     for (k, v) in b.clone() {
@@ -580,7 +580,7 @@ fn intersection_with3() {
     let b = btreemap! { vec![] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.inner_combine_with(&bt, |a, b| a.set(b));
+    at.inner_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = BTreeMap::new();
     for (k, v) in b.clone() {
@@ -597,7 +597,7 @@ fn intersection_with4() {
     let b = btreemap! { vec![] => vec![], vec![1, 2] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.inner_combine_with(&bt, |a, b| a.set(b));
+    at.inner_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = BTreeMap::new();
     for (k, v) in b.clone() {
@@ -614,7 +614,7 @@ fn difference_with1() {
     let b = btreemap! { vec![1] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.left_combine_with(&bt, |a, b| a.set(b));
+    at.left_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = a.clone();
     for (k, v) in b.clone() {
@@ -631,7 +631,7 @@ fn difference_with2() {
     let b = btreemap! { vec![0;129] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.left_combine_with(&bt, |a, b| a.set(b));
+    at.left_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = a.clone();
     for (k, v) in b.clone() {
@@ -648,7 +648,7 @@ fn difference_with3() {
     let b = btreemap! { vec![] => vec![], vec![1,2] => vec![] };
     let mut at = mk_owned_tree(&a);
     let bt = mk_owned_tree(&b);
-    at.left_combine_with(&bt, |a, b| a.set(b));
+    at.left_combine_with(&bt, |a, b| a.set(Some(b)));
     let rbu = to_btree_map(&at);
     let mut rbu_reference = a.clone();
     for (k, v) in b.clone() {

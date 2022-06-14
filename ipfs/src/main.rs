@@ -3,11 +3,9 @@
 //!
 //!
 use radixdb::{
-    store::{
-        Blob, BlobStore2 as BlobStore, DynBlobStore2 as DynBlobStore, MemStore2, NoError,
-        OwnedBlob, PagedFileStore,
-    },
-    VSRadixTree as RadixTree, *,
+    node::{DowncastConverter, IdentityConverter},
+    store::{Blob, BlobStore, DynBlobStore, MemStore, NoError, OwnedBlob, PagedFileStore},
+    RadixTree, *,
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
@@ -114,13 +112,15 @@ trait RadixTreeExt<S: BlobStore> {
 
 impl<S: BlobStore + Clone> RadixTreeExt<S> for RadixTree<S> {
     fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), S::Error> {
-        self.try_outer_combine_with(&RadixTree::single(key, value), |a, b| {
-            Ok(Some(b.to_owned()))
+        self.try_outer_combine_with(&RadixTree::single(key, value), DowncastConverter, |a, b| {
+            Ok(a.set(Some(b.downcast())))
         })
     }
 
     fn remove(&mut self, key: &[u8]) -> Result<(), S::Error> {
-        self.try_left_combine_with(&RadixTree::single(key, &[]), |a, b| Ok(None))
+        self.try_left_combine_with(&RadixTree::single(key, &[]), DowncastConverter, |a, _| {
+            Ok(a.set(None))
+        })
     }
 }
 
@@ -215,7 +215,7 @@ impl Ipfs {
     }
 
     fn commit(&mut self) -> anyhow::Result<()> {
-        self.root.try_reattach(self.store.clone())?;
+        // self.root.try_reattach(self.store.clone())?;
         self.store.sync()
     }
 
@@ -308,7 +308,7 @@ impl Ipfs {
         } else {
             let cids = self.root.try_filter_prefix(CIDS)?;
             // compute higest id
-            let id = if let Some((prefix, _)) = cids.try_last_entry(&[])? {
+            let id = if let Some((prefix, _)) = cids.try_last_entry(vec![])? {
                 // get id from prefix and inc by one
                 let id: [u8; 8] = prefix[prefix.len() - 8..].try_into()?;
                 u64::from_be_bytes(id) + 1

@@ -185,9 +185,9 @@ impl From<Arc<Vec<u8>>> for OwnedBlob {
 /// Type for a dynamic blob store
 ///
 /// Uses Arc so the dynamic reference can be cheaply cloned.
-pub type DynBlobStore2 = Arc<dyn BlobStore<Error = anyhow::Error>>;
+pub type DynBlobStore = Arc<dyn BlobStore<Error = anyhow::Error>>;
 
-impl BlobStore for DynBlobStore2 {
+impl BlobStore for DynBlobStore {
     type Error = anyhow::Error;
 
     fn read(&self, id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {

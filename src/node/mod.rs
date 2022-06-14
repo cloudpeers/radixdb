@@ -395,7 +395,7 @@ pub enum ValueRef<'a, S> {
 }
 
 impl<'a> ValueRef<'a, NoStore> {
-    fn downcast<S2: BlobStore>(&self) -> &ValueRef<'a, S2> {
+    pub fn downcast<S2: BlobStore>(&self) -> &ValueRef<'a, S2> {
         unsafe { std::mem::transmute(self) }
     }
 }
@@ -457,7 +457,7 @@ pub struct OwnedValueRef<'a, S> {
 }
 
 impl<'a> OwnedValueRef<'a, NoStore> {
-    fn downcast<S2: BlobStore>(&self) -> &OwnedValueRef<'a, S2> {
+    pub fn downcast<S2: BlobStore>(&self) -> &OwnedValueRef<'a, S2> {
         unsafe { std::mem::transmute(self) }
     }
 }
@@ -513,7 +513,7 @@ impl Deref for OwnedValue<NoStore> {
 }
 
 impl OwnedValue<NoStore> {
-    fn downcast<S2: BlobStore>(self) -> OwnedValue<S2> {
+    pub fn downcast<S2: BlobStore>(self) -> OwnedValue<S2> {
         unsafe { std::mem::transmute(self) }
     }
 }
@@ -532,16 +532,30 @@ impl<S> OwnedValue<S> {
         })
     }
 
-    fn set(&mut self, value: &ValueRef<S>) {
+    pub fn load(&self, store: &S) -> Result<OwnedBlob, S::Error>
+    where
+        S: BlobStore,
+    {
+        match self.read() {
+            Ok(data) => Ok(OwnedBlob::copy_from_slice(data)),
+            Err(id) => store.read(id),
+        }
+    }
+
+    pub fn set(&mut self, value: Option<&ValueRef<S>>) {
         self.data.manual_drop(self.hdr);
         match value {
-            ValueRef::Raw(raw, _) => {
+            Some(ValueRef::Raw(raw, _)) => {
                 self.hdr = raw.hdr;
                 self.data = raw.data.manual_clone(raw.hdr);
             }
-            ValueRef::IdOrData(iod) => {
+            Some(ValueRef::IdOrData(iod)) => {
                 self.hdr = iod.hdr;
                 self.data = ArcOrInlineBlob::copy_from_slice(iod.slice());
+            }
+            None => {
+                self.hdr = Header::NONE;
+                self.data = ArcOrInlineBlob::EMPTY;
             }
         }
     }
@@ -579,13 +593,9 @@ impl<S: BlobStore> OwnedTreeNode<S> {
 }
 
 impl OwnedTreeNode<NoStore> {
-    fn downcast<S2: BlobStore>(&self) -> OwnedTreeNode<S2> {
+    pub fn downcast<S2: BlobStore>(&self) -> OwnedTreeNode<S2> {
         let res = self.clone();
         unsafe { std::mem::transmute(res) }
-    }
-
-    fn downcast_ref<S2: BlobStore>(&self) -> &OwnedTreeNode<S2> {
-        unsafe { std::mem::transmute(&self) }
     }
 }
 
@@ -1194,7 +1204,7 @@ impl<'a, S: BlobStore> Debug for TreeNodeRef<'a, S> {
 }
 
 impl<'a> TreeNodeRef<'a, NoStore> {
-    fn downcast<S2: BlobStore>(&self) -> OwnedTreeNode<S2> {
+    pub fn downcast<S2: BlobStore>(&self) -> OwnedTreeNode<S2> {
         match self.dispatch() {
             Ok(owned) => owned.downcast(),
             Err(_) => unreachable!(),
@@ -1426,7 +1436,7 @@ pub trait NodeConverter<A, B> {
 }
 
 #[derive(Clone, Copy)]
-struct DowncastConverter;
+pub struct DowncastConverter;
 
 impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
     fn convert_node(
@@ -1448,6 +1458,32 @@ impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
 
     fn convert_value(&self, bv: &ValueRef<NoStore>, _: &NoStore) -> Result<OwnedValue<B>, NoError> {
         Ok(bv.downcast::<B>().to_owned())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct IdentityConverter;
+
+impl<A: BlobStore> NodeConverter<A, A> for IdentityConverter {
+    fn convert_node(
+        &self,
+        node: &TreeNodeRef<A>,
+        _store: &A,
+    ) -> Result<OwnedTreeNode<A>, A::Error> {
+        Ok(node.to_owned())
+    }
+
+    fn convert_node_shortened(
+        &self,
+        node: &TreeNodeRef<A>,
+        store: &A,
+        n: usize,
+    ) -> Result<OwnedTreeNode<A>, A::Error> {
+        node.clone_shortened(store, n)
+    }
+
+    fn convert_value(&self, bv: &ValueRef<A>, _store: &A) -> Result<OwnedValue<A>, A::Error> {
+        Ok(bv.to_owned())
     }
 }
 

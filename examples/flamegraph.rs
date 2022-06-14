@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fs, sync::Arc, time::Instant};
 
 use log::info;
-use radixdb::store::{DynBlobStore2, PagedFileStore};
+use radixdb::store::{DynBlobStore, PagedFileStore};
 use tempfile::tempdir;
 
 // fn do_test(store: DynBlobStore2) -> anyhow::Result<()> {
