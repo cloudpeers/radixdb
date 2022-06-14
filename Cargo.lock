@@ -35,12 +35,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
-name = "binary-merge"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "597bb81c80a54b6a4381b23faba8d7774b144c94cbd1d6fe3f1329bd776554ab"
-
-[[package]]
 name = "bit-set"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -281,7 +275,6 @@ name = "radixdb"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "binary-merge",
  "env_logger",
  "fnv",
  "hex",
@@ -292,6 +285,7 @@ dependencies = [
  "obey",
  "parking_lot",
  "proptest",
+ "smallvec",
  "tempfile",
  "thousands",
 ]

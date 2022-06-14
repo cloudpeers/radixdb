@@ -2,13 +2,14 @@ use fnv::FnvHashMap;
 use memmap::{Mmap, MmapOptions};
 use parking_lot::Mutex;
 
-use crate::store::{Blob, BlobOwner, BlobStore};
 use std::{
     fmt::Debug,
     fs::File,
     io::{Seek, Write},
     sync::Arc,
 };
+
+use super::{BlobStore, OwnedBlob};
 
 #[derive(Clone)]
 pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
@@ -27,7 +28,7 @@ impl<const SIZE: usize> Debug for PagedFileStore<SIZE> {
 struct Inner<const SIZE: usize> {
     file: File,
     pages: FnvHashMap<u64, Page<SIZE>>,
-    recent: FnvHashMap<u64, Blob>,
+    recent: FnvHashMap<u64, OwnedBlob>,
 }
 
 const ALIGN: usize = 8;
@@ -52,36 +53,23 @@ impl<const SIZE: usize> PageInner<SIZE> {
     }
 }
 
-impl<const SIZE: usize> BlobOwner for Arc<PageInner<SIZE>> {
-    fn get_slice(&self, offset: usize) -> &[u8] {
-        let data = self.mmap.as_ref();
-        let base = offset + 4;
-        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        &data[base..base + length]
-    }
-    fn inc(&self, offset: usize) -> bool {
-        let data = self.mmap.as_ref();
-        if offset + 4 <= data.len() {
-            let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-            offset + 4 + length <= data.len()
-        } else {
-            false
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
-struct Page<const SIZE: usize>(Arc<dyn BlobOwner>);
+struct Page<const SIZE: usize>(Arc<PageInner<SIZE>>);
 
 impl<const SIZE: usize> Page<SIZE> {
     fn new(mmap: Mmap) -> Self {
         assert!(mmap.len() == SIZE);
-        Self(Arc::new(Arc::new(PageInner::<SIZE>::new(mmap))))
+        Self(Arc::new(PageInner::<SIZE>::new(mmap)))
     }
 
     /// try to get the bytes at the given offset
-    fn bytes(&self, offset: usize) -> anyhow::Result<Blob> {
-        Blob::new(self.0.clone(), offset)
+    fn bytes(&self, offset: usize) -> anyhow::Result<OwnedBlob> {
+        let data = self.0.mmap.as_ref();
+        let base = offset + 4;
+        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
+        let slice: &[u8] = &data[base..base + length];
+        let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
+        Ok(OwnedBlob::owned_new(slice, Some(self.0.clone())))
     }
 }
 
@@ -140,7 +128,7 @@ impl<const SIZE: usize> Inner<SIZE> {
         Ok(())
     }
 
-    fn bytes(&self, offset: u64) -> anyhow::Result<Blob> {
+    fn bytes(&self, offset: u64) -> anyhow::Result<OwnedBlob> {
         let page = Self::page(offset);
         let page_offset = Self::offset_within_page(offset);
         // first try pages, then recent
@@ -175,7 +163,7 @@ impl<const SIZE: usize> Inner<SIZE> {
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         self.file.write_all(data)?;
         self.file.flush()?;
-        self.recent.insert(id, Blob::from_slice(data));
+        self.recent.insert(id, OwnedBlob::copy_from_slice(data));
         Ok(id)
     }
 }
@@ -197,12 +185,14 @@ impl<const SIZE: usize> PagedFileStore<SIZE> {
 impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob> {
-        self.0.lock().bytes(id)
+    fn read(&self, id: &[u8]) -> anyhow::Result<OwnedBlob> {
+        let offset = u64::from_be_bytes(id.try_into().unwrap());
+        self.0.lock().bytes(offset)
     }
 
-    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
-        self.0.lock().append(data)
+    fn write(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let id = self.0.lock().append(data)?;
+        Ok(id.to_be_bytes().to_vec())
     }
 
     fn sync(&self) -> anyhow::Result<()> {
@@ -218,7 +208,7 @@ mod tests {
         time::{Instant, SystemTime},
     };
 
-    use crate::{store::DynBlobStore, RadixTree};
+    use crate::store::DynBlobStore;
 
     use super::*;
     use log::info;
@@ -252,66 +242,66 @@ mod tests {
         data
     }
 
-    fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
-        let elems = (0..2000000u64).map(|i| {
-            if i % 100000 == 0 {
-                info!("{}", i);
-            }
-            (
-                i.to_string().as_bytes().to_vec(),
-                i.to_string().as_bytes().to_vec(),
-            )
-        });
-        let t0 = Instant::now();
-        info!("building tree");
-        let tree: RadixTree = elems.collect();
-        info!(
-            "unattached tree {:?} {} s",
-            tree,
-            t0.elapsed().as_secs_f64()
-        );
-        info!("traversing unattached tree...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for _ in tree.iter() {
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        info!("attaching tree...");
-        let t0 = Instant::now();
-        let tree = tree.attached(store.clone())?;
-        store.sync()?;
-        info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
-        info!("traversing attached tree values...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for item in tree.try_values() {
-            if item.is_err() {
-                info!("{:?}", item);
-            }
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        info!("traversing attached tree...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for _ in tree.try_iter() {
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        info!("detaching tree...");
-        let t0 = Instant::now();
-        let tree = tree.detached()?;
-        info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
-        info!("traversing unattached tree...");
-        let t0 = Instant::now();
-        let mut n = 0;
-        for _ in tree.iter() {
-            n += 1;
-        }
-        info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
-        Ok(())
-    }
+    // fn do_test(store: DynBlobStore2) -> anyhow::Result<()> {
+    //     let elems = (0..2000000u64).map(|i| {
+    //         if i % 100000 == 0 {
+    //             info!("{}", i);
+    //         }
+    //         (
+    //             i.to_string().as_bytes().to_vec(),
+    //             i.to_string().as_bytes().to_vec(),
+    //         )
+    //     });
+    //     let t0 = Instant::now();
+    //     info!("building tree");
+    //     let tree: VSRadixTree = elems.collect();
+    //     info!(
+    //         "unattached tree {:?} {} s",
+    //         tree,
+    //         t0.elapsed().as_secs_f64()
+    //     );
+    //     info!("traversing unattached tree...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for _ in tree.iter() {
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     info!("attaching tree...");
+    //     let t0 = Instant::now();
+    //     // let tree = tree.attached(store.clone())?;
+    //     store.sync()?;
+    //     info!("attached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+    //     info!("traversing attached tree values...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for item in tree.try_values() {
+    //         if item.is_err() {
+    //             info!("{:?}", item);
+    //         }
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     info!("traversing attached tree...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for _ in tree.try_iter() {
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     info!("detaching tree...");
+    //     let t0 = Instant::now();
+    //     // let tree = tree.detached()?;
+    //     info!("detached tree {:?} {} s", tree, t0.elapsed().as_secs_f32());
+    //     info!("traversing unattached tree...");
+    //     let t0 = Instant::now();
+    //     let mut n = 0;
+    //     for _ in tree.iter() {
+    //         n += 1;
+    //     }
+    //     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
+    //     Ok(())
+    // }
 
     fn init_logger() {
         let _ = env_logger::builder()
@@ -336,7 +326,8 @@ mod tests {
             .open(&path)?;
         let db = PagedFileStore::<1048576>::new(file).unwrap();
         let store: DynBlobStore = Arc::new(db);
-        do_test(store)
+        // do_test(store)
+        todo!()
     }
 
     #[test]
@@ -374,7 +365,7 @@ mod tests {
         let t = Instant::now();
         for (i, offset) in offsets.into_iter().enumerate() {
             let expected = mk_block::<BLOCK_SIZE>(i as u64);
-            let actual = db.read(offset)?;
+            let actual = db.read(&offset)?;
             assert_eq!(&expected[..], actual.as_ref());
         }
         let dt = t.elapsed().as_secs_f64();
