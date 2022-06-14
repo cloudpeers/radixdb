@@ -444,6 +444,46 @@ proptest! {
         let actual = to_btree_map(&at);
         assert_eq!(expected, actual);
     }
+
+    #[test]
+    fn group_by_true(a in arb_tree_contents()) {
+        let at = mk_owned_tree(&a);
+        let trees: Vec<Tree> = at.group_by(|_, _| true).collect::<Vec<_>>();
+        prop_assert_eq!(a.len(), trees.len());
+        for ((k0, v0), tree) in a.iter().zip(trees) {
+            let k0: &[u8] = &k0;
+            let v0: &[u8] = &v0;
+            let k1 = tree.node.load_prefix(&NoStore).unwrap().to_vec();
+            let v1 = tree.node.value_opt().map(|x| x.to_vec());
+            prop_assert!(tree.node.is_leaf());
+            prop_assert_eq!(k0, k1);
+            prop_assert_eq!(Some(v0.to_vec()), v1);
+        }
+    }
+
+    #[test]
+    fn group_by_fixed(a in arb_tree_contents(), n in 0usize..8) {
+        let at = mk_owned_tree(&a);
+        let trees: Vec<Tree> = at.group_by(|x, _| x.len() <= n).collect::<Vec<_>>();
+        prop_assert!(trees.len() <= a.len());
+        let mut leafs = BTreeMap::new();
+        for tree in &trees {
+            let prefix = tree.node.load_prefix(&NoStore).unwrap().to_vec();
+            if prefix.len() <= n {
+                prop_assert!(tree.node.is_leaf());
+                prop_assert!(tree.node.value_opt().is_some());
+                let value = tree.node.value_opt().unwrap().to_vec();
+                let prev = leafs.insert(prefix, value);
+                prop_assert!(prev.is_none());
+            } else {
+                for (k, v) in tree.iter() {
+                    let prev = leafs.insert(k.to_vec(), v.to_vec());
+                    prop_assert!(prev.is_none());
+                }
+            }
+        }
+        prop_assert_eq!(a, leafs);
+    }
 }
 
 #[test]
