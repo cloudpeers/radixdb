@@ -1309,6 +1309,32 @@ fn find<S: BlobStore, T>(
     f(fr)
 }
 
+/// Return the subtree with the given prefix. Will return an empty tree in case there is no match.
+fn filter_prefix<S: BlobStore>(
+    node: &TreeNodeRef<S>,
+    store: &S,
+    prefix: &[u8],
+) -> Result<OwnedTreeNode<S>, S::Error> {
+    find(store, node, prefix, |x| {
+        Ok(match x {
+            FindResult::Found(res) => {
+                let mut res = res.to_owned();
+                res.set_prefix_slice(prefix);
+                res
+            }
+            FindResult::Prefix { tree, matching } => {
+                let tree_prefix = tree.load_prefix(store)?;
+                let mut res = tree.to_owned();
+                let mut prefix = prefix.to_vec();
+                prefix.extend_from_slice(&tree_prefix[matching..]);
+                res.set_prefix_slice(&prefix);
+                res
+            }
+            FindResult::NotFound => OwnedTreeNode::EMPTY,
+        })
+    })
+}
+
 // common prefix of two slices.
 fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
     a.iter().zip(b).take_while(|(a, b)| a == b).count()
@@ -2730,6 +2756,10 @@ impl Tree<NoStore> {
     ) {
         unwrap_safe(self.try_left_combine_with(that, DetachConverter, |a, b| Ok(f(a, b))))
     }
+
+    pub fn filter_prefix(&self, prefix: &[u8]) -> Tree {
+        unwrap_safe(self.try_filter_prefix(prefix))
+    }
 }
 
 impl<S: BlobStore> Tree<S> {
@@ -2932,5 +2962,10 @@ impl<S: BlobStore + Clone> Tree<S> {
             c,
             f,
         )
+    }
+
+    pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
+        filter_prefix(&TreeNodeRef::Owned(&self.node), &self.store, prefix)
+            .map(|node| Tree::new(node, self.store.clone()))
     }
 }

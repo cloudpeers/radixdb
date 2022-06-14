@@ -247,6 +247,19 @@ proptest! {
         }
     }
 
+
+    #[test]
+    fn filter_prefix(x in arb_tree_contents(), prefix in any::<Vec<u8>>()) {
+        let reference = x;
+        let tree = mk_owned_tree(&reference);
+        let filtered = tree.filter_prefix(&prefix);
+        for (k, v) in filtered.iter() {
+            prop_assert!(k.as_ref().starts_with(&prefix));
+            let t = reference.get(k.as_ref()).unwrap();
+            prop_assert_eq!(v.as_ref(), t);
+        }
+    }
+
     #[test]
     fn union(a in arb_tree_contents(), b in arb_tree_contents()) {
         let at = mk_owned_tree(&a);
