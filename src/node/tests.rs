@@ -422,6 +422,17 @@ proptest! {
         let is_not_subset = a.left_combine_pred(&b, |_, _| false);
         prop_assert!(binary_property_test(&a, &b, !is_not_subset, |a, b| !a.is_some() | b.is_some()))
     }
+
+    #[test]
+    fn retain_prefix_with(a in arb_tree_contents(), b in arb_tree_contents()) {
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.retain_prefix_with(&bt, |_| true);
+        let mut expected = a;
+        expected.retain(|k, _| b.keys().any(|bk| k.starts_with(bk)));
+        let actual = to_btree_map(&at);
+        assert_eq!(expected, actual);
+    }
 }
 
 #[test]
