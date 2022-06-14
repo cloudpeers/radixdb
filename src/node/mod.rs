@@ -2280,6 +2280,95 @@ where
     })
 }
 
+/// Inner combine two trees with a predicate f
+fn left_combine_pred<A, B, E, F>(
+    a: &TreeNodeRef<A>,
+    ab: A,
+    b: &TreeNodeRef<B>,
+    bb: B,
+    f: F,
+) -> Result<bool, E>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    E: From<A::Error> + From<B::Error>,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<bool, E> + Copy,
+{
+    let ap = a.load_prefix(&ab)?;
+    let bp = b.load_prefix(&bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    if n == ap.len() && n == bp.len() {
+        match (a.value_opt(), b.value_opt()) {
+            (Some(av), Some(bv)) => {
+                if f(&av, &bv)? {
+                    return Ok(true);
+                }
+            }
+            (Some(_), None) => return Ok(true),
+            _ => {}
+        }
+        let ac = a.load_children(&ab)?;
+        let bc = b.load_children(&bb)?;
+        return left_combine_children_pred(ac, ab, bc, bb, f);
+    } else if n == ap.len() {
+        if a.value_opt().is_some() {
+            return Ok(true);
+        }
+        let bc = b.clone_shortened(&bb, n)?;
+        let bc = TreeNodeRef::Owned(&bc);
+        if let Some(mut ac) = a.load_children(&ab)? {
+            while let Some(ac) = ac.next() {
+                if left_combine_pred(&ac, ab.clone(), &bc, bb.clone(), f)? {
+                    return Ok(true);
+                }
+            }
+        }
+    } else if n == bp.len() {
+        let ac = a.clone_shortened(&ab, n)?;
+        let ac = TreeNodeRef::Owned(&ac);
+        if let Some(mut bc) = b.load_children(&bb)? {
+            while let Some(bc) = bc.next() {
+                if left_combine_pred(&ac, ab.clone(), &bc, bb.clone(), f)? {
+                    return Ok(true);
+                }
+            }
+        }
+    } else {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn left_combine_children_pred<'a, A, B, E, F>(
+    ac: Option<TreeNodeIter<A>>,
+    ab: A,
+    bc: Option<TreeNodeIter<B>>,
+    bb: B,
+    f: F,
+) -> Result<bool, E>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    E: From<A::Error> + From<B::Error>,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<bool, E> + Copy,
+{
+    match (ac, bc) {
+        (Some(ac), Some(bc)) => {
+            let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
+            while let Some(x) = iter.next() {
+                if let (Some(a), Some(b)) = x? {
+                    if left_combine_pred(&a, ab.clone(), &b, bb.clone(), f)? {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        (Some(_), None) => return Ok(true),
+        _ => {}
+    }
+    Ok(false)
+}
+
 /// Outer combine two trees with a function f
 fn left_combine_with<A, B, C, F>(
     a: &mut OwnedTreeNode<A>,
@@ -2607,6 +2696,14 @@ impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
     ) -> Tree {
         unwrap_safe(self.try_left_combine(that, |a, b| Ok(f(a, b))))
     }
+
+    pub fn left_combine_pred(
+        &self,
+        that: &Tree<S>,
+        f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> bool + Copy,
+    ) -> bool {
+        unwrap_safe(self.try_left_combine_pred(&that, |a, b| Ok(f(a, b))))
+    }
 }
 
 impl Tree<NoStore> {
@@ -2806,6 +2903,21 @@ impl<S: BlobStore + Clone> Tree<S> {
             )?,
             store: NoStore,
         })
+    }
+
+    pub fn try_left_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
+    where
+        S2: BlobStore + Clone,
+        E: From<S::Error> + From<S2::Error>,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<bool, E> + Copy,
+    {
+        left_combine_pred(
+            &TreeNodeRef::Owned(&self.node),
+            self.store.clone(),
+            &TreeNodeRef::Owned(&that.node),
+            that.store.clone(),
+            f,
+        )
     }
 
     pub fn try_left_combine_with<S2, C, F>(

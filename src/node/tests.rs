@@ -394,6 +394,21 @@ proptest! {
         let keys_intersect = a.inner_combine_pred(&b, |_, _| true);
         prop_assert!(binary_property_test(&a, &b, !keys_intersect, |a, b| !(a.is_some() & b.is_some())));
     }
+
+    #[test]
+    fn is_subset(a in arb_tree_contents(), b in arb_tree_contents()) {
+        let at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+        let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+        prop_assert_eq!(at_subset_bt, at_subset_bt_ref);
+    }
+
+    #[test]
+    fn is_subset_sample(a in arb_owned_tree(), b in arb_owned_tree()) {
+        let is_not_subset = a.left_combine_pred(&b, |_, _| false);
+        prop_assert!(binary_property_test(&a, &b, !is_not_subset, |a, b| !a.is_some() | b.is_some()))
+    }
 }
 
 #[test]
@@ -513,4 +528,48 @@ fn difference_with3() {
         }
     }
     assert_eq!(rbu, rbu_reference);
+}
+
+#[test]
+fn is_subset1() {
+    let a = btreemap! { vec![1] => vec![] };
+    let b = btreemap! {};
+    let at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+    let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+    assert_eq!(at_subset_bt, at_subset_bt_ref);
+}
+
+#[test]
+fn is_subset2() {
+    let a = btreemap! { vec![1, 1, 1] => vec![] };
+    let b = btreemap! { vec![1, 2] => vec![] };
+    let at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+    let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+    assert_eq!(at_subset_bt, at_subset_bt_ref);
+}
+
+#[test]
+fn is_subset3() {
+    let a = btreemap! { vec![1, 1] => vec![], vec![1, 2] => vec![] };
+    let b = btreemap! {};
+    let at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+    let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+    assert_eq!(at_subset_bt, at_subset_bt_ref);
+}
+
+#[test]
+fn is_subset4() {
+    let a = btreemap! { vec![1] => vec![] };
+    let b = btreemap! { vec![] => vec![], vec![1] => vec![] };
+    let at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+    let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+    assert_eq!(at_subset_bt, at_subset_bt_ref);
 }
