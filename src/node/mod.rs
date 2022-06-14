@@ -2579,6 +2579,106 @@ where
     Ok(())
 }
 
+/// Retain all parts of the tree for which that contains a prefix.
+///
+/// The predicate `f` is used to filter the tree `that` before applying it.
+/// If the predicate returns always false, this will result in the empty tree.
+fn remove_prefix_with<A, B, F>(
+    a: &mut OwnedTreeNode<A>,
+    ab: A,
+    b: &TreeNodeRef<B>,
+    bb: B,
+    f: F,
+) -> Result<(), A::Error>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    F: Fn(&ValueRef<B>) -> Result<bool, A::Error> + Copy,
+    A::Error: From<B::Error>,
+{
+    let ap = a.load_prefix(&ab)?;
+    let bp = b.load_prefix(&bb)?;
+    let n = common_prefix(ap.as_ref(), bp.as_ref());
+    if n == ap.len() && n == bp.len() {
+        // prefixes are identical
+        if b.value_opt().is_some() && f(&b.value_opt().unwrap())? {
+            // nuke it
+            a.set_value_slice(None);
+            a.set_children_arc_opt(None);
+        } else {
+            // recurse
+            let ac = a.load_children_mut(&ab)?;
+            let bc = b.load_children(&bb)?;
+            remove_prefix_children_with(ac, ab, bc, bb, f)?;
+        }
+    } else if n == bp.len() {
+        // that is a prefix of self
+        if b.value_opt().is_some() && f(&b.value_opt().unwrap())? {
+            // nuke it
+            a.set_value_slice(None);
+            a.set_children_arc_opt(None);
+        } else {
+            // recurse
+            a.split(&ab, n)?;
+            let ac = a.load_children_mut(&ab)?;
+            let bc = b.load_children(&bb)?;
+            remove_prefix_children_with(ac, ab, bc, bb, f)?;
+        }
+    } else if n == ap.len() {
+        // self is a prefix of that
+        let ac = a.load_children_mut(&ab)?;
+        let bc = [b.clone_shortened(&bb, n)?];
+        remove_prefix_children_with(ac, ab, TreeNodeIter::from_slice(&bc), bb, f)?;
+    } else {
+        // disjoint, nothing to do
+    }
+    a.canonicalize();
+    Ok(())
+}
+
+fn remove_prefix_children_with<'a, A, B, F>(
+    ac: &'a mut Vec<OwnedTreeNode<A>>,
+    ab: A,
+    bc: Option<TreeNodeIter<'a, B>>,
+    bb: B,
+    f: F,
+) -> Result<(), A::Error>
+where
+    A: BlobStore + Clone,
+    B: BlobStore + Clone,
+    F: Fn(&ValueRef<B>) -> Result<bool, A::Error> + Copy,
+    A::Error: From<B::Error>,
+{
+    if let Some(bc) = bc {
+        if ac.is_empty() {
+            return Ok(());
+        }
+        let mut acb = InPlaceVecBuilder::from(ac);
+        let mut bci = bc;
+        while let Some(ordering) = cmp(&acb, &mut bci) {
+            match ordering {
+                Ordering::Less => {
+                    acb.consume(1, true);
+                }
+                Ordering::Equal => {
+                    // the .unwrap() are safe because cmp guarantees that there is a value on both sides
+                    let ac = acb.source_slice_mut().get_mut(0).unwrap();
+                    let bc = bci.next().unwrap();
+                    remove_prefix_with(ac, ab.clone(), &bc, bb.clone(), f)?;
+                    // only move if the child is non-empty
+                    let non_empty = !ac.is_empty();
+                    acb.consume(1, non_empty);
+                }
+                Ordering::Greater => {
+                    // the .unwrap() is safe because cmp guarantees that there is a value
+                    let _ = bci.next().unwrap();
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct IterKey(Arc<Vec<u8>>);
 
@@ -2867,6 +2967,14 @@ impl Tree<NoStore> {
     ) {
         unwrap_safe(self.try_retain_prefix_with(that, |a| Ok(f(a))))
     }
+
+    pub fn remove_prefix_with<S2: BlobStore<Error = NoError> + Clone>(
+        &mut self,
+        that: &Tree<S2>,
+        f: impl Fn(&ValueRef<S2>) -> bool + Copy,
+    ) {
+        unwrap_safe(self.try_remove_prefix_with(that, |a| Ok(f(a))))
+    }
 }
 
 impl<S: BlobStore> Tree<S> {
@@ -3078,6 +3186,21 @@ impl<S: BlobStore + Clone> Tree<S> {
         S::Error: From<S2::Error> + From<NoError>,
     {
         retain_prefix_with(
+            &mut self.node,
+            self.store.clone(),
+            &TreeNodeRef::Owned(&that.node),
+            that.store.clone(),
+            f,
+        )
+    }
+
+    pub fn try_remove_prefix_with<S2, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), S::Error>
+    where
+        S2: BlobStore + Clone,
+        F: Fn(&ValueRef<S2>) -> Result<bool, S::Error> + Copy,
+        S::Error: From<S2::Error> + From<NoError>,
+    {
+        remove_prefix_with(
             &mut self.node,
             self.store.clone(),
             &TreeNodeRef::Owned(&that.node),

@@ -433,6 +433,17 @@ proptest! {
         let actual = to_btree_map(&at);
         assert_eq!(expected, actual);
     }
+
+    #[test]
+    fn remove_prefix_with(a in arb_tree_contents(), b in arb_tree_contents()) {
+        let mut at = mk_owned_tree(&a);
+        let bt = mk_owned_tree(&b);
+        at.remove_prefix_with(&bt, |_| true);
+        let mut expected = a;
+        expected.retain(|k, _| !b.keys().any(|bk| k.starts_with(bk)));
+        let actual = to_btree_map(&at);
+        assert_eq!(expected, actual);
+    }
 }
 
 #[test]
