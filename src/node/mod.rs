@@ -698,23 +698,24 @@ impl<S: BlobStore> OwnedTreeNode<S> {
     fn load_children(&self, store: &S) -> Result<Option<TreeNodeIter<S>>, S::Error> {
         match self.get_children() {
             Ok(children) => Ok(TreeNodeIter::from_slice(children)),
-            Err(id) => TreeNodeIter::load(id, store).map(Some),
+            Err(id) => TreeNodeIter::load(id, store),
         }
     }
 
     fn load_children_owned(&self, store: &S) -> Result<Option<TreeNodeIter<'static, S>>, S::Error> {
         match self.get_children() {
             Ok(children) => Ok(Some(TreeNodeIter::from_arc(children.clone()))),
-            Err(id) => TreeNodeIter::load(id, store).map(Some),
+            Err(id) => TreeNodeIter::load(id, store),
         }
     }
 
     fn load_children_mut(&mut self, store: &S) -> Result<&mut Vec<OwnedTreeNode<S>>, S::Error> {
         if let Err(id) = self.get_children() {
-            let mut iter = TreeNodeIter::load(id, store)?;
             let mut items = Vec::new();
-            while let Some(item) = iter.next() {
-                items.push(item.to_owned());
+            if let Some(mut iter) = TreeNodeIter::load(id, store)? {
+                while let Some(item) = iter.next() {
+                    items.push(item.to_owned());
+                }
             }
             self.set_children_arc(Arc::new(items));
         };
@@ -1117,7 +1118,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         } else {
             assert!(self.children_hdr.is_id());
             let id = self.children().slice();
-            TreeNodeIter::load(id, store).map(Some)
+            TreeNodeIter::load(id, store)
         }
     }
 
@@ -1550,17 +1551,17 @@ struct BorrowedTreeNodeIter<S> {
 }
 
 impl<S: BlobStore> BorrowedTreeNodeIter<S> {
-    fn load(id: &[u8], store: &S) -> Result<Self, S::Error> {
-        let (data, record_size) = if id.is_empty() {
-            (Blob::empty(), 0)
+    fn load(id: &[u8], store: &S) -> Result<Option<Self>, S::Error> {
+        Ok(if id.is_empty() {
+            None
         } else {
-            (store.read(&id[1..])?, id[0])
-        };
-        Ok(Self {
-            data,
-            offset: 0,
-            record_size,
-            p: PhantomData,
+            let (record_size, data) = (id[0], store.read(&id[1..])?);
+            Some(Self {
+                data,
+                offset: 0,
+                record_size,
+                p: PhantomData,
+            })
         })
     }
 
@@ -1623,8 +1624,8 @@ impl<S: BlobStore> TreeNodeIter<'static, S> {
 }
 
 impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
-    fn load(id: &[u8], store: &S) -> Result<Self, S::Error> {
-        Ok(Self::Borrowed(BorrowedTreeNodeIter::load(id, store)?))
+    fn load(id: &[u8], store: &S) -> Result<Option<Self>, S::Error> {
+        Ok(BorrowedTreeNodeIter::load(id, store)?.map(Self::Borrowed))
     }
 
     fn from_slice(slice: &'a [OwnedTreeNode<S>]) -> Option<Self> {
@@ -2332,6 +2333,8 @@ where
                     return Ok(true);
                 }
             }
+        } else {
+            return Ok(true);
         }
     } else {
         return Ok(true);
