@@ -498,6 +498,16 @@ pub struct OwnedValue<S> {
     p: PhantomData<S>,
 }
 
+impl<S> Debug for OwnedValue<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.hdr.is_data() {
+            write!(f, "Data{}", Hex::new(self.data.slice(self.hdr)))
+        } else {
+            write!(f, "Id{}", Hex::new(self.data.slice(self.hdr)))
+        }
+    }
+}
+
 impl AsRef<[u8]> for OwnedValue<NoStore> {
     fn as_ref(&self) -> &[u8] {
         self.data.slice(self.hdr)
