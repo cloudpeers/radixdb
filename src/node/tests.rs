@@ -573,3 +573,25 @@ fn is_subset4() {
     let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
     assert_eq!(at_subset_bt, at_subset_bt_ref);
 }
+
+#[test]
+fn is_subset5() {
+    let a = btreemap! { vec![] => vec![], vec![1] => vec![] };
+    let b = btreemap! { vec![] => vec![], vec![2] => vec![] };
+    let at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+    let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+    assert_eq!(at_subset_bt, at_subset_bt_ref);
+}
+
+#[test]
+fn is_subset6() {
+    let a = btreemap! { vec![1] => vec![] };
+    let b = btreemap! { vec![1] => vec![], vec![2] => vec![] };
+    let at = mk_owned_tree(&a);
+    let bt = mk_owned_tree(&b);
+    let at_subset_bt = !at.left_combine_pred(&bt, |_, _| false);
+    let at_subset_bt_ref = a.keys().all(|ak| b.contains_key(ak));
+    assert_eq!(at_subset_bt, at_subset_bt_ref);
+}

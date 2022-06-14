@@ -2310,36 +2310,21 @@ where
         }
         let ac = a.load_children(&ab)?;
         let bc = b.load_children(&bb)?;
-        return left_combine_children_pred(ac, ab, bc, bb, f);
+        left_combine_children_pred(ac, ab, bc, bb, f)
     } else if n == ap.len() {
         if a.value_opt().is_some() {
             return Ok(true);
-        }
-        let bc = b.clone_shortened(&bb, n)?;
-        let bc = TreeNodeRef::Owned(&bc);
-        if let Some(mut ac) = a.load_children(&ab)? {
-            while let Some(ac) = ac.next() {
-                if left_combine_pred(&ac, ab.clone(), &bc, bb.clone(), f)? {
-                    return Ok(true);
-                }
-            }
-        }
+        };
+        let ac = a.load_children(&ab)?;
+        let bc = [b.clone_shortened(&bb, n)?];
+        left_combine_children_pred(ac, ab, TreeNodeIter::from_slice(&bc), bb, f)
     } else if n == bp.len() {
-        let ac = a.clone_shortened(&ab, n)?;
-        let ac = TreeNodeRef::Owned(&ac);
-        if let Some(mut bc) = b.load_children(&bb)? {
-            while let Some(bc) = bc.next() {
-                if left_combine_pred(&ac, ab.clone(), &bc, bb.clone(), f)? {
-                    return Ok(true);
-                }
-            }
-        } else {
-            return Ok(true);
-        }
+        let ac = [a.clone_shortened(&ab, n)?];
+        let bc = b.load_children(&bb)?;
+        left_combine_children_pred(TreeNodeIter::from_slice(&ac), ab, bc, bb, f)
     } else {
-        return Ok(true);
+        Ok(true)
     }
-    Ok(false)
 }
 
 fn left_combine_children_pred<'a, A, B, E, F>(
@@ -2359,10 +2344,14 @@ where
         (Some(ac), Some(bc)) => {
             let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
             while let Some(x) = iter.next() {
-                if let (Some(a), Some(b)) = x? {
-                    if left_combine_pred(&a, ab.clone(), &b, bb.clone(), f)? {
-                        return Ok(true);
+                match x? {
+                    (Some(a), Some(b)) => {
+                        if left_combine_pred(&a, ab.clone(), &b, bb.clone(), f)? {
+                            return Ok(true);
+                        }
                     }
+                    (Some(_), None) => return Ok(true),
+                    _ => {}
                 }
             }
         }
