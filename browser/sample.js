@@ -705,11 +705,11 @@ function getImports() {
         const ret = getObject(arg0).msCrypto;
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper882 = function(arg0, arg1, arg2) {
+    imports.wbg.__wbindgen_closure_wrapper883 = function(arg0, arg1, arg2) {
         const ret = makeMutClosure(arg0, arg1, 412, __wbg_adapter_32);
         return addHeapObject(ret);
     };
-    imports.wbg.__wbindgen_closure_wrapper884 = function(arg0, arg1, arg2) {
+    imports.wbg.__wbindgen_closure_wrapper885 = function(arg0, arg1, arg2) {
         const ret = makeMutClosure(arg0, arg1, 412, __wbg_adapter_32);
         return addHeapObject(ret);
     };

@@ -607,6 +607,12 @@ impl OwnedTreeNode<NoStore> {
         let res = self.clone();
         unsafe { std::mem::transmute(res) }
     }
+
+    pub fn try_attached<S: BlobStore>(&self, store: &S) -> Result<OwnedTreeNode<S>, S::Error> {
+        let mut data = Vec::new();
+        self.serialize(&mut data, store)?;
+        Ok(OwnedTreeNode::<S>::deserialize(&data).unwrap())
+    }
 }
 
 impl<S> Debug for OwnedTreeNode<S> {
@@ -675,8 +681,7 @@ impl<S: BlobStore> OwnedTreeNode<S> {
         self.prefix().serialize(target, store)?;
         self.value().serialize(target, store)?;
         match self.get_children() {
-            Ok(children) => {
-                assert!(!children.is_empty());
+            Ok(children) if !children.is_empty() => {
                 let mut serialized = Vec::new();
                 let mut record_size = 0usize;
                 for child in children.iter() {
@@ -693,6 +698,10 @@ impl<S: BlobStore> OwnedTreeNode<S> {
                 target.push(Header::id(id.len() + 1).into());
                 target.push(record_size.try_into().unwrap_or_default());
                 target.extend_from_slice(&id);
+            }
+            Ok(_) => {
+                // todo: why can we get here at all? Empty children should always be represented as id none
+                target.push(Header::NONE.into());
             }
             Err(id) => {
                 target.push(self.children_hdr.into());
@@ -1096,7 +1105,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
     where
         S: BlobStore,
     {
-        todo!()
+        self.to_owned().detached(store)
     }
 
     fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error>
@@ -3230,6 +3239,11 @@ impl Tree<NoStore> {
     ) {
         unwrap_safe(self.try_remove_prefix_with(that, |a| Ok(f(a))))
     }
+
+    pub fn try_attached<S: BlobStore>(&self, store: S) -> Result<Tree<S>, S::Error> {
+        let node = self.node.try_attached(&store)?;
+        Ok(Tree { node, store })
+    }
 }
 
 impl<S: BlobStore> Tree<S> {
@@ -3254,6 +3268,14 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for Tree {
 impl<S: BlobStore + Clone> Tree<S> {
     pub(crate) fn try_dump(&self) -> Result<(), S::Error> {
         self.node.dump(0, &self.store)
+    }
+
+    pub fn try_detached(&self) -> Result<Tree<NoStore>, S::Error> {
+        let node = self.node.detached(&self.store)?;
+        Ok(Tree {
+            node,
+            store: NoStore,
+        })
     }
 
     /// Get the value for a given key

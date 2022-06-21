@@ -9,20 +9,6 @@ use crate::store::MemStore;
 
 use super::*;
 
-// fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
-//     proptest::strategy::Union::new_weighted(vec![
-//         (10, proptest::collection::vec(b'0'..b'9', 0..9)),
-//         (1, proptest::collection::vec(b'0'..b'9', 128..129)),
-//     ])
-// }
-
-// fn arb_value() -> impl Strategy<Value = Vec<u8>> {
-//     proptest::strategy::Union::new_weighted(vec![
-//         (10, proptest::collection::vec(any::<u8>(), 0..9)),
-//         (1, proptest::collection::vec(any::<u8>(), 128..129)),
-//     ])
-// }
-
 fn arb_prefix() -> impl Strategy<Value = Vec<u8>> {
     proptest::strategy::Union::new_weighted(vec![
         (10, proptest::collection::vec(b'0'..b'9', 0..9)),
@@ -221,6 +207,19 @@ proptest! {
         let reference = x;
         let tree = mk_owned_tree(&reference);
         let actual = to_btree_map(&tree);
+        prop_assert_eq!(reference, actual);
+    }
+
+    #[test]
+    fn attach_detach_roundtrip(x in arb_tree_contents()) {
+        let reference = x;
+        let tree = mk_owned_tree(&reference);
+        let store = MemStore::default();
+        let tree = tree.try_attached(store.clone()).unwrap();
+        let actual = tree.try_iter().map(|e| {
+            let (k, v) = e.unwrap();
+            (k.to_vec(), v.load(&store).unwrap().to_vec())
+        }).collect();
         prop_assert_eq!(reference, actual);
     }
 
