@@ -103,10 +103,13 @@ impl PagingFileInner {
         // splice in the length
         data.splice(0..0, u32::try_from(data.len()).unwrap().to_be_bytes());
         // append the data.
-        self.append(&mut data)
+        let res = self.append(&mut data)?;
+        trace!("append_length_prefixed {} {}", data.len(), res);
+        Ok(res)
     }
 
     pub(crate) fn load_length_prefixed(&mut self, start: u64) -> anyhow::Result<OwnedBlob> {
+        trace!("load_length_prefixed {}", start);
         let last_page = page_num(self.length, self.page_size);
         let page_num = page_num(start, self.page_size);
         // offset of start within its page
@@ -152,8 +155,6 @@ impl PagingFileInner {
         Ok(blob)
     }
 }
-
-#[derive(Debug)]
 pub struct PagingFile(Arc<parking_lot::Mutex<PagingFileInner>>);
 
 impl PagingFile {
@@ -164,11 +165,18 @@ impl PagingFile {
     }
 }
 
+impl std::fmt::Debug for PagingFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner = self.0.lock();
+        f.debug_tuple("PagingFile").field(&inner.length).finish()
+    }
+}
+
 impl BlobStore for PagingFile {
     type Error = anyhow::Error;
 
     fn read(&self, id: &[u8]) -> anyhow::Result<OwnedBlob> {
-        let id = u64::from_ne_bytes(id.try_into()?);
+        let id = u64::from_be_bytes(id.try_into()?);
         self.0.lock().load_length_prefixed(id)
     }
 

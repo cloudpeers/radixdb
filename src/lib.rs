@@ -6,6 +6,20 @@ pub use node::Tree as RadixTree;
 #[macro_use]
 extern crate maplit;
 
+struct Lit(String);
+
+impl std::fmt::Debug for Lit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl<'a> std::fmt::Display for Lit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// Utility to output something as hex
 struct Hex<'a>(&'a [u8], usize);
 

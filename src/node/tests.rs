@@ -220,6 +220,10 @@ proptest! {
             let (k, v) = e.unwrap();
             (k.to_vec(), v.load(&store).unwrap().to_vec())
         }).collect();
+        prop_assert_eq!(&reference, &actual);
+
+        let tree = tree.try_detached().unwrap();
+        let actual = to_btree_map(&tree);
         prop_assert_eq!(reference, actual);
     }
 

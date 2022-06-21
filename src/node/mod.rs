@@ -19,7 +19,7 @@ use inplace_vec_builder::InPlaceVecBuilder;
 
 use crate::{
     store::{unwrap_safe, Blob, BlobStore, MemStore, NoError, NoStore, OwnedBlob},
-    Hex,
+    Hex, Lit,
 };
 use std::fmt::Debug;
 #[cfg(test)]
@@ -617,27 +617,37 @@ impl OwnedTreeNode<NoStore> {
 
 impl<S> Debug for OwnedTreeNode<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ctext = Lit(self
+            .get_children()
+            .map(|c| format!("n={}", c.len()))
+            .unwrap_or_else(|id| {
+                if id.is_empty() {
+                    format!("Empty")
+                } else {
+                    format!("Id{}", Hex::new(id))
+                }
+            }));
         f.debug_struct("OwnedTreeNode")
             .field("prefix", &self.prefix())
             .field("value", &self.value())
-            .field("children", &self.get_children())
+            .field("children", &ctext)
             .finish()
     }
 }
 
 impl<S: BlobStore> OwnedTreeNode<S> {
     fn detached(&self, store: &S) -> Result<OwnedTreeNode<NoStore>, S::Error> {
-        let mut res = self.clone();
-        if self.prefix_hdr.is_id() {
-            res.set_prefix_slice(self.load_prefix(store)?.as_ref());
+        let mut res = OwnedTreeNode::EMPTY;
+        res.set_prefix_slice(self.load_prefix(store)?.as_ref());
+        res.set_value(self.load_value(store)?);
+        for mut children in self.load_children(store)? {
+            let mut rc = Vec::new();
+            while let Some(child) = children.next() {
+                rc.push(child.detached(store)?);
+            }
+            res.set_children_arc_opt(Some(Arc::new(rc)));
         }
-        if self.value_hdr.is_id() {
-            res.set_value(self.load_value(store)?);
-        }
-        if self.children_hdr.is_id() && !self.children_hdr.is_none() {
-            todo!()
-        }
-        Ok(unsafe { std::mem::transmute(res) })
+        Ok(res)
     }
 
     fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error> {

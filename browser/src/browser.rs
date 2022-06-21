@@ -100,13 +100,14 @@ fn tree_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
     let file = dir.open_file("test")?;
     let file = PagingFile::new(file, 1024 * 1024)?;
     let store: DynBlobStore = Arc::new(file);
+    // let store = Arc::new(MemStore::default());
     do_test(store)?;
     Ok(())
 }
 
 fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
-    let elems = (0..2000000).map(|i| {
-        if i % 100000 == 0 {
+    let elems = (0..2_000_000).map(|i| {
+        if i % 10000 == 0 {
             info!("{}", i);
         }
         (
@@ -127,7 +128,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, now() - t0);
     info!("attaching tree...");
     let t0 = now();
-    // let tree = tree.attach(store.clone())?;
+    let tree = tree.try_attached(store.clone())?;
     store.sync()?;
     info!("attached tree {:?} {} s", tree, now() - t0);
     info!("traversing attached tree values...");
@@ -146,7 +147,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, now() - t0);
     info!("detaching tree...");
     let t0 = now();
-    // let tree = tree.detached()?;
+    let tree = tree.try_detached()?;
     info!("detached tree {:?} {} s", tree, now() - t0);
     info!("traversing unattached tree...");
     let t0 = now();
