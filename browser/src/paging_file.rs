@@ -1,7 +1,7 @@
 use log::{debug, info, trace};
 use num_traits::Num;
 use parking_lot::Mutex;
-use radixdb::store::{Blob, BlobOwner, BlobStore};
+use radixdb::store::{Blob, BlobStore, OwnedBlob};
 use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
@@ -16,11 +16,9 @@ struct PagingFileInner {
     /// the syncfile we are wrapping
     inner: SyncFile,
     /// immutable full pages
-    full_pages: BTreeMap<u64, Arc<dyn BlobOwner>>,
+    full_pages: BTreeMap<u64, Arc<Page>>,
     /// appendable last page
     last_page: Arc<Vec<u8>>,
-    /// the current last page, as a dyn
-    last_page_dyn: Option<Arc<dyn BlobOwner>>,
     /// page size
     page_size: u64,
     /// current length of the file
@@ -41,7 +39,6 @@ impl PagingFileInner {
             last_page,
             length,
             full_pages: BTreeMap::new(),
-            last_page_dyn: None,
         })
     }
 
@@ -55,13 +52,11 @@ impl PagingFileInner {
         let last_page = Arc::make_mut(&mut self.last_page);
         self.inner.write(page_range.start, last_page.clone())?;
         let page = Page(last_page.as_slice().into());
-        let page: Arc<dyn BlobOwner> = Arc::new(page);
+        let page = Arc::new(page);
         self.full_pages.insert(page0, page);
         self.length = page_range.end;
         // clear the page
         last_page.fill(0u8);
-        // clear the last page dyn, since it is not valid anymore
-        self.last_page_dyn = None;
         let page1 = page_num(self.length, self.page_size);
         assert!(page0 + 1 == page1);
         Ok(())
@@ -99,8 +94,6 @@ impl PagingFileInner {
         let offset = offset_within_page(self.length, self.page_size);
         // copy into the page
         last_page[offset..offset + data.len()].copy_from_slice(data);
-        // clear the last page dyn, since it is not valid anymore
-        self.last_page_dyn = None;
         let res = self.length;
         self.length += len;
         Ok(res)
@@ -113,32 +106,50 @@ impl PagingFileInner {
         self.append(&mut data)
     }
 
-    pub(crate) fn load_length_prefixed(&mut self, start: u64) -> anyhow::Result<Blob> {
+    pub(crate) fn load_length_prefixed(&mut self, start: u64) -> anyhow::Result<OwnedBlob> {
         let last_page = page_num(self.length, self.page_size);
         let page_num = page_num(start, self.page_size);
         // offset of start within its page
         let offset = offset_within_page(start, self.page_size);
-        let page: &Arc<dyn BlobOwner> = if page_num == last_page {
-            // trace!("hit to last page {}", page_num);
+        let blob: OwnedBlob = if page_num == last_page {
+            trace!("hit to last page {}", page_num);
             // end of the validity of the current page
             let end = offset_within_page(self.length, self.page_size);
-            let last_page = LastPage(self.last_page.clone(), end);
-            self.last_page_dyn
-                .get_or_insert_with(|| Arc::new(last_page))
+            let slice = &self.last_page[..end];
+            anyhow::ensure!(offset + 4 <= slice.len());
+            let length =
+                u32::from_be_bytes(self.last_page[offset..offset + 4].try_into().unwrap()) as usize;
+            anyhow::ensure!(offset + 4 + length <= slice.len());
+            let slice: &[u8] = &self.last_page[offset + 4..offset + 4 + length];
+            let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
+            Blob::owned_new(slice, Some(self.last_page.clone()))
         } else if let Some(page) = self.full_pages.get(&page_num) {
-            // trace!("hit to cached page {}", page_num);
-            page
+            trace!("hit to cached page {}", page_num);
+            let page = page.clone();
+            let slice = page.0.as_ref();
+            anyhow::ensure!(offset + 4 <= slice.len());
+            let length = u32::from_be_bytes(slice[offset..offset + 4].try_into().unwrap()) as usize;
+            anyhow::ensure!(offset + 4 + length <= slice.len());
+            let slice: &[u8] = &slice[offset + 4..offset + 4 + length];
+            let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
+            Blob::owned_new(slice, Some(page))
         } else {
             anyhow::ensure!(page_num < last_page);
-            // trace!("cache miss {}", page_num);
+            trace!("cache miss {}", page_num);
             let page_range = page_range(start, self.page_size);
             let page: Arc<[u8]> = self.inner.read(page_range)?.into();
             let page = Page(page);
-            let page: Arc<dyn BlobOwner> = Arc::new(page);
-            self.full_pages.insert(page_num, page);
-            self.full_pages.get(&page_num).unwrap()
+            let page = Arc::new(page);
+            self.full_pages.insert(page_num, page.clone());
+            let slice = page.0.as_ref();
+            anyhow::ensure!(offset + 4 <= slice.len());
+            let length = u32::from_be_bytes(slice[offset..offset + 4].try_into().unwrap()) as usize;
+            anyhow::ensure!(offset + 4 + length <= slice.len());
+            let slice: &[u8] = &slice[offset + 4..offset + 4 + length];
+            let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
+            Blob::owned_new(slice, Some(page))
         };
-        Blob::new(page.clone(), offset)
+        Ok(blob)
     }
 }
 
@@ -156,12 +167,14 @@ impl PagingFile {
 impl BlobStore for PagingFile {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob> {
+    fn read(&self, id: &[u8]) -> anyhow::Result<OwnedBlob> {
+        let id = u64::from_ne_bytes(id.try_into()?);
         self.0.lock().load_length_prefixed(id)
     }
 
-    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
-        self.0.lock().append_length_prefixed(data.to_vec())
+    fn write(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let id = self.0.lock().append_length_prefixed(data.to_vec())?;
+        Ok(id.to_be_bytes().to_vec())
     }
 
     fn sync(&self) -> anyhow::Result<()> {
@@ -208,44 +221,5 @@ const ALIGNMENT: u64 = 8;
 #[derive(Debug)]
 struct Page(Arc<[u8]>);
 
-impl BlobOwner for Page {
-    fn inc(&self, offset: usize) -> bool {
-        let data = &self.0;
-        if offset + 4 <= data.len() {
-            let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-            offset + 4 + length <= data.len()
-        } else {
-            false
-        }
-    }
-
-    fn get_slice(&self, offset: usize) -> &[u8] {
-        let data = &self.0;
-        let base = offset + 4;
-        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        &data[base..base + length]
-    }
-}
-
 #[derive(Debug)]
 struct LastPage(Arc<Vec<u8>>, usize);
-
-impl BlobOwner for LastPage {
-    fn get_slice(&self, offset: usize) -> &[u8] {
-        let data = &self.0;
-        let base = offset + 4;
-        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        &data[base..base + length]
-    }
-
-    fn is_valid(&self, offset: usize) -> bool {
-        let data = &self.0;
-        let end = self.1;
-        if offset + 4 <= end {
-            let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-            offset + 4 + length <= data.len()
-        } else {
-            false
-        }
-    }
-}

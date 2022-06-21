@@ -3,7 +3,7 @@ use futures::{
     channel::{mpsc, oneshot},
     executor::block_on,
 };
-use radixdb::store::{Blob, BlobStore};
+use radixdb::store::{Blob, BlobStore, OwnedBlob};
 use std::fmt::Debug;
 use std::ops::Range;
 
@@ -74,7 +74,7 @@ pub(crate) enum Command {
         dir_name: SharedStr,
         file_name: SharedStr,
         offset: u64,
-        cb: oneshot::Sender<anyhow::Result<Blob>>,
+        cb: oneshot::Sender<anyhow::Result<OwnedBlob>>,
     },
     Shutdown,
 }
@@ -230,7 +230,8 @@ impl SyncFile {
 impl BlobStore for SyncFile {
     type Error = anyhow::Error;
 
-    fn read(&self, id: u64) -> anyhow::Result<Blob> {
+    fn read(&self, id: &[u8]) -> anyhow::Result<OwnedBlob> {
+        let id = u64::from_be_bytes(id.try_into()?);
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::ReadFileLengthPrefixed {
             offset: id,
@@ -253,7 +254,7 @@ impl BlobStore for SyncFile {
         Ok(())
     }
 
-    fn write(&self, data: &[u8]) -> anyhow::Result<u64> {
+    fn write(&self, data: &[u8]) -> anyhow::Result<Vec<u8>> {
         let (tx, rx) = oneshot::channel();
         self.tx.unbounded_send(Command::AppendFileLengthPrefixed {
             dir_name: self.dir_name.clone(),
@@ -262,6 +263,6 @@ impl BlobStore for SyncFile {
             cb: tx,
         })?;
         let offset = block_on(rx)??;
-        Ok(offset)
+        Ok(offset.to_be_bytes().to_vec())
     }
 }

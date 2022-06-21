@@ -1,13 +1,14 @@
 //! This is what is executed in the browser, basically the main
 use crate::{
     err_to_jsvalue, web_cache_fs::WebCacheDir, worker_scope, JsError, PagingFile, SimpleWebCacheFs,
+    SyncFs,
 };
 use futures::FutureExt;
 use js_sys::{Date, Promise, JSON};
 use log::{info, trace};
 use parking_lot::Mutex;
 use radixdb::{
-    store::{Blob, DynBlobStore},
+    store::{Blob, DynBlobStore, MemStore},
     RadixTree,
 };
 use std::{
@@ -42,10 +43,12 @@ async fn pool_test() -> anyhow::Result<()> {
         async move {
             // info!("starting cache_bench");
             // cache_bench().await.unwrap();
-            info!("starting sqlite_test!");
-            sqlite_test(pool2).unwrap();
-            info!("looking at the cache");
-            cache_list().await.unwrap();
+            // info!("starting sqlite_test!");
+            // sqlite_test(pool2).unwrap();
+            info!("starting tree test!");
+            tree_test_sync(pool2).unwrap();
+            // info!("looking at the cache");
+            // cache_list().await.unwrap();
             let _ = tx.send(());
             // info!("starting cache_test_sync");
             // cache_test_sync(pool2).unwrap();
@@ -89,6 +92,18 @@ fn now() -> f64 {
     Date::now() / 1000.0
 }
 
+fn tree_test_sync(pool: ThreadPool) -> anyhow::Result<()> {
+    let fs = SimpleWebCacheFs::new(pool);
+    fs.delete_dir("sync")?;
+    let dir = fs.open_dir("sync")?;
+    dir.delete_file("test")?;
+    let file = dir.open_file("test")?;
+    let file = PagingFile::new(file, 1024 * 1024)?;
+    let store: DynBlobStore = Arc::new(file);
+    do_test(store)?;
+    Ok(())
+}
+
 fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     let elems = (0..2000000).map(|i| {
         if i % 100000 == 0 {
@@ -112,7 +127,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, now() - t0);
     info!("attaching tree...");
     let t0 = now();
-    let tree = tree.attach(store.clone())?;
+    // let tree = tree.attach(store.clone())?;
     store.sync()?;
     info!("attached tree {:?} {} s", tree, now() - t0);
     info!("traversing attached tree values...");
@@ -131,7 +146,7 @@ fn do_test(mut store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, now() - t0);
     info!("detaching tree...");
     let t0 = now();
-    let tree = tree.detached()?;
+    // let tree = tree.detached()?;
     info!("detached tree {:?} {} s", tree, now() - t0);
     info!("traversing unattached tree...");
     let t0 = now();
