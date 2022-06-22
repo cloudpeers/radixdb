@@ -181,6 +181,15 @@ impl From<Arc<Vec<u8>>> for OwnedBlob {
         Self::owned_new(bytes, Some(v))
     }
 }
+impl<const N: usize> From<Arc<[u8; N]>> for OwnedBlob {
+    fn from(v: Arc<[u8; N]>) -> Self {
+        let bytes: &[u8] = v.as_ref();
+        // extend the lifetime
+        // the array will be unchanged and will be kept alive by the arc
+        let bytes: &'static [u8] = unsafe { std::mem::transmute(bytes) };
+        Self::owned_new(bytes, Some(v))
+    }
+}
 
 /// Type for a dynamic blob store
 ///

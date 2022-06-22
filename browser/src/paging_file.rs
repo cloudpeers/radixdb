@@ -16,7 +16,7 @@ struct PagingFileInner {
     /// the syncfile we are wrapping
     inner: SyncFile,
     /// immutable full pages
-    full_pages: BTreeMap<u64, Arc<Page>>,
+    full_pages: BTreeMap<u64, Arc<Vec<u8>>>,
     /// appendable last page
     last_page: Arc<Vec<u8>>,
     /// page size
@@ -51,8 +51,7 @@ impl PagingFileInner {
         debug!("closing page {} {:?}", page0, page_range);
         let last_page = Arc::make_mut(&mut self.last_page);
         self.inner.write(page_range.start, last_page.clone())?;
-        let page = Page(last_page.as_slice().into());
-        let page = Arc::new(page);
+        let page = Arc::new(last_page.as_slice().into());
         self.full_pages.insert(page0, page);
         self.length = page_range.end;
         // clear the page
@@ -114,45 +113,27 @@ impl PagingFileInner {
         let page_num = page_num(start, self.page_size);
         // offset of start within its page
         let offset = offset_within_page(start, self.page_size);
-        let blob: OwnedBlob = if page_num == last_page {
+        let page: OwnedBlob = if page_num == last_page {
             trace!("hit to last page {}", page_num);
             // end of the validity of the current page
             let end = offset_within_page(self.length, self.page_size);
-            let slice = &self.last_page[..end];
-            anyhow::ensure!(offset + 4 <= slice.len());
-            let length =
-                u32::from_be_bytes(self.last_page[offset..offset + 4].try_into().unwrap()) as usize;
-            anyhow::ensure!(offset + 4 + length <= slice.len());
-            let slice: &[u8] = &self.last_page[offset + 4..offset + 4 + length];
-            let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
-            Blob::owned_new(slice, Some(self.last_page.clone()))
+            OwnedBlob::from(self.last_page.clone()).slice(..end)
         } else if let Some(page) = self.full_pages.get(&page_num) {
             trace!("hit to cached page {}", page_num);
-            let page = page.clone();
-            let slice = page.0.as_ref();
-            anyhow::ensure!(offset + 4 <= slice.len());
-            let length = u32::from_be_bytes(slice[offset..offset + 4].try_into().unwrap()) as usize;
-            anyhow::ensure!(offset + 4 + length <= slice.len());
-            let slice: &[u8] = &slice[offset + 4..offset + 4 + length];
-            let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
-            Blob::owned_new(slice, Some(page))
+            OwnedBlob::from(page.clone())
         } else {
             anyhow::ensure!(page_num < last_page);
             trace!("cache miss {}", page_num);
             let page_range = page_range(start, self.page_size);
-            let page: Arc<[u8]> = self.inner.read(page_range)?.into();
-            let page = Page(page);
-            let page = Arc::new(page);
+            let page: Arc<Vec<u8>> = self.inner.read(page_range)?.into();
             self.full_pages.insert(page_num, page.clone());
-            let slice = page.0.as_ref();
-            anyhow::ensure!(offset + 4 <= slice.len());
-            let length = u32::from_be_bytes(slice[offset..offset + 4].try_into().unwrap()) as usize;
-            anyhow::ensure!(offset + 4 + length <= slice.len());
-            let slice: &[u8] = &slice[offset + 4..offset + 4 + length];
-            let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
-            Blob::owned_new(slice, Some(page))
+            OwnedBlob::from(page)
         };
-        Ok(blob)
+
+        anyhow::ensure!(offset + 4 <= page.len());
+        let length = u32::from_be_bytes(page[offset..offset + 4].try_into().unwrap()) as usize;
+        anyhow::ensure!(offset + 4 + length <= page.len());
+        Ok(page.slice(offset + 4..offset + 4 + length))
     }
 }
 pub struct PagingFile(Arc<parking_lot::Mutex<PagingFileInner>>);
@@ -168,7 +149,9 @@ impl PagingFile {
 impl std::fmt::Debug for PagingFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let inner = self.0.lock();
-        f.debug_tuple("PagingFile").field(&inner.length).finish()
+        f.debug_struct("PagingFile")
+            .field("length", &inner.length)
+            .finish()
     }
 }
 
@@ -225,9 +208,3 @@ fn align<T: Num + Copy>(offset: T, alignment: T) -> Range<T> {
 }
 
 const ALIGNMENT: u64 = 8;
-
-#[derive(Debug)]
-struct Page(Arc<[u8]>);
-
-#[derive(Debug)]
-struct LastPage(Arc<Vec<u8>>, usize);
