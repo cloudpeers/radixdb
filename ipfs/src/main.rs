@@ -2,6 +2,14 @@
 //! A radix tree that implements a content-addressed store for ipfs
 //!
 //!
+use libipld::{
+    cbor::{DagCbor, DagCborCodec},
+    codec::Codec,
+    multihash::Code,
+    raw::RawCodec,
+    store::StoreParams,
+    Cid, DefaultParams, Ipld,
+};
 use radixdb::{
     node::{DowncastConverter, IdentityConverter},
     store::{Blob, BlobStore, DynBlobStore, MemStore, NoError, OwnedBlob, PagedFileStore},
@@ -15,23 +23,9 @@ use tempfile::tempfile;
 const ALIAS: &[u8] = "alias".as_bytes();
 /// the actual block data
 const BLOCK: &[u8] = "block".as_bytes();
-/// links of a block
-const LINKS: &[u8] = "links".as_bytes();
-/// id -> cid
-///
-/// cids<id> => cid
-const CIDS: &[u8] = "cids".as_bytes();
-/// cid -> id
-///
-/// ids<hash> => id
-const IDS: &[u8] = "ids".as_bytes();
 
 fn format_prefix(prefix: &[u8]) -> anyhow::Result<String> {
-    Ok(if prefix.starts_with(IDS) {
-        format!("\"ids\" {}", hex::encode(&prefix[IDS.len()..]))
-    } else if prefix.starts_with(CIDS) {
-        format!("\"cids\"  {}", hex::encode(&prefix[CIDS.len()..]))
-    } else if prefix.starts_with(ALIAS) {
+    Ok(if prefix.starts_with(ALIAS) {
         format!("\"alias\"   {}", hex::encode(&prefix[BLOCK.len()..]))
     } else if prefix.starts_with(BLOCK) {
         format!("\"block\"   {}", hex::encode(&prefix[BLOCK.len()..]))
@@ -44,13 +38,6 @@ fn format_value(_prefix: &[u8], value: &[u8]) -> anyhow::Result<String> {
     Ok(hex::encode(value))
 }
 
-fn id_key(hash: &[u8]) -> Vec<u8> {
-    let mut res = Vec::with_capacity(IDS.len() + hash.len());
-    res.extend_from_slice(IDS);
-    res.extend_from_slice(hash);
-    res
-}
-
 fn alias_key(alias: &[u8]) -> Vec<u8> {
     let mut res = Vec::with_capacity(ALIAS.len() + alias.len());
     res.extend_from_slice(ALIAS);
@@ -58,45 +45,11 @@ fn alias_key(alias: &[u8]) -> Vec<u8> {
     res
 }
 
-fn block_key(id: u64) -> Vec<u8> {
-    let mut res = Vec::with_capacity(BLOCK.len() + 8);
+fn block_key(id: &Cid) -> Vec<u8> {
+    let mut res = Vec::with_capacity(BLOCK.len());
     res.extend_from_slice(BLOCK);
-    res.extend_from_slice(&id.to_be_bytes());
+    id.write_bytes(&mut res).unwrap();
     res
-}
-
-fn links_key(id: u64) -> Vec<u8> {
-    let mut res = Vec::with_capacity(BLOCK.len() + 8 + LINKS.len());
-    res.extend_from_slice(BLOCK);
-    res.extend_from_slice(&id.to_be_bytes());
-    res.extend_from_slice(LINKS);
-    res
-}
-
-fn cid_key(id: u64) -> Vec<u8> {
-    let mut res = Vec::with_capacity(CIDS.len() + 8);
-    res.extend_from_slice(CIDS);
-    res.extend_from_slice(&id.to_be_bytes());
-    res
-}
-
-fn serialize_links(links: &BTreeSet<u64>) -> Vec<u8> {
-    let mut res = Vec::with_capacity(links.len());
-    for link in links {
-        res.extend_from_slice(&link.to_be_bytes());
-    }
-    res
-}
-
-fn links_iter(blob: &[u8]) -> anyhow::Result<impl Iterator<Item = u64>> {
-    anyhow::ensure!(blob.len() % 8 == 0);
-    // todo: avoid going via a vec
-    let ids = blob
-        .as_ref()
-        .chunks_exact(8)
-        .map(|chunk| u64::from_be_bytes(chunk.try_into().unwrap()))
-        .collect::<Vec<_>>();
-    Ok(ids.into_iter())
 }
 
 struct Ipfs {
@@ -124,28 +77,17 @@ impl<S: BlobStore + Clone> RadixTreeExt<S> for RadixTree<S> {
     }
 }
 
-struct Block {
-    hash: Vec<u8>,
-    data: Vec<u8>,
-    links: Vec<Vec<u8>>,
-}
+type Block = libipld::Block<libipld::store::DefaultParams>;
 
-impl Block {
-    fn new(data: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let hash = hasher.finalize().to_vec();
-        Self {
-            hash,
-            data: data.to_vec(),
-            links: Vec::new(),
-        }
-    }
+fn get_links(cid: &Cid, data: &[u8], cids: &mut Vec<Cid>) -> anyhow::Result<()> {
+    let codec = <DefaultParams as StoreParams>::Codecs::try_from(cid.codec())?;
+    codec.references::<Ipld, Vec<Cid>>(data, cids)?;
+    Ok(())
 }
 
 impl Ipfs {
     /// compute the set of all live ids
-    fn live_set(&self) -> anyhow::Result<BTreeSet<u64>> {
+    fn live_set(&self) -> anyhow::Result<BTreeSet<Cid>> {
         // all ids
         let mut all = self.aliases()?;
         // todo: add temp pins!
@@ -157,7 +99,7 @@ impl Ipfs {
             std::mem::swap(&mut new, &mut tmp);
             new.clear();
             for parent in &tmp {
-                if let Some(children) = self.links(*parent)? {
+                if let Some(children) = self.links(parent)? {
                     for child in children {
                         if !all.insert(child) {
                             new.insert(child);
@@ -178,37 +120,8 @@ impl Ipfs {
         println!("{}", t0.elapsed().as_secs_f64());
         let t0 = Instant::now();
         println!("taking out the dead");
-        if true {
-            for id in dead {
-                if let Some(cid) = self.get_cid(id)? {
-                    self.root.remove(&id_key(&cid))?;
-                }
-                self.root.remove(&links_key(id))?;
-                self.root.remove(&block_key(id))?;
-                self.root.remove(&cid_key(id))?;
-            }
-        } else {
-            let dead_ids: RadixTree = dead
-                .iter()
-                .cloned()
-                .flat_map(|id| {
-                    let mut res = vec![
-                        (links_key(id), vec![]),
-                        (block_key(id), vec![]),
-                        (cid_key(id), vec![]),
-                    ];
-                    if let Some(cid) = self.get_cid(id).unwrap() {
-                        res.push((id_key(&cid), vec![]))
-                    }
-                    res
-                })
-                .collect();
-            todo!()
-            // let remove = |_, _| -> Result<Option<OwnedBlob>, NoError> {
-            //     Ok(None)
-            // };
-            // self.root
-            //     .try_left_combine_with(&dead_ids, &remove)?;
+        for id in dead {
+            self.root.remove(&block_key(&id))?;
         }
         println!("{}", t0.elapsed().as_secs_f64());
         Ok(())
@@ -219,28 +132,23 @@ impl Ipfs {
         self.store.sync()
     }
 
-    fn aliases(&self) -> anyhow::Result<BTreeSet<u64>> {
+    fn aliases(&self) -> anyhow::Result<BTreeSet<Cid>> {
         self.root
             .try_scan_prefix(ALIAS)?
             .map(|r| {
                 r.and_then(|(_, v)| {
-                    let blob = v.load(&self.store)?;
-                    Ok(u64::from_be_bytes(blob.as_ref().try_into()?))
+                    v.load(&self.store)
+                        .and_then(|b| Ok(Cid::read_bytes(b.as_ref())?))
                 })
             })
             .collect()
     }
 
     /// all ids we know of
-    fn ids(&self) -> anyhow::Result<Vec<u64>> {
+    fn ids(&self) -> anyhow::Result<Vec<Cid>> {
         self.root
-            .try_scan_prefix(IDS)?
-            .map(|r| {
-                r.and_then(|(_, v)| {
-                    let blob = v.load(&self.store)?;
-                    Ok(u64::from_be_bytes(blob.as_ref().try_into()?))
-                })
-            })
+            .try_scan_prefix(BLOCK)?
+            .map(|r| r.and_then(|(k, _)| Ok(Cid::read_bytes(&k.as_ref()[5..])?)))
             .collect()
     }
 
@@ -251,74 +159,36 @@ impl Ipfs {
         })
     }
 
-    fn get_id(&self, hash: &[u8]) -> anyhow::Result<Option<u64>> {
-        let id_key = id_key(hash);
-        Ok(if let Some(blob) = self.root.try_get(&id_key)? {
-            let blob = blob.load(&self.store)?;
-            let id: [u8; 8] = blob.as_ref().try_into()?;
-            Some(u64::from_be_bytes(id))
-        } else {
-            None
-        })
-    }
-
-    fn get_cid(&self, id: u64) -> anyhow::Result<Option<OwnedBlob>> {
-        let id_key = cid_key(id);
-        let t = self.root.try_get(&id_key)?;
-        let t = t.map(|x| x.load(&self.store)).transpose()?;
-        Ok(t)
-    }
-
-    fn get_block(&self, id: u64) -> anyhow::Result<Option<OwnedBlob>> {
+    fn get_block(&self, id: &Cid) -> anyhow::Result<Option<OwnedBlob>> {
         let block_key = block_key(id);
         let t = self.root.try_get(&block_key)?;
         let t = t.map(|x| x.load(&self.store)).transpose()?;
         Ok(t)
     }
 
-    fn has_block(&self, id: u64) -> anyhow::Result<bool> {
+    fn has_block(&self, id: &Cid) -> anyhow::Result<bool> {
         let block_key = block_key(id);
         self.root.try_contains_key(&block_key)
     }
 
-    fn alias(&mut self, name: &[u8], hash: Option<&[u8]>) -> anyhow::Result<()> {
-        if let Some(hash) = hash {
-            let id = self.get_or_create_id(hash)?;
-            self.root.insert(&alias_key(name), &id.to_be_bytes())?;
+    fn alias(&mut self, name: &[u8], cid: Option<&Cid>) -> anyhow::Result<()> {
+        if let Some(cid) = cid {
+            self.root.insert(&alias_key(name), &cid.to_bytes())?;
         } else {
             self.root.remove(&alias_key(name))?;
         }
         Ok(())
     }
 
-    fn links(&self, id: u64) -> anyhow::Result<Option<impl Iterator<Item = u64>>> {
-        Ok(if let Some(blob) = self.root.try_get(&links_key(id))? {
+    fn links(&self, id: &Cid) -> anyhow::Result<Option<impl Iterator<Item = Cid>>> {
+        let key = block_key(id);
+        Ok(if let Some(blob) = self.root.try_get(&key)? {
             let blob = blob.load(&self.store)?;
-            Some(links_iter(blob.as_ref())?)
+            let mut t = Vec::new();
+            get_links(id, &blob, &mut t)?;
+            Some(t.into_iter())
         } else {
             None
-        })
-    }
-
-    fn get_or_create_id(&mut self, hash: &[u8]) -> anyhow::Result<u64> {
-        let id_key = id_key(hash);
-        Ok(if let Some(blob) = self.root.try_get(&id_key)? {
-            let id: [u8; 8] = blob.load(&self.store)?.as_ref().try_into()?;
-            u64::from_be_bytes(id)
-        } else {
-            let cids = self.root.try_filter_prefix(CIDS)?;
-            // compute higest id
-            let id = if let Some((prefix, _)) = cids.try_last_entry(vec![])? {
-                // get id from prefix and inc by one
-                let id: [u8; 8] = prefix[prefix.len() - 8..].try_into()?;
-                u64::from_be_bytes(id) + 1
-            } else {
-                0
-            };
-            let cid_key = cid_key(id);
-            self.root.insert(&id_key, &u64::to_be_bytes(id))?;
-            self.root.insert(&cid_key, &hash)?;
-            id
         })
     }
 
@@ -330,34 +200,18 @@ impl Ipfs {
         //     })
     }
 
-    fn put(&mut self, block: &Block) -> anyhow::Result<u64> {
-        let id = self.get_or_create_id(&block.hash)?;
-        let block_key = block_key(id);
-        let link_ids = block
-            .links
-            .iter()
-            .map(|link| self.get_or_create_id(link))
-            .collect::<anyhow::Result<BTreeSet<_>>>()?;
-        let links = serialize_links(&link_ids);
-        self.root.insert(&block_key, &block.data)?;
-        if !links.is_empty() {
-            self.root.insert(&links_key(id), &links)?;
-        }
-        Ok(id)
+    fn put(&mut self, block: &Block) -> anyhow::Result<()> {
+        let block_key = block_key(&block.cid());
+        self.root.insert(&block_key, block.data())?;
+        Ok(())
     }
-    fn get(&mut self, hash: &[u8]) -> anyhow::Result<Option<OwnedBlob>> {
-        Ok(if let Some(id) = self.get_id(hash)? {
-            self.get_block(id)?
-        } else {
-            None
-        })
+
+    fn get(&mut self, cid: &Cid) -> anyhow::Result<Option<OwnedBlob>> {
+        self.get_block(cid)
     }
-    fn has(&mut self, hash: &[u8]) -> anyhow::Result<bool> {
-        Ok(if let Some(id) = self.get_id(hash)? {
-            self.has_block(id)?
-        } else {
-            false
-        })
+
+    fn has(&mut self, cid: &Cid) -> anyhow::Result<bool> {
+        self.has_block(cid)
     }
 }
 
@@ -369,16 +223,16 @@ fn main() -> anyhow::Result<()> {
     let mut hashes = Vec::new();
     let blocks = (0..100_000u64)
         .map(|i| {
-            let mut data = [0u8; 10000];
+            let mut data = vec![0u8; 10000];
             data[0..8].copy_from_slice(&i.to_be_bytes());
-            Block::new(&data)
+            Block::encode(DagCborCodec, Code::Sha2_256, &Ipld::Bytes(data)).unwrap()
         })
         .collect::<Vec<_>>();
     let t0 = Instant::now();
     for (i, block) in blocks.into_iter().enumerate() {
         println!("putting block {}", i);
         ipfs.put(&block)?;
-        hashes.push(block.hash);
+        hashes.push(*block.cid());
     }
     println!("finished {}", t0.elapsed().as_secs_f64());
     let t0 = Instant::now();
@@ -386,16 +240,8 @@ fn main() -> anyhow::Result<()> {
     ipfs.commit()?;
     println!("done {:?} {}", store, t0.elapsed().as_secs_f64());
     // ipfs.dump()?;
-    let id1 = ipfs.get_or_create_id(b"abcd")?;
-    let id2 = ipfs.get_or_create_id(b"abcd")?;
-    let id3 = ipfs.get_or_create_id(b"abce")?;
-    ipfs.put(&Block {
-        hash: b"abcd".to_vec(),
-        data: b"SOMEDATAFINALLY".to_vec(),
-        links: vec![b"abce".to_vec(), b"abcf".to_vec(), b"abcg".to_vec()],
-    })?;
-    let data = ipfs.get(b"abcd")?;
-    ipfs.alias(b"root1", Some(b"abcd"))?;
+    // let data = ipfs.get(b"abcd")?;
+    // ipfs.alias(b"root1", Some(b"abcd"))?;
     // ipfs.dump()?;
     println!("{:?}", ipfs.live_set()?);
     ipfs.alias(b"root1", None)?;

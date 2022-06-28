@@ -4,8 +4,10 @@ use parking_lot::Mutex;
 use std::{
     any::Any,
     borrow::Borrow,
+    cmp::Ordering,
     collections::BTreeMap,
     fmt::Debug,
+    hash::Hash,
     ops::{Bound, Deref, RangeBounds},
     sync::Arc,
 };
@@ -63,6 +65,36 @@ impl<'a> Borrow<[u8]> for Blob<'a> {
 
 pub type OwnedBlob = Blob<'static>;
 
+impl<'a> Hash for Blob<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.data.hash(state);
+    }
+}
+
+impl<'a, 'b> PartialEq<Blob<'b>> for Blob<'a> {
+    fn eq(&self, other: &Blob<'b>) -> bool {
+        self.data == other.data
+    }
+
+    fn ne(&self, other: &Blob<'b>) -> bool {
+        self.data != other.data
+    }
+}
+
+impl<'a> Eq for Blob<'a> {}
+
+impl<'a, 'b> PartialOrd<Blob<'b>> for Blob<'a> {
+    fn partial_cmp(&self, other: &Blob<'b>) -> Option<Ordering> {
+        self.data.partial_cmp(other.data)
+    }
+}
+
+impl<'a> Ord for Blob<'a> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.data.cmp(other.data)
+    }
+}
+
 impl<'a> Blob<'a> {
     pub fn empty() -> Self {
         Self::new(&[])
@@ -92,11 +124,6 @@ impl<'a> Blob<'a> {
         } else {
             OwnedBlob::copy_from_slice(&self.data)
         }
-    }
-
-    /// When calling this with an owner, you promise that keeping the owner alive will keep the slice valid!
-    pub fn owned_new(data: &'a [u8], owner: Option<Arc<dyn Any>>) -> Self {
-        Self { data, owner }
     }
 
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Self {
@@ -188,6 +215,13 @@ impl<const N: usize> From<Arc<[u8; N]>> for OwnedBlob {
         // the array will be unchanged and will be kept alive by the arc
         let bytes: &'static [u8] = unsafe { std::mem::transmute(bytes) };
         Self::owned_new(bytes, Some(v))
+    }
+}
+
+impl OwnedBlob {
+    /// When calling this with an owner, you promise that keeping the owner alive will keep the slice valid!
+    pub fn owned_new(data: &'static [u8], owner: Option<Arc<dyn Any>>) -> OwnedBlob {
+        Self { data, owner }
     }
 }
 

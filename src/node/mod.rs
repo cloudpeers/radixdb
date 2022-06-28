@@ -2870,6 +2870,10 @@ impl IterKey {
         let elems = Arc::make_mut(&mut self.0);
         elems.truncate(elems.len().saturating_sub(n));
     }
+
+    pub fn to_owned_blob(&self) -> OwnedBlob {
+        self.0.clone().into()
+    }
 }
 
 impl AsRef<[u8]> for IterKey {
