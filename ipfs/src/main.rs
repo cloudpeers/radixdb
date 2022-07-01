@@ -2,22 +2,34 @@
 //! A radix tree that implements a content-addressed store for ipfs
 //!
 //!
+use fnv::FnvHashSet;
 use libipld::{
     cbor::{DagCbor, DagCborCodec},
     codec::Codec,
     multihash::Code,
     raw::RawCodec,
-    store::StoreParams,
+    store::{Store, StoreParams},
     Cid, DefaultParams, Ipld,
 };
+use log::{info, trace};
+use parking_lot::Mutex;
 use radixdb::{
     node::{DowncastConverter, IdentityConverter},
     store::{Blob, BlobStore, DynBlobStore, MemStore, NoError, OwnedBlob, PagedFileStore},
     RadixTree, *,
 };
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    marker::PhantomData,
+    sync::Arc,
+    time::Instant,
+};
 use tempfile::tempfile;
+
+#[cfg(test)]
+mod tests;
 
 /// alias -> id
 const ALIAS: &[u8] = "alias".as_bytes();
@@ -46,15 +58,60 @@ fn alias_key(alias: &[u8]) -> Vec<u8> {
 }
 
 fn block_key(id: &Cid) -> Vec<u8> {
-    let mut res = Vec::with_capacity(BLOCK.len());
+    let mut res = Vec::with_capacity(BLOCK.len() + 64);
     res.extend_from_slice(BLOCK);
     id.write_bytes(&mut res).unwrap();
     res
 }
 
-struct Ipfs {
+#[derive(Debug)]
+pub struct Ipfs<S: StoreParams = DefaultParams> {
     root: RadixTree<DynBlobStore>,
     store: DynBlobStore,
+    temp_pins: Arc<Mutex<BTreeMap<u64, FnvHashSet<Cid>>>>,
+    p: PhantomData<S>,
+}
+
+/// a handle that contains a temporary pin
+///
+/// Dropping this handle enqueues the pin for dropping before the next gc.
+// do not implement Clone for this!
+pub struct TempPin {
+    id: u64,
+    temp_pins: Arc<Mutex<BTreeMap<u64, FnvHashSet<Cid>>>>,
+}
+
+impl TempPin {
+    fn new(id: u64, temp_pins: Arc<Mutex<BTreeMap<u64, FnvHashSet<Cid>>>>) -> Self {
+        Self { id, temp_pins }
+    }
+
+    fn extend(&mut self, cids: impl IntoIterator<Item = Cid>) {
+        let mut temp_pins = self.temp_pins.lock();
+        let current = temp_pins.entry(self.id).or_default();
+        current.extend(cids);
+    }
+}
+
+/// dump the temp alias id so you can find it in the database
+impl fmt::Debug for TempPin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut builder = f.debug_struct("TempAlias");
+        if self.id > 0 {
+            builder.field("id", &self.id);
+        } else {
+            builder.field("unused", &true);
+        }
+        builder.finish()
+    }
+}
+
+impl Drop for TempPin {
+    fn drop(&mut self) {
+        if self.id > 0 {
+            self.temp_pins.lock().remove(&self.id);
+        }
+    }
 }
 
 trait RadixTreeExt<S: BlobStore> {
@@ -79,60 +136,122 @@ impl<S: BlobStore + Clone> RadixTreeExt<S> for RadixTree<S> {
 
 type Block = libipld::Block<libipld::store::DefaultParams>;
 
-fn get_links(cid: &Cid, data: &[u8], cids: &mut Vec<Cid>) -> anyhow::Result<()> {
+fn get_links<E: Extend<Cid>>(cid: &Cid, data: &[u8], cids: &mut E) -> anyhow::Result<()> {
     let codec = <DefaultParams as StoreParams>::Codecs::try_from(cid.codec())?;
-    codec.references::<Ipld, Vec<Cid>>(data, cids)?;
+    codec.references::<Ipld, E>(data, cids)?;
     Ok(())
 }
 
-impl Ipfs {
+impl<S: StoreParams> Ipfs<S> {
+    pub fn temp_pin(&mut self) -> TempPin {
+        let mut temp_pins = self.temp_pins.lock();
+        let id = temp_pins
+            .iter()
+            .next_back()
+            .map(|(id, _)| *id + 1)
+            .unwrap_or_default();
+        temp_pins.insert(id, Default::default());
+        TempPin::new(id, self.temp_pins.clone())
+    }
+
     /// compute the set of all live ids
-    fn live_set(&self) -> anyhow::Result<BTreeSet<Cid>> {
+    pub fn live_set(&self) -> anyhow::Result<FnvHashSet<Cid>> {
         // all ids
-        let mut all = self.aliases()?;
-        // todo: add temp pins!
+        let mut alive = self.gc_roots()?;
+        // add temp pins
+        for (_, v) in self.temp_pins.lock().iter() {
+            alive.extend(v.iter().cloned());
+        }
         // new ids (already in all)
-        let mut new = all.clone();
+        let mut new = alive.clone();
         // a temporary set
-        let mut tmp = BTreeSet::default();
+        let mut tmp = FnvHashSet::default();
+        let mut children = Vec::new();
         while !new.is_empty() {
             std::mem::swap(&mut new, &mut tmp);
             new.clear();
+            children.truncate(0);
             for parent in &tmp {
-                if let Some(children) = self.links(parent)? {
-                    for child in children {
-                        if !all.insert(child) {
-                            new.insert(child);
-                        }
-                    }
+                self.links(parent, &mut children)?;
+            }
+            for child in &children {
+                // add to the new set only if it is a new cid (all.insert returns true)
+                if alive.insert(*child) {
+                    new.insert(*child);
                 }
             }
         }
-        Ok(all)
+        Ok(alive)
     }
 
-    fn gc(&mut self) -> anyhow::Result<()> {
+    /// Given a root of a dag, gives all cids which we do not have data for.
+    fn get_missing_blocks<C: FromIterator<Cid>>(&self, root: &Cid) -> anyhow::Result<C> {
+        let mut curr = FnvHashSet::default();
+        curr.insert(*root);
+        let mut next = FnvHashSet::default();
+        let mut res = Vec::new();
+        while !curr.is_empty() {
+            for cid in &curr {
+                self.links(cid, &mut next)?;
+            }
+            curr.clear();
+            for x in &next {
+                if self.has_block(x)? {
+                    curr.insert(*x);
+                } else {
+                    res.push(*x);
+                }
+            }
+        }
+        Ok(res.into_iter().collect())
+    }
+
+    pub fn gc(&mut self) -> anyhow::Result<()> {
         let t0 = Instant::now();
-        println!("figuring out live set");
+        info!("figuring out live set");
         let live_set = self.live_set()?;
         let mut dead = self.ids()?;
+        let total = dead.len();
         dead.retain(|id| !live_set.contains(id));
-        println!("{}", t0.elapsed().as_secs_f64());
+        info!(
+            "{} total, {} alive, {} s",
+            total,
+            live_set.len(),
+            t0.elapsed().as_secs_f64()
+        );
         let t0 = Instant::now();
-        println!("taking out the dead");
+        info!("taking out the dead");
         for id in dead {
             self.root.remove(&block_key(&id))?;
         }
-        println!("{}", t0.elapsed().as_secs_f64());
+        info!("{}", t0.elapsed().as_secs_f64());
         Ok(())
     }
 
-    fn commit(&mut self) -> anyhow::Result<()> {
+    pub fn commit(&mut self) -> anyhow::Result<()> {
         self.root.try_reattach()?;
         self.store.sync()
     }
 
-    fn aliases(&self) -> anyhow::Result<BTreeSet<Cid>> {
+    /// list all aliases
+    fn aliases<C: FromIterator<(Vec<u8>, Cid)>>(&self) -> anyhow::Result<C> {
+        let res: anyhow::Result<Vec<_>> = self
+            .root
+            .try_scan_prefix(ALIAS)?
+            .map(|r| {
+                r.and_then(|(k, v)| {
+                    let k = k.to_vec();
+                    let v = v
+                        .load(&self.store)
+                        .and_then(|b| Ok(Cid::read_bytes(b.as_ref())?))?;
+                    Ok((k, v))
+                })
+            })
+            .collect();
+        Ok(res?.into_iter().collect())
+    }
+
+    fn gc_roots(&self) -> anyhow::Result<FnvHashSet<Cid>> {
         self.root
             .try_scan_prefix(ALIAS)?
             .map(|r| {
@@ -156,6 +275,8 @@ impl Ipfs {
         Ok(Self {
             root: RadixTree::empty(store.clone()),
             store,
+            temp_pins: Default::default(),
+            p: PhantomData,
         })
     }
 
@@ -166,7 +287,7 @@ impl Ipfs {
         Ok(t)
     }
 
-    fn has_block(&self, id: &Cid) -> anyhow::Result<bool> {
+    pub fn has_block(&self, id: &Cid) -> anyhow::Result<bool> {
         let block_key = block_key(id);
         self.root.try_contains_key(&block_key)
     }
@@ -180,16 +301,13 @@ impl Ipfs {
         Ok(())
     }
 
-    fn links(&self, id: &Cid) -> anyhow::Result<Option<impl Iterator<Item = Cid>>> {
+    fn links<E: Extend<Cid>>(&self, id: &Cid, res: &mut E) -> anyhow::Result<()> {
         let key = block_key(id);
-        Ok(if let Some(blob) = self.root.try_get(&key)? {
+        if let Some(blob) = self.root.try_get(&key)? {
             let blob = blob.load(&self.store)?;
-            let mut t = Vec::new();
-            get_links(id, &blob, &mut t)?;
-            Some(t.into_iter())
-        } else {
-            None
-        })
+            get_links(id, &blob, res)?;
+        };
+        Ok(())
     }
 
     fn dump(&self) -> anyhow::Result<()> {
@@ -200,18 +318,29 @@ impl Ipfs {
         //     })
     }
 
-    fn put(&mut self, block: &Block) -> anyhow::Result<()> {
-        let block_key = block_key(&block.cid());
-        self.root.insert(&block_key, block.data())?;
+    pub fn put_blocks<'a>(
+        &mut self,
+        blocks: impl IntoIterator<Item = &'a Block>,
+        pin: Option<&mut TempPin>,
+    ) -> anyhow::Result<()> {
+        let mut cids = Vec::new();
+        for block in blocks.into_iter() {
+            self.put_block(block, None)?;
+            cids.push(*block.cid());
+        }
+        if let Some(pin) = pin {
+            pin.extend(cids);
+        }
         Ok(())
     }
 
-    fn get(&mut self, cid: &Cid) -> anyhow::Result<Option<OwnedBlob>> {
-        self.get_block(cid)
-    }
-
-    fn has(&mut self, cid: &Cid) -> anyhow::Result<bool> {
-        self.has_block(cid)
+    pub fn put_block(&mut self, block: &Block, pin: Option<&mut TempPin>) -> anyhow::Result<()> {
+        let block_key = block_key(&block.cid());
+        self.root.insert(&block_key, block.data())?;
+        if let Some(pin) = pin {
+            pin.extend(Some(*block.cid()));
+        }
+        Ok(())
     }
 }
 
@@ -219,7 +348,7 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
     let file = tempfile()?;
     let store = PagedFileStore::<4194304>::new(file)?;
-    let mut ipfs = Ipfs::new(Arc::new(store.clone()))?;
+    let mut ipfs = Ipfs::<DefaultParams>::new(Arc::new(store.clone()))?;
     let mut hashes = Vec::new();
     let blocks = (0..100_000u64)
         .map(|i| {
@@ -231,7 +360,7 @@ fn main() -> anyhow::Result<()> {
     let t0 = Instant::now();
     for (i, block) in blocks.into_iter().enumerate() {
         println!("putting block {}", i);
-        ipfs.put(&block)?;
+        ipfs.put_block(&block, None)?;
         hashes.push(*block.cid());
     }
     println!("finished {}", t0.elapsed().as_secs_f64());
@@ -249,14 +378,14 @@ fn main() -> anyhow::Result<()> {
     let t0 = Instant::now();
     let mut res = 0u64;
     for hash in &hashes {
-        res += ipfs.get(hash)?.unwrap().len() as u64;
+        res += ipfs.get_block(hash)?.unwrap().len() as u64;
     }
     println!("done {} {}", res, t0.elapsed().as_secs_f64());
     println!("traversing all (in order, hot)");
     let t0 = Instant::now();
     let mut res = 0u64;
     for hash in &hashes {
-        res += ipfs.get(hash)?.unwrap().len() as u64;
+        res += ipfs.get_block(hash)?.unwrap().len() as u64;
     }
     println!("done {} {}", res, t0.elapsed().as_secs_f64());
     hashes.sort();
@@ -265,7 +394,7 @@ fn main() -> anyhow::Result<()> {
         let t0 = Instant::now();
         let mut res = 0u64;
         for hash in &hashes {
-            res += ipfs.get(hash)?.unwrap().len() as u64;
+            res += ipfs.get_block(hash)?.unwrap().len() as u64;
         }
         println!("done {} {}", res, t0.elapsed().as_secs_f64());
     }

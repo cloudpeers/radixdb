@@ -303,15 +303,18 @@ pub fn unwrap_safe<T>(x: Result<T, NoError>) -> T {
 pub struct MemStore {
     data: Arc<Mutex<BTreeMap<u64, Arc<Vec<u8>>>>>,
 }
+impl MemStore {
+    pub fn count(&self) -> usize {
+        self.data.lock().len()
+    }
+}
 
 impl Debug for MemStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut builder = f.debug_map();
         let data = self.data.lock();
-        for (id, v) in data.iter() {
-            builder.entry(&id, &Hex::partial(v.as_ref(), 128));
-        }
-        builder.finish()
+        f.debug_struct("MemStore")
+            .field("count", &data.len())
+            .finish()
     }
 }
 
