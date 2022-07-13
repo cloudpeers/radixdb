@@ -4,23 +4,21 @@
 //!
 use fnv::FnvHashSet;
 use libipld::{
-    cbor::{DagCbor, DagCborCodec},
+    cbor::{DagCborCodec},
     codec::Codec,
     multihash::Code,
-    raw::RawCodec,
-    store::{Store, StoreParams},
+    store::StoreParams,
     Cid, DefaultParams, Ipld,
 };
-use log::{info, trace};
+use log::info;
 use parking_lot::Mutex;
 use radixdb::{
-    node::{DowncastConverter, IdentityConverter},
-    store::{Blob, BlobStore, DynBlobStore, MemStore, NoError, OwnedBlob, PagedFileStore},
-    RadixTree, *,
+    node::DowncastConverter,
+    store::{BlobStore, DynBlobStore, OwnedBlob, PagedFileStore},
+    RadixTree,
 };
-use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fmt,
     marker::PhantomData,
     sync::Arc,
@@ -67,7 +65,6 @@ fn block_key(id: &Cid) -> Vec<u8> {
 #[derive(Debug)]
 pub struct Ipfs<S: StoreParams = DefaultParams> {
     root: RadixTree<DynBlobStore>,
-    store: DynBlobStore,
     temp_pins: Arc<Mutex<BTreeMap<u64, FnvHashSet<Cid>>>>,
     p: PhantomData<S>,
 }
@@ -156,52 +153,49 @@ impl<S: StoreParams> Ipfs<S> {
 
     /// compute the set of all live ids
     pub fn live_set(&self) -> anyhow::Result<FnvHashSet<Cid>> {
-        // all ids
-        let mut alive = self.gc_roots()?;
-        // add temp pins
-        for (_, v) in self.temp_pins.lock().iter() {
-            alive.extend(v.iter().cloned());
-        }
+        self.get_descendants(self.gc_roots()?)
+    }
+
+    /// Given a set of roots for a dag, gives all known descendants.
+    pub fn get_descendants(&self, roots: FnvHashSet<Cid>) -> anyhow::Result<FnvHashSet<Cid>> {
+        let mut curr = roots;
         // new ids (already in all)
-        let mut new = alive.clone();
+        let mut new = curr.clone();
         // a temporary set
         let mut tmp = FnvHashSet::default();
-        let mut children = Vec::new();
+        let mut children = FnvHashSet::default();
         while !new.is_empty() {
             std::mem::swap(&mut new, &mut tmp);
             new.clear();
-            children.truncate(0);
+            children.clear();
             for parent in &tmp {
                 self.links(parent, &mut children)?;
             }
             for child in &children {
                 // add to the new set only if it is a new cid (all.insert returns true)
-                if alive.insert(*child) {
+                if curr.insert(*child) {
                     new.insert(*child);
                 }
             }
         }
-        Ok(alive)
+        Ok(curr)
     }
 
-    /// Given a root of a dag, gives all cids which we do not have data for.
-    fn get_missing_blocks<C: FromIterator<Cid>>(&self, root: &Cid) -> anyhow::Result<C> {
-        let mut curr = FnvHashSet::default();
-        curr.insert(*root);
+    /// Given a set of roots for a dag, gives all cids which we do not have data for.
+    pub fn get_missing_blocks<C: FromIterator<Cid>>(&self, roots: FnvHashSet<Cid>) -> anyhow::Result<C> {
+        let mut curr = roots;
         let mut next = FnvHashSet::default();
-        let mut res = Vec::new();
+        let mut res = FnvHashSet::default();
         while !curr.is_empty() {
             for cid in &curr {
-                self.links(cid, &mut next)?;
-            }
-            curr.clear();
-            for x in &next {
-                if self.has_block(x)? {
-                    curr.insert(*x);
+                if self.has_block(cid)? {
+                    self.links(cid, &mut next)?;
                 } else {
-                    res.push(*x);
+                    res.insert(*cid);
                 }
             }
+            curr.clear();
+            std::mem::swap(&mut curr, &mut next);
         }
         Ok(res.into_iter().collect())
     }
@@ -210,7 +204,7 @@ impl<S: StoreParams> Ipfs<S> {
         let t0 = Instant::now();
         info!("figuring out live set");
         let live_set = self.live_set()?;
-        let mut dead = self.ids()?;
+        let mut dead = self.cids()?;
         let total = dead.len();
         dead.retain(|id| !live_set.contains(id));
         info!(
@@ -228,22 +222,36 @@ impl<S: StoreParams> Ipfs<S> {
         Ok(())
     }
 
+    fn store(&self) -> &DynBlobStore {
+        RadixTree::store(&self.root)
+    }
+
     pub fn commit(&mut self) -> anyhow::Result<()> {
         self.root.try_reattach()?;
-        self.store.sync()
+        self.store().sync()
+    }
+
+    pub fn resolve(&self, alias: &[u8]) -> anyhow::Result<Option<Cid>> {
+        let key = alias_key(alias);
+        Ok(if let Some(v) = self.root.try_get(&key)? {
+            let v = v.load(&self.store())?;
+            let cid = Cid::read_bytes(v.as_ref())?;
+            Some(cid)
+        } else {
+            None
+        })
     }
 
     /// list all aliases
-    fn aliases<C: FromIterator<(Vec<u8>, Cid)>>(&self) -> anyhow::Result<C> {
+    pub fn aliases<C: FromIterator<(Vec<u8>, Cid)>>(&self) -> anyhow::Result<C> {
         let res: anyhow::Result<Vec<_>> = self
             .root
             .try_scan_prefix(ALIAS)?
             .map(|r| {
                 r.and_then(|(k, v)| {
                     let k = k.to_vec();
-                    let v = v
-                        .load(&self.store)
-                        .and_then(|b| Ok(Cid::read_bytes(b.as_ref())?))?;
+                    let v = v.load(&self.store())?;
+                    let v = Cid::read_bytes(v.as_ref())?;
                     Ok((k, v))
                 })
             })
@@ -252,19 +260,25 @@ impl<S: StoreParams> Ipfs<S> {
     }
 
     fn gc_roots(&self) -> anyhow::Result<FnvHashSet<Cid>> {
-        self.root
+        // all permanent roots, from the db
+        let mut roots = self.root
             .try_scan_prefix(ALIAS)?
             .map(|r| {
                 r.and_then(|(_, v)| {
-                    v.load(&self.store)
+                    v.load(&self.store())
                         .and_then(|b| Ok(Cid::read_bytes(b.as_ref())?))
                 })
             })
-            .collect()
+            .collect::<anyhow::Result<FnvHashSet<Cid>>>()?;
+        // add temp pins from memory
+        for (_, v) in self.temp_pins.lock().iter() {
+            roots.extend(v.iter().cloned());
+        }
+        Ok(roots)
     }
 
-    /// all ids we know of
-    fn ids(&self) -> anyhow::Result<Vec<Cid>> {
+    /// all cids we have blocks for
+    fn cids(&self) -> anyhow::Result<Vec<Cid>> {
         self.root
             .try_scan_prefix(BLOCK)?
             .map(|r| r.and_then(|(k, _)| Ok(Cid::read_bytes(&k.as_ref()[5..])?)))
@@ -273,17 +287,16 @@ impl<S: StoreParams> Ipfs<S> {
 
     fn new(store: DynBlobStore) -> anyhow::Result<Self> {
         Ok(Self {
-            root: RadixTree::empty(store.clone()),
-            store,
+            root: RadixTree::empty(store),
             temp_pins: Default::default(),
             p: PhantomData,
         })
     }
 
-    fn get_block(&self, id: &Cid) -> anyhow::Result<Option<OwnedBlob>> {
+    pub fn get_block(&self, id: &Cid) -> anyhow::Result<Option<OwnedBlob>> {
         let block_key = block_key(id);
         let t = self.root.try_get(&block_key)?;
-        let t = t.map(|x| x.load(&self.store)).transpose()?;
+        let t = t.map(|x| x.load(&self.store())).transpose()?;
         Ok(t)
     }
 
@@ -292,7 +305,7 @@ impl<S: StoreParams> Ipfs<S> {
         self.root.try_contains_key(&block_key)
     }
 
-    fn alias(&mut self, name: &[u8], cid: Option<&Cid>) -> anyhow::Result<()> {
+    pub fn alias(&mut self, name: &[u8], cid: Option<&Cid>) -> anyhow::Result<()> {
         if let Some(cid) = cid {
             self.root.insert(&alias_key(name), &cid.to_bytes())?;
         } else {
@@ -304,7 +317,7 @@ impl<S: StoreParams> Ipfs<S> {
     fn links<E: Extend<Cid>>(&self, id: &Cid, res: &mut E) -> anyhow::Result<()> {
         let key = block_key(id);
         if let Some(blob) = self.root.try_get(&key)? {
-            let blob = blob.load(&self.store)?;
+            let blob = blob.load(&self.store())?;
             get_links(id, &blob, res)?;
         };
         Ok(())

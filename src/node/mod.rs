@@ -3268,6 +3268,10 @@ impl<S: BlobStore> Tree<S> {
     fn new(node: OwnedTreeNode<S>, store: S) -> Self {
         Self { node, store }
     }
+
+    pub fn store(this: &Self) -> &S {
+        &this.store
+    }
 }
 
 impl FromIterator<(Vec<u8>, Vec<u8>)> for Tree {
