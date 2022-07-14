@@ -27,6 +27,8 @@ impl<'a> Hex<'a> {
     fn new(data: &'a [u8]) -> Self {
         Self(data, data.len())
     }
+
+    #[allow(dead_code)]
     fn partial(data: &'a [u8], len: usize) -> Self {
         Self(data, len)
     }

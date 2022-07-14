@@ -168,6 +168,7 @@ impl<const SIZE: usize> Inner<SIZE> {
     }
 }
 
+#[allow(dead_code)]
 fn align(offset: u64) -> u64 {
     let mut res = offset;
     while (res % (ALIGN as u64)) != 0 {
@@ -202,16 +203,11 @@ impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{Instant, SystemTime},
-    };
+    use std::{fs, time::Instant};
 
     use crate::store::DynBlobStore;
 
     use super::*;
-    use log::info;
     use proptest::prelude::*;
     use tempfile::tempdir;
     use thousands::Separable;
@@ -325,7 +321,7 @@ mod tests {
             .write(true)
             .open(&path)?;
         let db = PagedFileStore::<1048576>::new(file).unwrap();
-        let store: DynBlobStore = Arc::new(db);
+        let _store: DynBlobStore = Arc::new(db);
         // do_test(store)
         todo!()
     }

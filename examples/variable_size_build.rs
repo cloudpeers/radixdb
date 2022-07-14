@@ -1,5 +1,5 @@
 use radixdb::RadixTree;
-use std::{collections::BTreeMap, time::Instant};
+use std::time::Instant;
 
 fn main() {
     let elems = (0..2000_000u64)
@@ -15,6 +15,6 @@ fn main() {
         .collect::<Vec<(_, _)>>();
     let t0 = Instant::now();
     println!("building tree");
-    let tree: RadixTree = elems.into_iter().collect();
+    let _tree: RadixTree = elems.into_iter().collect();
     println!("unattached tree {} s", t0.elapsed().as_secs_f64());
 }

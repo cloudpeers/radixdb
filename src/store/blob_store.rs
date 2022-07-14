@@ -1,4 +1,3 @@
-use crate::Hex;
 use anyhow::Context;
 use parking_lot::Mutex;
 use std::{
@@ -258,11 +257,11 @@ pub struct NoStore;
 impl BlobStore for NoStore {
     type Error = NoError;
 
-    fn read(&self, id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {
+    fn read(&self, _id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {
         panic!()
     }
 
-    fn write(&self, data: &[u8]) -> std::result::Result<Vec<u8>, Self::Error> {
+    fn write(&self, _data: &[u8]) -> std::result::Result<Vec<u8>, Self::Error> {
         panic!()
     }
 
@@ -346,7 +345,7 @@ impl BlobStore for MemStore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #![allow(dead_code)]
     use proptest::prelude::*;
 
     const TEST_SIZE: usize = 1024;

@@ -94,17 +94,17 @@ fn new_build_bench() {
     println!("build {}", t0.elapsed().as_secs_f64());
 
     let t0 = Instant::now();
-    let r: BTreeMap<_, _> = elems2.into_iter().collect();
+    let _r: BTreeMap<_, _> = elems2.into_iter().collect();
     println!("build ref {:#?}", t0.elapsed().as_secs_f64());
 
     let t0 = Instant::now();
-    for (key, value) in &elems3 {
+    for (key, _value) in &elems3 {
         assert!(t.contains_key(&key, &NoStore).unwrap());
     }
     println!("validate contains_key {}", t0.elapsed().as_secs_f64());
 
     let t0 = Instant::now();
-    for (key, value) in &elems3 {
+    for (key, _value) in &elems3 {
         assert!(elems_bt.contains_key(key));
     }
     println!("validate contains_key ref {}", t0.elapsed().as_secs_f64());
@@ -155,7 +155,7 @@ fn new_smoke() {
             &b.as_ref(),
             NoStore,
             DowncastConverter,
-            |a, b| Ok(()),
+            |_, _| Ok(()),
         )
         .unwrap();
         println!("r={:?}", r);
@@ -173,7 +173,7 @@ fn new_smoke() {
             &b.as_ref(),
             NoStore,
             DowncastConverter,
-            |a, b| Ok(()),
+            |_, _| Ok(()),
         )
         .unwrap();
         println!("r={:?}", r);
@@ -345,7 +345,7 @@ proptest! {
         // left biased intersection
         let r1 = a.inner_combine(&b, |a, _| Some(a.to_owned()));
         let mut r2 = a.clone();
-        r2.inner_combine_with(&b, |a, _| {});
+        r2.inner_combine_with(&b, |_, _| {});
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
     }
 
@@ -387,7 +387,7 @@ proptest! {
     fn difference_with(a in arb_owned_tree(), b in arb_owned_tree()) {
         let r1 = a.left_combine(&b, |a, _| Some(a.to_owned()));
         let mut r2 = a.clone();
-        r2.left_combine_with(&b, |a, b| {});
+        r2.left_combine_with(&b, |_, _| {});
         prop_assert_eq!(to_btree_map(&r1), to_btree_map(&r2));
 
         let r1 = a.left_combine(&b, |_, b| Some(b.to_owned()));

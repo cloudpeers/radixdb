@@ -1,24 +1,13 @@
-use core::borrow;
+#![allow(dead_code)]
 use std::{
-    any::{self, Any, TypeId},
-    borrow::Borrow,
-    cmp::Ordering,
-    collections::BTreeMap,
-    fmt,
-    marker::PhantomData,
-    mem::ManuallyDrop,
-    num::NonZeroU8,
-    ops::Deref,
-    process::Child,
-    slice,
-    sync::Arc,
-    time::Instant,
+    any::TypeId, borrow::Borrow, cmp::Ordering, fmt, marker::PhantomData, mem::ManuallyDrop,
+    ops::Deref, slice, sync::Arc,
 };
 
 use inplace_vec_builder::InPlaceVecBuilder;
 
 use crate::{
-    store::{unwrap_safe, Blob, BlobStore, MemStore, NoError, NoStore, OwnedBlob},
+    store::{unwrap_safe, Blob, BlobStore, NoError, NoStore, OwnedBlob},
     Hex, Lit,
 };
 use std::fmt::Debug;
@@ -412,7 +401,7 @@ impl<'a, S> ValueRef<'a, S> {
         }
     }
 
-    fn detached(&self, store: &S) -> Result<OwnedValue<NoStore>, S::Error>
+    fn detached(&self, _store: &S) -> Result<OwnedValue<NoStore>, S::Error>
     where
         S: BlobStore,
     {
@@ -1126,7 +1115,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
         println!("{}TreeNode", spacer);
         println!("{}  prefix={:?}", spacer, self.prefix(),);
         println!("{}  value={:?}", spacer, self.value(),);
-        let mut iter = self.load_children(store)?;
+        let iter = self.load_children(store)?;
         println!("{}", spacer);
         if let Some(mut iter) = iter {
             while let Some(child) = iter.next() {
@@ -1313,7 +1302,7 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
     fn clone_shortened(&self, store: &S, n: usize) -> Result<OwnedTreeNode<S>, S::Error> {
         match self.dispatch() {
             Ok(owned) => owned.clone_shortened(store, n),
-            Err(borrowed) => todo!(),
+            Err(_borrowed) => todo!(),
         }
     }
 }
@@ -1748,7 +1737,7 @@ impl<S: BlobStore> BorrowedTreeNodeIter<S> {
         }
     }
 
-    fn detached(self, store: &S) -> Result<Option<Arc<Vec<OwnedTreeNode<NoStore>>>>, S::Error> {
+    fn detached(self, _store: &S) -> Result<Option<Arc<Vec<OwnedTreeNode<NoStore>>>>, S::Error> {
         Ok(if self.is_empty() { None } else { todo!() })
     }
 
@@ -1757,7 +1746,7 @@ impl<S: BlobStore> BorrowedTreeNodeIter<S> {
     }
 
     fn find(&self, prefix: u8) -> Option<BorrowedTreeNode<S>> {
-        let elems = if self.record_size != 0 {
+        let _elems = if self.record_size != 0 {
             (self.data.len() - self.offset) / (self.record_size as usize)
         } else {
             0

@@ -7,7 +7,7 @@ use radixdb::{
 };
 use tempfile::tempdir;
 
-fn do_test(store: DynBlobStore) -> anyhow::Result<()> {
+fn do_test(_store: DynBlobStore) -> anyhow::Result<()> {
     let elems = (0..2000_000u64)
         .map(|i| {
             if i % 100000 == 0 {
