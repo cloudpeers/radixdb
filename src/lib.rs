@@ -1,4 +1,4 @@
-//! A radix tree data structure that can be used both in memory or from a buffer/disk.
+//! A radix tree data structure that can be used both in memory in a buffer / on disk.
 pub mod node;
 pub mod store;
 pub use node::RadixTree;

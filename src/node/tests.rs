@@ -44,7 +44,7 @@ fn to_btree_map(t: &RadixTree) -> BTreeMap<Vec<u8>, Vec<u8>> {
 #[test]
 fn sizes2() {
     assert_eq!(
-        std::mem::size_of::<OwnedTreeNode<NoStore>>(),
+        std::mem::size_of::<TreeNode<NoStore>>(),
         4 * std::mem::size_of::<usize>()
     );
     assert_eq!(
@@ -56,7 +56,7 @@ fn sizes2() {
         std::mem::size_of::<TreeNodeRef<NoStore>>(),
         5 * std::mem::size_of::<usize>()
     );
-    println!("{}", std::mem::size_of::<OwnedTreeNode<NoStore>>());
+    println!("{}", std::mem::size_of::<TreeNode<NoStore>>());
     println!("{}", std::mem::size_of::<BorrowedTreeNode<NoStore>>());
     println!("{}", std::mem::size_of::<TreeNodeRef<NoStore>>());
 }
@@ -77,10 +77,10 @@ fn new_build_bench() {
     let elems2 = elems.clone();
     let elems3 = elems.clone();
     let elems_bt = elems.iter().cloned().collect::<BTreeMap<_, _>>();
-    let mut t = OwnedTreeNode::<NoStore>::EMPTY;
+    let mut t = TreeNode::<NoStore>::EMPTY;
     let t0 = Instant::now();
     for (k, v) in elems.clone() {
-        let b = OwnedTreeNode::<NoStore>::single(&k, &v);
+        let b = TreeNode::<NoStore>::single(&k, &v);
         outer_combine_with(
             &mut t,
             NoStore,
@@ -111,7 +111,7 @@ fn new_build_bench() {
 
     let t0 = Instant::now();
     for (key, value) in &elems3 {
-        let v: OwnedValue<NoStore> = t.get(&key, &NoStore).unwrap().unwrap();
+        let v: Value<NoStore> = t.get(&key, &NoStore).unwrap().unwrap();
         assert_eq!(v.read().unwrap(), &value[..]);
     }
     println!("validate get {}", t0.elapsed().as_secs_f64());
@@ -129,13 +129,13 @@ fn new_build_bench() {
     // t.dump(0, &NoStore).unwrap();
     t.serialize(&mut target, &store).unwrap();
     println!("{} {}", Hex::new(&target), t0.elapsed().as_secs_f64());
-    let d = OwnedTreeNode::<MemStore>::deserialize(&target).unwrap();
+    let d = TreeNode::<MemStore>::deserialize(&target).unwrap();
     println!("{:?}", d);
     // d.dump(0, &store).unwrap();
 
     let t0 = Instant::now();
     for (key, value) in &elems3 {
-        let v: OwnedValue<MemStore> = d.get(&key, &store).unwrap().unwrap();
+        let v: Value<MemStore> = d.get(&key, &store).unwrap().unwrap();
         assert_eq!(v.read().unwrap(), &value[..]);
     }
     println!("validate get attached {}", t0.elapsed().as_secs_f64());
@@ -144,8 +144,8 @@ fn new_build_bench() {
 #[test]
 fn new_smoke() {
     {
-        let a = OwnedTreeNode::single(b"a", b"1");
-        let b = OwnedTreeNode::single(b"b", b"2");
+        let a = TreeNode::single(b"a", b"1");
+        let b = TreeNode::single(b"b", b"2");
         println!("a={:?}", a);
         println!("b={:?}", b);
         let mut r = a;
@@ -162,8 +162,8 @@ fn new_smoke() {
     }
 
     {
-        let a = OwnedTreeNode::<NoStore>::single(b"aa", b"1");
-        let b = OwnedTreeNode::<NoStore>::single(b"ab", b"2");
+        let a = TreeNode::<NoStore>::single(b"aa", b"1");
+        let b = TreeNode::<NoStore>::single(b"ab", b"2");
         println!("a={:?}", a);
         println!("b={:?}", b);
         let mut r = a;

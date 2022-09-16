@@ -11,6 +11,7 @@ use std::{
 
 use super::{BlobStore, OwnedBlob};
 
+/// A blob store backed by a file that is divided into pages of size `SIZE`
 #[derive(Clone)]
 pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
 

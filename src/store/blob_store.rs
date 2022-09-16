@@ -33,6 +33,9 @@ pub trait BlobStore: Debug + Send + Sync + 'static {
     }
 }
 
+/// A blob that can be cheaply sliced
+///
+/// Implemented as a byte slice with an optional owner to keep the byte slice alive.
 #[derive(Debug, Clone)]
 pub struct Blob<'a> {
     data: &'a [u8],
@@ -62,6 +65,9 @@ impl<'a> Borrow<[u8]> for Blob<'a> {
     }
 }
 
+/// A blob that is self-contained and therefore has a static lifetime
+///
+/// An owned blob can be created either from a slice with an owner, or an actually static slice.
 pub type OwnedBlob = Blob<'static>;
 
 impl<'a> Hash for Blob<'a> {
@@ -292,9 +298,16 @@ impl From<anyhow::Error> for NoError {
     }
 }
 
-/// Unwrap an unfallible result
-pub fn unwrap_safe<T>(x: Result<T, NoError>) -> T {
-    x.unwrap()
+/// Extension trait that adds unwrap_safe for unwrapping results safely when the error type is uninhabited
+pub trait UnwrapSafeExt<T> {
+    /// Safe unwrap - guaranteed not to panic
+    fn unwrap_safe(self) -> T;
+}
+
+impl<T> UnwrapSafeExt<T> for Result<T, NoError> {
+    fn unwrap_safe(self) -> T {
+        self.unwrap()
+    }
 }
 
 /// A simple in memory store
