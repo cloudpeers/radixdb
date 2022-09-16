@@ -29,15 +29,15 @@ fn arb_tree_contents() -> impl Strategy<Value = BTreeMap<Vec<u8>, Vec<u8>>> {
     proptest::collection::btree_map(arb_prefix(), arb_value(), 0..10)
 }
 
-fn arb_owned_tree() -> impl Strategy<Value = Tree> {
+fn arb_owned_tree() -> impl Strategy<Value = RadixTree> {
     arb_tree_contents().prop_map(|x| mk_owned_tree(&x))
 }
 
-fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> Tree {
+fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> RadixTree {
     v.clone().into_iter().collect()
 }
 
-fn to_btree_map(t: &Tree) -> BTreeMap<Vec<u8>, Vec<u8>> {
+fn to_btree_map(t: &RadixTree) -> BTreeMap<Vec<u8>, Vec<u8>> {
     t.iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect()
 }
 
@@ -180,7 +180,7 @@ fn new_smoke() {
     }
 }
 
-impl TestSamples<Vec<u8>, Option<Vec<u8>>> for Tree {
+impl TestSamples<Vec<u8>, Option<Vec<u8>>> for RadixTree {
     fn samples(&self, res: &mut BTreeSet<Vec<u8>>) {
         res.insert(vec![]);
         for (k, _) in self.iter() {
@@ -451,7 +451,7 @@ proptest! {
     #[test]
     fn group_by_true(a in arb_tree_contents()) {
         let at = mk_owned_tree(&a);
-        let trees: Vec<Tree> = at.group_by(|_, _| true).collect::<Vec<_>>();
+        let trees: Vec<RadixTree> = at.group_by(|_, _| true).collect::<Vec<_>>();
         prop_assert_eq!(a.len(), trees.len());
         for ((k0, v0), tree) in a.iter().zip(trees) {
             let k0: &[u8] = &k0;
@@ -467,7 +467,7 @@ proptest! {
     #[test]
     fn group_by_fixed(a in arb_tree_contents(), n in 0usize..8) {
         let at = mk_owned_tree(&a);
-        let trees: Vec<Tree> = at.group_by(|x, _| x.len() <= n).collect::<Vec<_>>();
+        let trees: Vec<RadixTree> = at.group_by(|x, _| x.len() <= n).collect::<Vec<_>>();
         prop_assert!(trees.len() <= a.len());
         let mut leafs = BTreeMap::new();
         for tree in &trees {

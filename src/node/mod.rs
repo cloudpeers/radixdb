@@ -16,12 +16,18 @@ mod tests;
 
 const PTR_SIZE: usize = std::mem::size_of::<*const u8>();
 
-union ArcOrInlineBlob {
+/// An owned blob, encoded as an union of an `Arc<Vec<u8>>`, or an inline field
+/// with a size up to PTR_SIZE.
+///
+/// Inline must be used from size 0 to PTR_SIZE inclusive, so 0..8 on 64 bit archs.
+///
+/// The size itself is stored externally.
+union CompactOwnedBlob {
     arc: ManuallyDrop<Arc<Vec<u8>>>,
     inline: [u8; PTR_SIZE],
 }
 
-impl ArcOrInlineBlob {
+impl CompactOwnedBlob {
     const EMPTY: Self = Self {
         inline: [0u8; PTR_SIZE],
     };
@@ -40,7 +46,7 @@ impl ArcOrInlineBlob {
     }
 
     fn ref_count(&self, hdr: Header) -> Option<usize> {
-        if hdr.len() <= PTR_SIZE {
+        if hdr.is_inline() {
             None
         } else {
             Some(Arc::strong_count(unsafe { &self.arc }))
@@ -48,10 +54,9 @@ impl ArcOrInlineBlob {
     }
 
     fn slice(&self, hdr: Header) -> &[u8] {
-        let len = hdr.len();
         unsafe {
-            if len <= PTR_SIZE {
-                &self.inline[..len]
+            if hdr.is_inline() {
+                &self.inline[..hdr.len()]
             } else {
                 self.arc.as_ref().as_ref()
             }
@@ -60,7 +65,7 @@ impl ArcOrInlineBlob {
 
     fn manual_clone(&self, hdr: Header) -> Self {
         unsafe {
-            if hdr.len() > PTR_SIZE {
+            if hdr.is_arc() {
                 Self {
                     arc: self.arc.clone(),
                 }
@@ -74,7 +79,7 @@ impl ArcOrInlineBlob {
 
     fn manual_drop(&mut self, hdr: Header) {
         unsafe {
-            if hdr.len() > PTR_SIZE {
+            if hdr.is_arc() {
                 ManuallyDrop::drop(&mut self.arc);
             }
         }
@@ -85,6 +90,15 @@ impl ArcOrInlineBlob {
     }
 }
 
+/// Reference to children for use in [OwnedTreeNode].
+///
+/// Children can be either
+/// - inline/none
+/// - an arc pointing to an id
+/// - an arc pointing to owned tree nodes
+///
+/// Which kind of reference is valid is stored externally
+/// in the child header byte.
 union ChildrenRef<S> {
     arc_id: ManuallyDrop<Arc<Vec<u8>>>,
     arc_data: ManuallyDrop<Arc<Vec<OwnedTreeNode<S>>>>,
@@ -98,7 +112,7 @@ impl<S> ChildrenRef<S> {
     };
 
     fn ref_count(&self, hdr: Header) -> Option<usize> {
-        if hdr.len() > PTR_SIZE {
+        if hdr.is_arc() {
             Some(if hdr.is_id() {
                 Arc::strong_count(unsafe { &self.arc_id })
             } else {
@@ -132,7 +146,7 @@ impl<S> ChildrenRef<S> {
         let len = hdr.len();
         unsafe {
             if hdr.is_id() {
-                Err(if len <= PTR_SIZE {
+                Err(if hdr.is_inline() {
                     &self.inline[..len]
                 } else {
                     self.arc_id.as_ref().as_ref()
@@ -148,7 +162,7 @@ impl<S> ChildrenRef<S> {
         let len = hdr.len();
         unsafe {
             if hdr.is_id() {
-                Err(if len <= PTR_SIZE {
+                Err(if hdr.is_inline() {
                     &self.inline[..len]
                 } else {
                     self.arc_id.as_ref().as_ref()
@@ -162,7 +176,7 @@ impl<S> ChildrenRef<S> {
 
     fn manual_clone(&self, hdr: Header) -> Self {
         unsafe {
-            if hdr.len() > PTR_SIZE {
+            if hdr.is_arc() {
                 if hdr.is_id() {
                     Self {
                         arc_id: self.arc_id.clone(),
@@ -182,7 +196,7 @@ impl<S> ChildrenRef<S> {
 
     fn manual_drop(&mut self, hdr: Header) {
         unsafe {
-            if hdr.len() > PTR_SIZE {
+            if hdr.is_arc() {
                 if hdr.is_id() {
                     ManuallyDrop::drop(&mut self.arc_id);
                 } else {
@@ -197,6 +211,15 @@ impl<S> ChildrenRef<S> {
     }
 }
 
+/// A newtype wrapper for an u8 that provides information about
+/// the type of an associated pointer. Either None, Id or Data.
+///
+/// The highest bit is used to distinguish between id and data, id is 1.
+/// The other 7 bits are used to store the length of the following bytes.
+///
+/// None is encoded as an id with size 0.
+///
+/// Every valid byte is a valid header.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 struct Header(u8);
@@ -226,8 +249,11 @@ impl From<Header> for u8 {
 }
 
 impl Header {
+    // empty header, 0
     const EMPTY: Header = Header::data(0);
+    // none header, 0x80 (just highest bit set)
     const NONE: Header = Header::id(0);
+    // marker for data stored in an arc, 0xff
     const ARCDATA: Header = Header::data(0x7f);
 
     const fn id(len: usize) -> Self {
@@ -243,16 +269,29 @@ impl Header {
         }
     }
 
+    /// Data is to be interpreted as id
     fn is_id(&self) -> bool {
         (self.0 & 0x80) != 0
     }
 
+    /// Data is to be interpreted as data
     fn is_data(&self) -> bool {
         !self.is_id()
     }
 
+    /// Data is none
     fn is_none(&self) -> bool {
         self.0 == 0x80
+    }
+
+    /// Data size is so small that it fits into a word (<=PTR_SIZE)
+    fn is_inline(&self) -> bool {
+        self.len() <= PTR_SIZE
+    }
+
+    /// Data size is larger than a word (>PTR_SIZE)
+    fn is_arc(&self) -> bool {
+        self.len() > PTR_SIZE
     }
 
     /// Note that this is the length that fits in the header.
@@ -262,18 +301,22 @@ impl Header {
         self.len_u8() as usize
     }
 
+    /// len as u8
     fn len_u8(&self) -> u8 {
         self.0 & 0x7f
     }
 }
 
+/// A self contained reference to a compact owned blob
+///
+/// Due to the header field we know if this refers to an id or data.
 #[derive(Clone, Copy)]
-pub struct Raw<'a> {
+pub struct OwnedBlobRef<'a> {
     hdr: Header,
-    data: &'a ArcOrInlineBlob,
+    data: &'a CompactOwnedBlob,
 }
 
-impl<'a> Debug for Raw<'a> {
+impl<'a> Debug for OwnedBlobRef<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_none() {
             write!(f, "None")
@@ -285,17 +328,17 @@ impl<'a> Debug for Raw<'a> {
     }
 }
 
-impl<'a> Raw<'a> {
-    const EMPTY: Raw<'static> = Raw {
+impl<'a> OwnedBlobRef<'a> {
+    const EMPTY: OwnedBlobRef<'static> = OwnedBlobRef {
         hdr: Header::EMPTY,
-        data: &ArcOrInlineBlob::EMPTY,
+        data: &CompactOwnedBlob::EMPTY,
     };
 
     fn ref_count(&self) -> Option<usize> {
         self.data.ref_count(self.hdr)
     }
 
-    fn new(hdr: Header, data: &'a ArcOrInlineBlob) -> Self {
+    fn new(hdr: Header, data: &'a CompactOwnedBlob) -> Self {
         Self { hdr, data }
     }
 
@@ -325,12 +368,13 @@ impl<'a> Raw<'a> {
     }
 }
 
-pub struct IdOrData<'a> {
+/// A self contained reference to a borrowed id or data blob that is part of some buffer
+pub struct BorrowedBlobRef<'a> {
     hdr: Header,
     data: &'a u8,
 }
 
-impl<'a> Debug for IdOrData<'a> {
+impl<'a> Debug for BorrowedBlobRef<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.read() {
             Ok(value) => {
@@ -347,7 +391,7 @@ impl<'a> Debug for IdOrData<'a> {
     }
 }
 
-impl<'a> IdOrData<'a> {
+impl<'a> BorrowedBlobRef<'a> {
     fn new(hdr: Header, data: &'a u8) -> Self {
         Self { hdr, data }
     }
@@ -379,8 +423,8 @@ impl<'a> IdOrData<'a> {
 }
 
 pub enum ValueRef<'a, S> {
-    Raw(Raw<'a>, PhantomData<S>),
-    IdOrData(IdOrData<'a>),
+    Owned(OwnedBlobRef<'a>, PhantomData<S>),
+    Borrowed(BorrowedBlobRef<'a>),
 }
 
 impl<'a> ValueRef<'a, NoStore> {
@@ -392,10 +436,10 @@ impl<'a> ValueRef<'a, NoStore> {
 impl<'a, S> ValueRef<'a, S> {
     fn to_owned(&self) -> OwnedValue<S> {
         match self {
-            Self::Raw(x, _) => OwnedValueRef::new(*x).to_owned(),
-            Self::IdOrData(x) => OwnedValue {
+            Self::Owned(x, _) => OwnedValueRef::new(*x).to_owned(),
+            Self::Borrowed(x) => OwnedValue {
                 hdr: x.hdr,
-                data: ArcOrInlineBlob::copy_from_slice(x.slice()),
+                data: CompactOwnedBlob::copy_from_slice(x.slice()),
                 p: PhantomData,
             },
         }
@@ -422,28 +466,25 @@ impl<'a, S> ValueRef<'a, S> {
 
     fn is_id(&self) -> bool {
         match self {
-            Self::Raw(x, _) => x.is_id(),
-            Self::IdOrData(x) => x.is_id(),
+            Self::Owned(x, _) => x.is_id(),
+            Self::Borrowed(x) => x.is_id(),
         }
     }
     fn is_none(&self) -> bool {
         match self {
-            Self::Raw(x, _) => x.is_none(),
-            Self::IdOrData(x) => x.is_none(),
+            Self::Owned(x, _) => x.is_none(),
+            Self::Borrowed(x) => x.is_none(),
         }
     }
     fn slice(&self) -> &'a [u8] {
         match self {
-            Self::Raw(x, _) => x.slice(),
-            Self::IdOrData(x) => x.slice(),
+            Self::Owned(x, _) => x.slice(),
+            Self::Borrowed(x) => x.slice(),
         }
     }
 }
 
-pub struct OwnedValueRef<'a, S> {
-    raw: Raw<'a>,
-    p: PhantomData<S>,
-}
+pub struct OwnedValueRef<'a, S>(OwnedBlobRef<'a>, PhantomData<S>);
 
 impl<'a> OwnedValueRef<'a, NoStore> {
     pub fn downcast<S2: BlobStore>(&self) -> &OwnedValueRef<'a, S2> {
@@ -452,16 +493,13 @@ impl<'a> OwnedValueRef<'a, NoStore> {
 }
 
 impl<'a, S> OwnedValueRef<'a, S> {
-    fn new(raw: Raw<'a>) -> Self {
-        Self {
-            raw,
-            p: PhantomData,
-        }
+    fn new(raw: OwnedBlobRef<'a>) -> Self {
+        Self(raw, PhantomData)
     }
     fn to_owned(&self) -> OwnedValue<S> {
         OwnedValue {
-            hdr: self.raw.hdr,
-            data: self.raw.data.manual_clone(self.raw.hdr),
+            hdr: self.0.hdr,
+            data: self.0.data.manual_clone(self.0.hdr),
             p: PhantomData,
         }
     }
@@ -469,7 +507,7 @@ impl<'a, S> OwnedValueRef<'a, S> {
 
 impl<'a> AsRef<[u8]> for OwnedValueRef<'a, NoStore> {
     fn as_ref(&self) -> &[u8] {
-        self.raw.data.slice(self.raw.hdr)
+        self.0.data.slice(self.0.hdr)
     }
 }
 
@@ -477,13 +515,14 @@ impl<'a> Deref for OwnedValueRef<'a, NoStore> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        self.raw.data.slice(self.raw.hdr)
+        self.0.data.slice(self.0.hdr)
     }
 }
 
+/// A tuple combining a value header and a value
 pub struct OwnedValue<S> {
     hdr: Header,
-    data: ArcOrInlineBlob,
+    data: CompactOwnedBlob,
     p: PhantomData<S>,
 }
 
@@ -520,12 +559,12 @@ impl OwnedValue<NoStore> {
 impl<S> OwnedValue<S> {
     const EMPTY: Self = Self {
         hdr: Header::NONE,
-        data: ArcOrInlineBlob::EMPTY,
+        data: CompactOwnedBlob::EMPTY,
         p: PhantomData,
     };
 
     fn as_value_ref(&self) -> OwnedValueRef<S> {
-        OwnedValueRef::new(Raw {
+        OwnedValueRef::new(OwnedBlobRef {
             hdr: self.hdr,
             data: &self.data,
         })
@@ -544,17 +583,17 @@ impl<S> OwnedValue<S> {
     pub fn set(&mut self, value: Option<&ValueRef<S>>) {
         self.data.manual_drop(self.hdr);
         match value {
-            Some(ValueRef::Raw(raw, _)) => {
+            Some(ValueRef::Owned(raw, _)) => {
                 self.hdr = raw.hdr;
                 self.data = raw.data.manual_clone(raw.hdr);
             }
-            Some(ValueRef::IdOrData(iod)) => {
+            Some(ValueRef::Borrowed(iod)) => {
                 self.hdr = iod.hdr;
-                self.data = ArcOrInlineBlob::copy_from_slice(iod.slice());
+                self.data = CompactOwnedBlob::copy_from_slice(iod.slice());
             }
             None => {
                 self.hdr = Header::NONE;
-                self.data = ArcOrInlineBlob::EMPTY;
+                self.data = CompactOwnedBlob::EMPTY;
             }
         }
     }
@@ -574,14 +613,22 @@ impl<S> Drop for OwnedValue<S> {
     }
 }
 
+/// An owned tree node
 #[repr(C)]
 pub struct OwnedTreeNode<S> {
+    /// the discriminator, 0 for owned
     discriminator: u8,
+    /// header for the prefix field
     prefix_hdr: Header,
+    /// header for the value field
     value_hdr: Header,
+    /// header for the children field
     children_hdr: Header,
-    prefix: ArcOrInlineBlob,
-    value: ArcOrInlineBlob,
+    /// prefix inline data or arc
+    prefix: CompactOwnedBlob,
+    /// value inline data or arc
+    value: CompactOwnedBlob,
+    /// children inline data or arc
     children: ChildrenRef<S>,
 }
 
@@ -617,8 +664,8 @@ impl<S> Debug for OwnedTreeNode<S> {
                 }
             }));
         f.debug_struct("OwnedTreeNode")
-            .field("prefix", &self.prefix())
-            .field("value", &self.value())
+            .field("prefix", &self.prefix_ref())
+            .field("value", &self.value_ref())
             .field("children", &ctext)
             .finish()
     }
@@ -648,14 +695,14 @@ impl<S: BlobStore> OwnedTreeNode<S> {
         println!(
             "{}  prefix={:?}{}",
             spacer,
-            self.prefix(),
-            format_ref_count(self.prefix().ref_count())
+            self.prefix_ref(),
+            format_ref_count(self.prefix_ref().ref_count())
         );
         println!(
             "{}  value={:?}{}",
             spacer,
-            self.value(),
-            format_ref_count(self.value().ref_count())
+            self.value_ref(),
+            format_ref_count(self.value_ref().ref_count())
         );
         let iter = self.load_children(store)?;
         if let Some(mut iter) = iter {
@@ -677,8 +724,8 @@ impl<S: BlobStore> OwnedTreeNode<S> {
     }
 
     fn serialize<S2: BlobStore>(&self, target: &mut Vec<u8>, store: &S2) -> Result<(), S2::Error> {
-        self.prefix().serialize(target, store)?;
-        self.value().serialize(target, store)?;
+        self.prefix_ref().serialize(target, store)?;
+        self.value_ref().serialize(target, store)?;
         match self.get_children() {
             Ok(children) if !children.is_empty() => {
                 let mut serialized = Vec::new();
@@ -794,11 +841,11 @@ impl<S: BlobStore> OwnedTreeNode<S> {
             let children = self.get_children_mut().expect("children must be loaded");
             let children = Arc::make_mut(children);
             let mut child = children.pop().unwrap();
-            debug_assert!(!self.prefix().is_id(), "prefix must be loaded");
-            debug_assert!(!child.prefix().is_id(), "child prefix must be loaded");
+            debug_assert!(!self.prefix_ref().is_id(), "prefix must be loaded");
+            debug_assert!(!child.prefix_ref().is_id(), "child prefix must be loaded");
             // combine the prefix again
-            let mut prefix = self.prefix().slice().to_vec();
-            prefix.extend_from_slice(child.prefix().slice());
+            let mut prefix = self.prefix_ref().slice().to_vec();
+            prefix.extend_from_slice(child.prefix_ref().slice());
             self.set_prefix_slice(&prefix);
             // take value from child
             std::mem::swap(&mut self.value_hdr, &mut child.value_hdr);
@@ -808,31 +855,29 @@ impl<S: BlobStore> OwnedTreeNode<S> {
             std::mem::swap(&mut self.children, &mut child.children);
         }
         if !self.has_value() && self.child_count() == 0 {
-            self.set_prefix_raw(Raw::EMPTY);
+            self.set_prefix_owned(OwnedBlobRef::EMPTY);
             self.children_hdr = Header::NONE;
             self.children = ChildrenRef::EMPTY;
         }
     }
-}
 
-impl<S: BlobStore> OwnedTreeNode<S> {
     fn load_prefix(&self, store: &S) -> Result<Blob<'_>, S::Error> {
-        if self.prefix().is_id() {
-            store.read(self.prefix().slice())
+        if self.prefix_ref().is_id() {
+            store.read(self.prefix_ref().slice())
         } else {
-            Ok(Blob::new(self.prefix().slice()))
+            Ok(Blob::new(self.prefix_ref().slice()))
         }
     }
 
     fn load_value(&self, store: &S) -> Result<Option<Blob<'_>>, S::Error> {
-        if self.value().is_id() {
-            if self.value().is_none() {
+        if self.value_ref().is_id() {
+            if self.value_ref().is_none() {
                 Ok(None)
             } else {
-                store.read(self.value().slice()).map(Some)
+                store.read(self.value_ref().slice()).map(Some)
             }
         } else {
-            Ok(Some(Blob::new(self.value().slice())))
+            Ok(Some(Blob::new(self.value_ref().slice())))
         }
     }
 }
@@ -841,9 +886,9 @@ impl<S> OwnedTreeNode<S> {
     const EMPTY: Self = Self {
         discriminator: 0,
         prefix_hdr: Header::EMPTY,
-        prefix: ArcOrInlineBlob::EMPTY,
+        prefix: CompactOwnedBlob::EMPTY,
         value_hdr: Header::NONE,
-        value: ArcOrInlineBlob::EMPTY,
+        value: CompactOwnedBlob::EMPTY,
         children_hdr: Header::NONE,
         children: ChildrenRef::EMPTY,
     };
@@ -867,57 +912,57 @@ impl<S> OwnedTreeNode<S> {
         res
     }
 
-    fn prefix(&self) -> Raw<'_> {
-        Raw::new(self.prefix_hdr, &self.prefix)
+    fn prefix_ref(&self) -> OwnedBlobRef<'_> {
+        OwnedBlobRef::new(self.prefix_hdr, &self.prefix)
     }
 
-    fn value(&self) -> Raw<'_> {
-        Raw::new(self.value_hdr, &self.value)
+    fn value_ref(&self) -> OwnedBlobRef<'_> {
+        OwnedBlobRef::new(self.value_hdr, &self.value)
     }
 
     fn first_prefix_byte(&self) -> Option<u8> {
-        self.prefix().slice().get(0).cloned()
+        self.prefix_ref().slice().get(0).cloned()
     }
 
     fn is_empty(&self) -> bool {
         !self.has_value() && self.is_leaf()
     }
 
-    fn set_prefix_raw(&mut self, prefix: Raw) {
+    fn set_prefix_owned(&mut self, prefix: OwnedBlobRef) {
         self.prefix.manual_drop(self.prefix_hdr);
         self.prefix_hdr = prefix.hdr;
         self.prefix = prefix.data.manual_clone(prefix.hdr);
     }
 
-    fn set_value_raw(&mut self, value: Raw) {
+    fn set_prefix_slice(&mut self, prefix: &[u8]) {
+        self.prefix.manual_drop(self.prefix_hdr);
+        self.prefix_hdr = Header::data(prefix.len());
+        self.prefix = CompactOwnedBlob::copy_from_slice(prefix);
+    }
+
+    fn set_value_owned(&mut self, value: OwnedBlobRef) {
         self.value.manual_drop(self.value_hdr);
         self.value_hdr = value.hdr;
         self.value = value.data.manual_clone(value.hdr);
     }
 
-    fn set_prefix_id_or_data(&mut self, prefix: IdOrData) {
-        self.prefix.manual_drop(self.prefix_hdr);
-        self.prefix_hdr = prefix.hdr;
-        self.prefix = ArcOrInlineBlob::copy_from_slice(prefix.slice());
-    }
-
-    fn set_value_id_or_data(&mut self, value: IdOrData) {
+    fn set_value_borrowed(&mut self, value: BorrowedBlobRef) {
         self.value.manual_drop(self.value_hdr);
         self.value_hdr = value.hdr;
-        self.value = ArcOrInlineBlob::copy_from_slice(value.slice());
+        self.value = CompactOwnedBlob::copy_from_slice(value.slice());
     }
 
-    fn set_children_id_or_data(&mut self, value: IdOrData) {
+    fn set_prefix_borrowed(&mut self, prefix: BorrowedBlobRef) {
+        self.prefix.manual_drop(self.prefix_hdr);
+        self.prefix_hdr = prefix.hdr;
+        self.prefix = CompactOwnedBlob::copy_from_slice(prefix.slice());
+    }
+
+    fn set_children_borrowed(&mut self, value: BorrowedBlobRef) {
         assert!(value.hdr.is_id());
         self.children.manual_drop(self.children_hdr);
         self.children_hdr = value.hdr;
         self.children = ChildrenRef::id_from_slice(value.slice());
-    }
-
-    fn set_prefix_slice(&mut self, prefix: &[u8]) {
-        self.prefix.manual_drop(self.prefix_hdr);
-        self.prefix_hdr = Header::data(prefix.len());
-        self.prefix = ArcOrInlineBlob::copy_from_slice(prefix);
     }
 
     fn set_value(&mut self, value: Option<impl AsRef<[u8]>>) {
@@ -932,10 +977,10 @@ impl<S> OwnedTreeNode<S> {
         self.value.manual_drop(self.value_hdr);
         if let Some(value) = value {
             self.value_hdr = Header::data(value.len());
-            self.value = ArcOrInlineBlob::copy_from_slice(value);
+            self.value = CompactOwnedBlob::copy_from_slice(value);
         } else {
             self.value_hdr = Header::NONE;
-            self.value = ArcOrInlineBlob::EMPTY;
+            self.value = CompactOwnedBlob::EMPTY;
         }
     }
 
@@ -972,7 +1017,7 @@ impl<S> OwnedTreeNode<S> {
 
     fn value_opt(&self) -> Option<OwnedValueRef<'_, S>> {
         if self.has_value() {
-            Some(OwnedValueRef::new(self.value()))
+            Some(OwnedValueRef::new(self.value_ref()))
         } else {
             None
         }
@@ -1037,14 +1082,23 @@ impl<S> Clone for OwnedTreeNode<S> {
     }
 }
 
+/// A borrowed tree node
+///
+/// This is a struct that contains pointers to the raw data of a node,
+/// typically in a memory mapped file or a buffer.
+///
+/// Total size should be 4*PTR_SIZE, so 32 bytes on 64 bit
 #[repr(C)]
 pub struct BorrowedTreeNode<'a, S> {
     discriminator: u8,
     prefix_hdr: Header,
     value_hdr: Header,
     children_hdr: Header,
+    /// reference to the first prefix byte
     prefix: &'a u8,
+    /// reference to the first value byte
     value: &'a u8,
+    /// reference to the first children byte
     children: &'a u8,
     p: PhantomData<&'a S>,
 }
@@ -1069,9 +1123,9 @@ impl<'a, S> Copy for BorrowedTreeNode<'a, S> {}
 impl<'a, S> Debug for BorrowedTreeNode<'a, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BorrowedTreeNode")
-            .field("prefix", &self.prefix())
-            .field("value", &self.value())
-            .field("children_hdr", &self.children())
+            .field("prefix", &self.prefix_ref())
+            .field("value", &self.value_ref())
+            .field("children_hdr", &self.children_ref())
             .finish()
     }
 }
@@ -1094,9 +1148,9 @@ impl<S: 'static> BorrowedTreeNode<'static, S> {
 impl<'a, S> BorrowedTreeNode<'a, S> {
     fn to_owned(&self) -> OwnedTreeNode<S> {
         let mut res = OwnedTreeNode::EMPTY;
-        res.set_prefix_id_or_data(self.prefix());
-        res.set_value_id_or_data(self.value());
-        res.set_children_id(self.children().read().unwrap_err());
+        res.set_prefix_borrowed(self.prefix_ref());
+        res.set_value_borrowed(self.value_ref());
+        res.set_children_id(self.children_ref().read().unwrap_err());
         res
     }
 
@@ -1113,8 +1167,8 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
     {
         let spacer = std::iter::repeat(" ").take(indent).collect::<String>();
         println!("{}TreeNode", spacer);
-        println!("{}  prefix={:?}", spacer, self.prefix(),);
-        println!("{}  value={:?}", spacer, self.value(),);
+        println!("{}  prefix={:?}", spacer, self.prefix_ref(),);
+        println!("{}  value={:?}", spacer, self.value_ref(),);
         let iter = self.load_children(store)?;
         println!("{}", spacer);
         if let Some(mut iter) = iter {
@@ -1126,19 +1180,19 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
     }
 
     fn first_prefix_byte(&self) -> Option<u8> {
-        self.prefix().slice().get(0).cloned()
+        self.prefix_ref().slice().get(0).cloned()
     }
 
-    fn prefix(&self) -> IdOrData<'a> {
-        IdOrData::new(self.prefix_hdr, self.prefix)
+    fn prefix_ref(&self) -> BorrowedBlobRef<'a> {
+        BorrowedBlobRef::new(self.prefix_hdr, self.prefix)
     }
 
-    fn value(&self) -> IdOrData<'a> {
-        IdOrData::new(self.value_hdr, self.value)
+    fn value_ref(&self) -> BorrowedBlobRef<'a> {
+        BorrowedBlobRef::new(self.value_hdr, self.value)
     }
 
-    fn children(&self) -> IdOrData<'a> {
-        IdOrData::new(self.children_hdr, self.children)
+    fn children_ref(&self) -> BorrowedBlobRef<'a> {
+        BorrowedBlobRef::new(self.children_hdr, self.children)
     }
 
     fn bytes_len(&self) -> usize {
@@ -1149,15 +1203,15 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
     where
         S: BlobStore,
     {
-        match self.prefix().read() {
+        match self.prefix_ref().read() {
             Ok(data) => Ok(Blob::new(data)),
             Err(id) => store.read(id),
         }
     }
 
-    fn value_opt(&self) -> Option<ValueRef<S>> {
+    fn value_ref_opt(&self) -> Option<ValueRef<S>> {
         if self.value_hdr != Header::NONE {
-            Some(ValueRef::IdOrData(self.value()))
+            Some(ValueRef::Borrowed(self.value_ref()))
         } else {
             None
         }
@@ -1171,15 +1225,17 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
             Ok(TreeNodeIter::from_slice(&[]))
         } else {
             assert!(self.children_hdr.is_id());
-            let id = self.children().slice();
+            let id = self.children_ref().slice();
             TreeNodeIter::load(id, store)
         }
     }
 
+    /// Read one borrowd tree node from a buffer
     pub fn read(buffer: &'a [u8]) -> Option<Self> {
         Some(Self::read_one(buffer)?.0)
     }
 
+    /// Read one borrowd tree node from a buffer, and return the remainder of the buffer
     pub fn read_one(rest: &'a [u8]) -> Option<(Self, &'a [u8])> {
         let prefix_hdr = Header::from(*rest.get(0)?);
         let len = prefix_hdr.len() + 1;
@@ -1218,6 +1274,7 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
     }
 }
 
+/// A tree node ref, either a reference to an OwnedTreeNode, or a BorrowedTreeNode
 #[derive(Clone, Copy)]
 pub enum TreeNodeRef<'a, S> {
     Owned(&'a OwnedTreeNode<S>),
@@ -1294,8 +1351,8 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
 
     fn value_opt(&self) -> Option<ValueRef<S>> {
         match self.dispatch() {
-            Ok(owned) => owned.value_opt().map(|x| ValueRef::Raw(x.raw, PhantomData)),
-            Err(borrowed) => borrowed.value_opt(),
+            Ok(owned) => owned.value_opt().map(|x| ValueRef::Owned(x.0, PhantomData)),
+            Err(borrowed) => borrowed.value_ref_opt(),
         }
     }
 
@@ -1448,6 +1505,7 @@ fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
     a.iter().zip(b).take_while(|(a, b)| a == b).count()
 }
 
+/// Converter that converts nodes from one kind of store to another
 pub trait NodeConverter<A, B> {
     fn convert_node(&self, node: &TreeNodeRef<A>, store: &A) -> Result<OwnedTreeNode<B>, A::Error>
     where
@@ -1465,6 +1523,7 @@ pub trait NodeConverter<A, B> {
         A: BlobStore;
 }
 
+/// Converter that converts from a node with NoStore to any other store. This is always possible and a noop.
 #[derive(Clone, Copy)]
 pub struct DowncastConverter;
 
@@ -1491,6 +1550,7 @@ impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
     }
 }
 
+/// Identity node converter to simplify plumbing
 #[derive(Clone, Copy)]
 pub struct IdentityConverter;
 
@@ -2018,10 +2078,10 @@ where
         if let Some(bv) = b.value_opt() {
             if let Some(mut av) = a.take_value_opt() {
                 f(&mut av, &bv)?;
-                a.set_value_raw(av.as_value_ref().raw);
+                a.set_value_owned(av.as_value_ref().0);
             } else {
                 let av = c.convert_value(&bv, &bb)?;
-                a.set_value_raw(av.as_value_ref().raw);
+                a.set_value_owned(av.as_value_ref().0);
             }
         }
         let ac = a.load_children_mut(&ab)?;
@@ -2293,7 +2353,7 @@ where
         // prefixes are now identical
         if let (Some(mut av), Some(bv)) = (a.take_value_opt(), b.value_opt()) {
             f(&mut av, &bv)?;
-            a.set_value_raw(av.as_value_ref().raw);
+            a.set_value_owned(av.as_value_ref().0);
         }
         let ac = a.load_children_mut(&ab)?;
         let bc = b.load_children(&bb)?;
@@ -2571,7 +2631,7 @@ where
         if let Some(bv) = b.value_opt() {
             if let Some(mut av) = a.take_value_opt() {
                 f(&mut av, &bv)?;
-                a.set_value_raw(av.as_value_ref().raw);
+                a.set_value_owned(av.as_value_ref().0);
             }
         }
         let ac = a.load_children_mut(&ab)?;
@@ -3086,19 +3146,19 @@ impl<S: BlobStore, F: Fn(&[u8], &TreeNodeRef<S>) -> Result<bool, S::Error>> Iter
 }
 
 #[derive(Debug, Clone)]
-pub struct Tree<S: BlobStore = NoStore> {
+pub struct RadixTree<S: BlobStore = NoStore> {
     node: OwnedTreeNode<S>,
     /// The associated store
     store: S,
 }
 
-impl<S: BlobStore + Default> Default for Tree<S> {
+impl<S: BlobStore + Default> Default for RadixTree<S> {
     fn default() -> Self {
         Self::empty(S::default())
     }
 }
 
-impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
+impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
     pub fn get(&self, key: &[u8]) -> Option<OwnedValue<S>> {
         unwrap_safe(self.try_get(key))
     }
@@ -3125,7 +3185,7 @@ impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
     pub fn group_by<'a>(
         &'a self,
         f: impl Fn(&[u8], &TreeNodeRef<S>) -> bool + 'a,
-    ) -> impl Iterator<Item = Tree<S>> + 'a {
+    ) -> impl Iterator<Item = RadixTree<S>> + 'a {
         self.try_group_by(move |a, b| Ok(f(a, b))).map(unwrap_safe)
     }
 
@@ -3135,23 +3195,23 @@ impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
 
     pub fn outer_combine(
         &self,
-        that: &Tree<S>,
+        that: &RadixTree<S>,
         f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> Option<OwnedValue<NoStore>> + Copy,
-    ) -> Tree {
+    ) -> RadixTree {
         unwrap_safe(self.try_outer_combine(that, |a, b| Ok(f(a, b))))
     }
 
     pub fn inner_combine(
         &self,
-        that: &Tree<S>,
+        that: &RadixTree<S>,
         f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> Option<OwnedValue<NoStore>> + Copy,
-    ) -> Tree {
+    ) -> RadixTree {
         unwrap_safe(self.try_inner_combine(that, |a, b| Ok(f(a, b))))
     }
 
     pub fn inner_combine_pred(
         &self,
-        that: &Tree<S>,
+        that: &RadixTree<S>,
         f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> bool + Copy,
     ) -> bool {
         unwrap_safe(self.try_inner_combine_pred(&that, |a, b| Ok(f(a, b))))
@@ -3159,15 +3219,15 @@ impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
 
     pub fn left_combine(
         &self,
-        that: &Tree<S>,
+        that: &RadixTree<S>,
         f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> Option<OwnedValue<NoStore>> + Copy,
-    ) -> Tree {
+    ) -> RadixTree {
         unwrap_safe(self.try_left_combine(that, |a, b| Ok(f(a, b))))
     }
 
     pub fn left_combine_pred(
         &self,
-        that: &Tree<S>,
+        that: &RadixTree<S>,
         f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> bool + Copy,
     ) -> bool {
         unwrap_safe(self.try_left_combine_pred(&that, |a, b| Ok(f(a, b))))
@@ -3190,7 +3250,7 @@ impl<S: BlobStore<Error = NoError> + Clone> Tree<S> {
     }
 }
 
-impl Tree<NoStore> {
+impl RadixTree<NoStore> {
     pub fn leaf(value: &[u8]) -> Self {
         Self::new(OwnedTreeNode::leaf(value), NoStore)
     }
@@ -3201,7 +3261,7 @@ impl Tree<NoStore> {
 
     pub fn outer_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         f: impl Fn(&mut OwnedValue<NoStore>, &ValueRef<S2>) + Copy,
     ) {
         unwrap_safe(self.try_outer_combine_with(that, DetachConverter, |a, b| Ok(f(a, b))))
@@ -3209,7 +3269,7 @@ impl Tree<NoStore> {
 
     pub fn inner_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         f: impl Fn(&mut OwnedValue<NoStore>, &ValueRef<S2>) + Copy,
     ) {
         unwrap_safe(self.try_inner_combine_with(that, DetachConverter, |a, b| Ok(f(a, b))))
@@ -3217,19 +3277,19 @@ impl Tree<NoStore> {
 
     pub fn left_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         f: impl Fn(&mut OwnedValue<NoStore>, &ValueRef<S2>) + Copy,
     ) {
         unwrap_safe(self.try_left_combine_with(that, DetachConverter, |a, b| Ok(f(a, b))))
     }
 
-    pub fn filter_prefix(&self, prefix: &[u8]) -> Tree {
+    pub fn filter_prefix(&self, prefix: &[u8]) -> RadixTree {
         unwrap_safe(self.try_filter_prefix(prefix))
     }
 
     pub fn retain_prefix_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         f: impl Fn(&ValueRef<S2>) -> bool + Copy,
     ) {
         unwrap_safe(self.try_retain_prefix_with(that, |a| Ok(f(a))))
@@ -3237,19 +3297,19 @@ impl Tree<NoStore> {
 
     pub fn remove_prefix_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         f: impl Fn(&ValueRef<S2>) -> bool + Copy,
     ) {
         unwrap_safe(self.try_remove_prefix_with(that, |a| Ok(f(a))))
     }
 
-    pub fn try_attached<S: BlobStore>(&self, store: S) -> Result<Tree<S>, S::Error> {
+    pub fn try_attached<S: BlobStore>(&self, store: S) -> Result<RadixTree<S>, S::Error> {
         let node = self.node.try_attached(&store)?;
-        Ok(Tree { node, store })
+        Ok(RadixTree { node, store })
     }
 }
 
-impl<S: BlobStore> Tree<S> {
+impl<S: BlobStore> RadixTree<S> {
     pub fn empty(store: S) -> Self {
         Self::new(OwnedTreeNode::<S>::EMPTY, store)
     }
@@ -3263,23 +3323,23 @@ impl<S: BlobStore> Tree<S> {
     }
 }
 
-impl FromIterator<(Vec<u8>, Vec<u8>)> for Tree {
+impl FromIterator<(Vec<u8>, Vec<u8>)> for RadixTree {
     fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
-        let mut tree = Tree::default();
+        let mut tree = RadixTree::default();
         for (k, v) in iter.into_iter() {
-            tree.outer_combine_with(&Tree::single(k.as_ref(), v.as_ref()), |_, _| {});
+            tree.outer_combine_with(&RadixTree::single(k.as_ref(), v.as_ref()), |_, _| {});
         }
         tree
     }
 }
-impl<S: BlobStore + Clone> Tree<S> {
+impl<S: BlobStore + Clone> RadixTree<S> {
     pub(crate) fn try_dump(&self) -> Result<(), S::Error> {
         self.node.dump(0, &self.store)
     }
 
-    pub fn try_detached(&self) -> Result<Tree<NoStore>, S::Error> {
+    pub fn try_detached(&self) -> Result<RadixTree<NoStore>, S::Error> {
         let node = self.node.detached(&self.store)?;
-        Ok(Tree {
+        Ok(RadixTree {
             node,
             store: NoStore,
         })
@@ -3316,7 +3376,7 @@ impl<S: BlobStore + Clone> Tree<S> {
     pub fn try_group_by<'a, F: Fn(&[u8], &TreeNodeRef<S>) -> Result<bool, S::Error> + 'a>(
         &'a self,
         descend: F,
-    ) -> impl Iterator<Item = Result<Tree<S>, S::Error>> + 'a {
+    ) -> impl Iterator<Item = Result<RadixTree<S>, S::Error>> + 'a {
         GroupBy::new(
             TreeNodeIter::from_arc(Arc::new(vec![self.node.clone()])),
             self.store.clone(),
@@ -3324,20 +3384,20 @@ impl<S: BlobStore + Clone> Tree<S> {
             descend,
         )
         .map(|r| {
-            r.map(|node| Tree {
+            r.map(|node| RadixTree {
                 node,
                 store: self.store.clone(),
             })
         })
     }
 
-    pub fn try_outer_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
+    pub fn try_outer_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
         F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
     {
-        Ok(Tree {
+        Ok(RadixTree {
             node: outer_combine(
                 &TreeNodeRef::Owned(&self.node),
                 self.store.clone(),
@@ -3351,7 +3411,7 @@ impl<S: BlobStore + Clone> Tree<S> {
 
     pub fn try_outer_combine_with<S2, C, F>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         c: C,
         f: F,
     ) -> Result<(), S::Error>
@@ -3371,13 +3431,13 @@ impl<S: BlobStore + Clone> Tree<S> {
         )
     }
 
-    pub fn try_inner_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
+    pub fn try_inner_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
         F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
     {
-        Ok(Tree {
+        Ok(RadixTree {
             node: inner_combine(
                 &TreeNodeRef::Owned(&self.node),
                 self.store.clone(),
@@ -3391,7 +3451,7 @@ impl<S: BlobStore + Clone> Tree<S> {
 
     pub fn try_inner_combine_with<S2, C, F>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         c: C,
         f: F,
     ) -> Result<(), S::Error>
@@ -3411,7 +3471,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         )
     }
 
-    pub fn try_inner_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
+    pub fn try_inner_combine_pred<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<bool, E>
     where
         S2: BlobStore + Clone,
         E: From<S::Error> + From<S2::Error>,
@@ -3426,13 +3486,13 @@ impl<S: BlobStore + Clone> Tree<S> {
         )
     }
 
-    pub fn try_left_combine<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<Tree, E>
+    pub fn try_left_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
         F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<OwnedValue<NoStore>>, E> + Copy,
     {
-        Ok(Tree {
+        Ok(RadixTree {
             node: left_combine(
                 &TreeNodeRef::Owned(&self.node),
                 self.store.clone(),
@@ -3444,7 +3504,7 @@ impl<S: BlobStore + Clone> Tree<S> {
         })
     }
 
-    pub fn try_left_combine_pred<S2, E, F>(&self, that: &Tree<S2>, f: F) -> Result<bool, E>
+    pub fn try_left_combine_pred<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<bool, E>
     where
         S2: BlobStore + Clone,
         E: From<S::Error> + From<S2::Error>,
@@ -3461,7 +3521,7 @@ impl<S: BlobStore + Clone> Tree<S> {
 
     pub fn try_left_combine_with<S2, C, F>(
         &mut self,
-        that: &Tree<S2>,
+        that: &RadixTree<S2>,
         c: C,
         f: F,
     ) -> Result<(), S::Error>
@@ -3481,7 +3541,11 @@ impl<S: BlobStore + Clone> Tree<S> {
         )
     }
 
-    pub fn try_retain_prefix_with<S2, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), S::Error>
+    pub fn try_retain_prefix_with<S2, F>(
+        &mut self,
+        that: &RadixTree<S2>,
+        f: F,
+    ) -> Result<(), S::Error>
     where
         S2: BlobStore + Clone,
         F: Fn(&ValueRef<S2>) -> Result<bool, S::Error> + Copy,
@@ -3496,7 +3560,11 @@ impl<S: BlobStore + Clone> Tree<S> {
         )
     }
 
-    pub fn try_remove_prefix_with<S2, F>(&mut self, that: &Tree<S2>, f: F) -> Result<(), S::Error>
+    pub fn try_remove_prefix_with<S2, F>(
+        &mut self,
+        that: &RadixTree<S2>,
+        f: F,
+    ) -> Result<(), S::Error>
     where
         S2: BlobStore + Clone,
         F: Fn(&ValueRef<S2>) -> Result<bool, S::Error> + Copy,
@@ -3511,9 +3579,9 @@ impl<S: BlobStore + Clone> Tree<S> {
         )
     }
 
-    pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<Tree<S>, S::Error> {
+    pub fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<RadixTree<S>, S::Error> {
         filter_prefix(&TreeNodeRef::Owned(&self.node), &self.store, prefix)
-            .map(|node| Tree::new(node, self.store.clone()))
+            .map(|node| RadixTree::new(node, self.store.clone()))
     }
 
     pub fn try_first_value(&self) -> Result<Option<OwnedValue<S>>, S::Error> {

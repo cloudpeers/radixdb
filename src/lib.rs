@@ -1,6 +1,7 @@
+//! A radix tree data structure that can be used both in memory or from a buffer/disk.
 pub mod node;
 pub mod store;
-pub use node::Tree as RadixTree;
+pub use node::RadixTree;
 
 #[cfg(test)]
 #[macro_use]
