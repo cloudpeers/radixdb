@@ -12,7 +12,7 @@ use inplace_vec_builder::InPlaceVecBuilder;
 use crate::{
     store::{
         blob_store::{OwnedBlob, UnwrapSafeExt},
-        Blob, BlobStore, NoError, NoStore,
+        Blob, BlobStore, Detached, NoError,
     },
     Hex, Lit, RadixTree,
 };
@@ -431,12 +431,12 @@ impl<'a> BorrowedBlobRef<'a> {
 /// Reference to a value
 ///
 /// Can refer either an owned value of an in memory node, or a borrowed value in a buffer or memory mapped file.
-pub struct ValueRef<'a, S: BlobStore = NoStore>(
+pub struct ValueRef<'a, S: BlobStore = Detached>(
     Result<OwnedBlobRef<'a>, BorrowedBlobRef<'a>>,
     PhantomData<S>,
 );
 
-impl<'a> ValueRef<'a, NoStore> {
+impl<'a> ValueRef<'a, Detached> {
     pub fn downcast<S2: BlobStore>(&self) -> &ValueRef<'a, S2> {
         unsafe { std::mem::transmute(self) }
     }
@@ -454,7 +454,7 @@ impl<'a, S: BlobStore> ValueRef<'a, S> {
         }
     }
 
-    fn detached(&self, _store: &S) -> Result<Value<NoStore>, S::Error>
+    fn detached(&self, _store: &S) -> Result<Value<Detached>, S::Error>
     where
         S: BlobStore,
     {
@@ -495,7 +495,7 @@ impl<'a, S: BlobStore> ValueRef<'a, S> {
 
 struct OwnedValueRef<'a, S>(OwnedBlobRef<'a>, PhantomData<S>);
 
-impl<'a> OwnedValueRef<'a, NoStore> {
+impl<'a> OwnedValueRef<'a, Detached> {
     pub fn downcast<S2: BlobStore>(&self) -> &OwnedValueRef<'a, S2> {
         unsafe { std::mem::transmute(self) }
     }
@@ -514,13 +514,13 @@ impl<'a, S: BlobStore> OwnedValueRef<'a, S> {
     }
 }
 
-impl<'a> AsRef<[u8]> for OwnedValueRef<'a, NoStore> {
+impl<'a> AsRef<[u8]> for OwnedValueRef<'a, Detached> {
     fn as_ref(&self) -> &[u8] {
         self.0.data.slice(self.0.hdr)
     }
 }
 
-impl<'a> Deref for OwnedValueRef<'a, NoStore> {
+impl<'a> Deref for OwnedValueRef<'a, Detached> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -529,7 +529,7 @@ impl<'a> Deref for OwnedValueRef<'a, NoStore> {
 }
 
 /// An owned radix tree value
-pub struct Value<S: BlobStore = NoStore> {
+pub struct Value<S: BlobStore = Detached> {
     hdr: Header,
     data: CompactOwnedBlob,
     p: PhantomData<S>,
@@ -545,13 +545,13 @@ impl<S: BlobStore> Debug for Value<S> {
     }
 }
 
-impl AsRef<[u8]> for Value<NoStore> {
+impl AsRef<[u8]> for Value<Detached> {
     fn as_ref(&self) -> &[u8] {
         self.data.slice(self.hdr)
     }
 }
 
-impl Deref for Value<NoStore> {
+impl Deref for Value<Detached> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -559,7 +559,7 @@ impl Deref for Value<NoStore> {
     }
 }
 
-impl Value<NoStore> {
+impl Value<Detached> {
     pub fn downcast<S2: BlobStore>(self) -> Value<S2> {
         unsafe { std::mem::transmute(self) }
     }
@@ -642,7 +642,7 @@ pub struct TreeNode<S> {
 }
 
 /// Define equality only for unattached trees
-impl PartialEq for TreeNode<NoStore> {
+impl PartialEq for TreeNode<Detached> {
     fn eq(&self, other: &Self) -> bool {
         self.prefix_ref().slice() == other.prefix_ref().slice()
             && self.value_ref().slice() == other.value_ref().slice()
@@ -650,7 +650,7 @@ impl PartialEq for TreeNode<NoStore> {
     }
 }
 
-impl Eq for TreeNode<NoStore> {}
+impl Eq for TreeNode<Detached> {}
 
 impl<S: BlobStore> TreeNode<S> {
     fn as_ref(&self) -> TreeNodeRef<S> {
@@ -658,7 +658,7 @@ impl<S: BlobStore> TreeNode<S> {
     }
 }
 
-impl TreeNode<NoStore> {
+impl TreeNode<Detached> {
     pub fn downcast<S2: BlobStore>(&self) -> TreeNode<S2> {
         let res = self.clone();
         unsafe { std::mem::transmute(res) }
@@ -692,7 +692,7 @@ impl<S: BlobStore> Debug for TreeNode<S> {
 }
 
 impl<S: BlobStore> TreeNode<S> {
-    fn detached(&self, store: &S) -> Result<TreeNode<NoStore>, S::Error> {
+    fn detached(&self, store: &S) -> Result<TreeNode<Detached>, S::Error> {
         let mut res = TreeNode::EMPTY;
         res.set_prefix_slice(self.load_prefix(store)?.as_ref());
         res.set_value(self.load_value(store)?);
@@ -1174,7 +1174,7 @@ impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
         res
     }
 
-    fn detached(&self, store: &S) -> Result<TreeNode<NoStore>, S::Error>
+    fn detached(&self, store: &S) -> Result<TreeNode<Detached>, S::Error>
     where
         S: BlobStore,
     {
@@ -1296,7 +1296,7 @@ impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
 
 /// A tree node ref, either a reference to an OwnedTreeNode, or a BorrowedTreeNode
 #[derive(Clone, Copy)]
-pub struct TreeNodeRef<'a, S: BlobStore = NoStore>(
+pub struct TreeNodeRef<'a, S: BlobStore = Detached>(
     Result<&'a TreeNode<S>, BorrowedTreeNode<'a, S>>,
 );
 
@@ -1309,7 +1309,7 @@ impl<'a, S: BlobStore> Debug for TreeNodeRef<'a, S> {
     }
 }
 
-impl<'a> TreeNodeRef<'a, NoStore> {
+impl<'a> TreeNodeRef<'a, Detached> {
     pub fn downcast<S2: BlobStore>(&self) -> TreeNode<S2> {
         match self.dispatch() {
             Ok(owned) => owned.downcast(),
@@ -1327,7 +1327,7 @@ impl<'a, S: BlobStore> TreeNodeRef<'a, S> {
         Self(Err(x))
     }
 
-    fn detached(&self, store: &S) -> Result<TreeNode<NoStore>, S::Error> {
+    fn detached(&self, store: &S) -> Result<TreeNode<Detached>, S::Error> {
         match self.dispatch() {
             Ok(inner) => inner.detached(store),
             Err(inner) => inner.detached(store),
@@ -1558,25 +1558,25 @@ trait NodeConverter<A, B: BlobStore> {
 #[derive(Clone, Copy)]
 struct DowncastConverter;
 
-impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
+impl<B: BlobStore> NodeConverter<Detached, B> for DowncastConverter {
     fn convert_node(
         &self,
-        node: &TreeNodeRef<NoStore>,
-        _: &NoStore,
+        node: &TreeNodeRef<Detached>,
+        _: &Detached,
     ) -> Result<TreeNode<B>, NoError> {
         Ok(node.downcast())
     }
 
     fn convert_node_shortened(
         &self,
-        node: &TreeNodeRef<NoStore>,
-        store: &NoStore,
+        node: &TreeNodeRef<Detached>,
+        store: &Detached,
         n: usize,
     ) -> Result<TreeNode<B>, NoError> {
         node.clone_shortened(store, n).map(|x| x.downcast())
     }
 
-    fn convert_value(&self, bv: &ValueRef<NoStore>, _: &NoStore) -> Result<Value<B>, NoError> {
+    fn convert_value(&self, bv: &ValueRef<Detached>, _: &Detached) -> Result<Value<B>, NoError> {
         Ok(bv.downcast::<B>().to_owned())
     }
 }
@@ -1728,7 +1728,7 @@ impl<S: BlobStore> OwnedTreeNodeIter<'static, S> {
 }
 
 fn is_no_store<S: 'static>() -> bool {
-    TypeId::of::<S>() == TypeId::of::<NoStore>()
+    TypeId::of::<S>() == TypeId::of::<Detached>()
 }
 
 impl<'a, S: BlobStore> OwnedTreeNodeIter<'a, S> {
@@ -1750,7 +1750,7 @@ impl<'a, S: BlobStore> OwnedTreeNodeIter<'a, S> {
         }
     }
 
-    fn detached(mut self, store: &S) -> Result<Option<Arc<Vec<TreeNode<NoStore>>>>, S::Error> {
+    fn detached(mut self, store: &S) -> Result<Option<Arc<Vec<TreeNode<Detached>>>>, S::Error> {
         Ok(if self.is_empty() {
             None
         } else if self.0.is_some() && is_no_store::<S>() {
@@ -1823,7 +1823,7 @@ impl<S: BlobStore> BorrowedTreeNodeIter<S> {
         }
     }
 
-    fn detached(self, _store: &S) -> Result<Option<Arc<Vec<TreeNode<NoStore>>>>, S::Error> {
+    fn detached(self, _store: &S) -> Result<Option<Arc<Vec<TreeNode<Detached>>>>, S::Error> {
         Ok(if self.is_empty() { None } else { todo!() })
     }
 
@@ -1908,7 +1908,7 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         }
     }
 
-    fn detached(self, store: &S) -> Result<Option<Arc<Vec<TreeNode<NoStore>>>>, S::Error> {
+    fn detached(self, store: &S) -> Result<Option<Arc<Vec<TreeNode<Detached>>>>, S::Error> {
         match self {
             Self::Owned(x) => x.detached(store),
             Self::Borrowed(x) => x.detached(store),
@@ -1974,12 +1974,12 @@ fn outer_combine<A, B, E, F>(
     b: &TreeNodeRef<B>,
     bb: B,
     f: F,
-) -> Result<TreeNode<NoStore>, E>
+) -> Result<TreeNode<Detached>, E>
 where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<NoStore>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
 {
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
@@ -2042,12 +2042,12 @@ fn outer_combine_children<'a, A, B, E, F>(
     bc: Option<TreeNodeIter<'a, B>>,
     bb: B,
     f: F,
-) -> Result<Option<Arc<Vec<TreeNode<NoStore>>>>, E>
+) -> Result<Option<Arc<Vec<TreeNode<Detached>>>>, E>
 where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<NoStore>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
 {
     Ok(match (ac, bc) {
         (Some(ac), Some(bc)) => {
@@ -2187,12 +2187,12 @@ fn inner_combine<A, B, E, F>(
     b: &TreeNodeRef<B>,
     bb: B,
     f: F,
-) -> Result<TreeNode<NoStore>, E>
+) -> Result<TreeNode<Detached>, E>
 where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<NoStore>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
 {
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
@@ -2248,12 +2248,12 @@ fn inner_combine_children<'a, A, B, E, F>(
     bc: Option<TreeNodeIter<'a, B>>,
     bb: B,
     f: F,
-) -> Result<Option<Arc<Vec<TreeNode<NoStore>>>>, E>
+) -> Result<Option<Arc<Vec<TreeNode<Detached>>>>, E>
 where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<NoStore>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
 {
     Ok(match (ac, bc) {
         (Some(ac), Some(bc)) => {
@@ -2460,12 +2460,12 @@ fn left_combine<A, B, E, F>(
     b: &TreeNodeRef<B>,
     bb: B,
     f: F,
-) -> Result<TreeNode<NoStore>, E>
+) -> Result<TreeNode<Detached>, E>
 where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<NoStore>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
 {
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
@@ -2517,12 +2517,12 @@ fn left_combine_children<'a, A, B, E, F>(
     bc: Option<TreeNodeIter<'a, B>>,
     bb: B,
     f: F,
-) -> Result<Option<Arc<Vec<TreeNode<NoStore>>>>, E>
+) -> Result<Option<Arc<Vec<TreeNode<Detached>>>>, E>
 where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<NoStore>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
 {
     Ok(match (ac, bc) {
         (Some(ac), Some(bc)) => {
@@ -2977,7 +2977,7 @@ impl Deref for IterKey {
 /// Iterator over all tree values
 ///
 /// This is more efficient than the key value pair iterator since it does not have to keep track of the keys.
-pub struct ValueIter<S: BlobStore = NoStore> {
+pub struct ValueIter<S: BlobStore = Detached> {
     stack: Vec<TreeNodeIter<'static, S>>,
     store: S,
 }
@@ -3035,7 +3035,7 @@ impl<S: BlobStore> Iterator for ValueIter<S> {
 ///
 /// The values are constructed as the tree is traversed. Therefore iteration is slightly more expensive than
 /// iterating over just values using [ValueIter]
-pub struct KeyValueIter<S: BlobStore = NoStore> {
+pub struct KeyValueIter<S: BlobStore = Detached> {
     path: IterKey,
     stack: Vec<(usize, Option<TreeNodeIter<'static, S>>)>,
     store: S,
@@ -3187,24 +3187,28 @@ impl<S: BlobStore + Default> Default for RadixTree<S> {
     }
 }
 
-impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
-    pub fn get(&self, key: &[u8]) -> Option<Value<S>> {
+impl RadixTree {
+    pub fn get(&self, key: impl AsRef<[u8]>) -> Option<Value> {
         self.try_get(key).unwrap_safe()
     }
 
-    pub fn contains_key(&self, key: &[u8]) -> bool {
+    pub fn contains_key(&self, key: impl AsRef<[u8]>) -> bool {
         self.try_contains_key(key).unwrap_safe()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (IterKey, Value<S>)> {
+    pub fn insert(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
+        self.try_insert(key, value).unwrap_safe()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (IterKey, Value)> {
         self.try_iter().map(|x| x.unwrap_safe())
     }
 
-    pub fn values(&self) -> impl Iterator<Item = Value<S>> {
+    pub fn values(&self) -> impl Iterator<Item = Value> {
         self.try_values().map(|x| x.unwrap_safe())
     }
 
-    pub fn scan_prefix(&self, prefix: &[u8]) -> impl Iterator<Item = (IterKey, Value<S>)> + '_ {
+    pub fn scan_prefix(&self, prefix: &[u8]) -> impl Iterator<Item = (IterKey, Value)> + '_ {
         self.try_scan_prefix(prefix)
             .unwrap_safe()
             .map(|x| x.unwrap_safe())
@@ -3212,8 +3216,8 @@ impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
 
     pub fn group_by<'a>(
         &'a self,
-        f: impl Fn(&[u8], &TreeNodeRef<S>) -> bool + 'a,
-    ) -> impl Iterator<Item = RadixTree<S>> + 'a {
+        f: impl Fn(&[u8], &TreeNodeRef) -> bool + 'a,
+    ) -> impl Iterator<Item = RadixTree> + 'a {
         self.try_group_by(move |a, b| Ok(f(a, b)))
             .map(|x| x.unwrap_safe())
     }
@@ -3224,8 +3228,8 @@ impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
 
     pub fn outer_combine(
         &self,
-        that: &RadixTree<S>,
-        f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> Option<Value<NoStore>> + Copy,
+        that: &RadixTree,
+        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value<Detached>> + Copy,
     ) -> RadixTree {
         self.try_outer_combine(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3233,8 +3237,8 @@ impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
 
     pub fn inner_combine(
         &self,
-        that: &RadixTree<S>,
-        f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> Option<Value<NoStore>> + Copy,
+        that: &RadixTree,
+        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value<Detached>> + Copy,
     ) -> RadixTree {
         self.try_inner_combine(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3242,8 +3246,8 @@ impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
 
     pub fn inner_combine_pred(
         &self,
-        that: &RadixTree<S>,
-        f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> bool + Copy,
+        that: &RadixTree,
+        f: impl Fn(&ValueRef, &ValueRef) -> bool + Copy,
     ) -> bool {
         self.try_inner_combine_pred(&that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3251,8 +3255,8 @@ impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
 
     pub fn left_combine(
         &self,
-        that: &RadixTree<S>,
-        f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> Option<Value<NoStore>> + Copy,
+        that: &RadixTree,
+        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value<Detached>> + Copy,
     ) -> RadixTree {
         self.try_left_combine(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3260,43 +3264,43 @@ impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
 
     pub fn left_combine_pred(
         &self,
-        that: &RadixTree<S>,
-        f: impl Fn(&ValueRef<S>, &ValueRef<S>) -> bool + Copy,
+        that: &RadixTree,
+        f: impl Fn(&ValueRef, &ValueRef) -> bool + Copy,
     ) -> bool {
         self.try_left_combine_pred(&that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
     }
 
-    pub fn first_value(&self) -> Option<Value<S>> {
+    pub fn first_value(&self) -> Option<Value> {
         self.try_first_value().unwrap_safe()
     }
 
-    pub fn last_value(&self) -> Option<Value<S>> {
+    pub fn last_value(&self) -> Option<Value> {
         self.try_last_value().unwrap_safe()
     }
 
-    pub fn first_entry(&self, prefix: Vec<u8>) -> Option<(Vec<u8>, Value<S>)> {
+    pub fn first_entry(&self, prefix: Vec<u8>) -> Option<(Vec<u8>, Value)> {
         self.try_first_entry(prefix).unwrap_safe()
     }
 
-    pub fn last_entry(&self, prefix: Vec<u8>) -> Option<(Vec<u8>, Value<S>)> {
+    pub fn last_entry(&self, prefix: Vec<u8>) -> Option<(Vec<u8>, Value)> {
         self.try_last_entry(prefix).unwrap_safe()
     }
 }
 
-impl RadixTree<NoStore> {
-    pub fn leaf(value: &[u8]) -> Self {
-        Self::new(TreeNode::leaf(value), NoStore)
+impl RadixTree {
+    pub fn leaf(value: impl AsRef<[u8]>) -> Self {
+        Self::new(TreeNode::leaf(value.as_ref()), Detached)
     }
 
-    pub fn single(key: &[u8], value: &[u8]) -> Self {
-        Self::new(TreeNode::single(key, value), NoStore)
+    pub fn single(key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) -> Self {
+        Self::new(TreeNode::single(key.as_ref(), value.as_ref()), Detached)
     }
 
     pub fn outer_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
         that: &RadixTree<S2>,
-        f: impl Fn(&mut Value<NoStore>, &ValueRef<S2>) + Copy,
+        f: impl Fn(&mut Value<Detached>, &ValueRef<S2>) + Copy,
     ) {
         self.try_outer_combine_with(that, DetachConverter, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3305,7 +3309,7 @@ impl RadixTree<NoStore> {
     pub fn inner_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
         that: &RadixTree<S2>,
-        f: impl Fn(&mut Value<NoStore>, &ValueRef<S2>) + Copy,
+        f: impl Fn(&mut Value<Detached>, &ValueRef<S2>) + Copy,
     ) {
         self.try_inner_combine_with(that, DetachConverter, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3314,7 +3318,7 @@ impl RadixTree<NoStore> {
     pub fn left_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
         that: &RadixTree<S2>,
-        f: impl Fn(&mut Value<NoStore>, &ValueRef<S2>) + Copy,
+        f: impl Fn(&mut Value<Detached>, &ValueRef<S2>) + Copy,
     ) {
         self.try_left_combine_with(that, DetachConverter, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3349,7 +3353,7 @@ impl RadixTree {
         self.try_attached::<S2>(store).unwrap_safe()
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_attached<S: BlobStore>(&self, store: S) -> Result<RadixTree<S>, S::Error> {
         let node = self.node.try_attached(&store)?;
         Ok(RadixTree { node, store })
@@ -3358,7 +3362,7 @@ impl RadixTree {
 
 impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn detached<S2: BlobStore<Error = NoError>>(&self) -> RadixTree<NoStore> {
+    fn detached<S2: BlobStore<Error = NoError>>(&self) -> RadixTree<Detached> {
         self.try_detached().unwrap_safe()
     }
 }
@@ -3385,11 +3389,11 @@ impl PartialEq for RadixTree {
 
 impl Eq for RadixTree {}
 
-impl<'a> FromIterator<(&'a [u8], &'a [u8])> for RadixTree {
-    fn from_iter<T: IntoIterator<Item = (&'a [u8], &'a [u8])>>(iter: T) -> Self {
+impl<K: AsRef<[u8]>, V: AsRef<[u8]>> FromIterator<(K, V)> for RadixTree {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
         let mut tree = RadixTree::default();
-        for (k, v) in iter.into_iter() {
-            tree.outer_combine_with(&RadixTree::single(k, v), |_, _| {});
+        for (key, value) in iter.into_iter() {
+            tree.insert(key, value);
         }
         tree
     }
@@ -3400,28 +3404,38 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         self.node.dump(0, &self.store)
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
-    fn try_detached(&self) -> Result<RadixTree<NoStore>, S::Error> {
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_detached(&self) -> Result<RadixTree<Detached>, S::Error> {
         let node = self.node.detached(&self.store)?;
         Ok(RadixTree {
             node,
-            store: NoStore,
+            store: Detached,
         })
     }
 
     /// Get the value for a given key
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
-    fn try_get(&self, key: &[u8]) -> Result<Option<Value<S>>, S::Error> {
-        self.node.get(key, &self.store)
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_get(&self, key: impl AsRef<[u8]>) -> Result<Option<Value<S>>, S::Error> {
+        self.node.get(key.as_ref(), &self.store)
     }
 
     /// True if key is contained in this set
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
-    fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
-        self.node.contains_key(key, &self.store)
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_contains_key(&self, key: impl AsRef<[u8]>) -> Result<bool, S::Error> {
+        self.node.contains_key(key.as_ref(), &self.store)
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    fn try_insert(
+        &mut self,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) -> Result<(), S::Error> {
+        self.try_outer_combine_with(&RadixTree::single(key, value), DowncastConverter, |_, _| {
+            Ok(())
+        })
+    }
+
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_iter(&self) -> KeyValueIter<S> {
         KeyValueIter::new(
             TreeNodeIter::from_arc(Arc::new(vec![self.node.clone()])),
@@ -3430,7 +3444,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_values(&self) -> ValueIter<S> {
         ValueIter::new(
             TreeNodeIter::from_arc(Arc::new(vec![self.node.clone()])),
@@ -3438,12 +3452,12 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_scan_prefix(&self, prefix: &[u8]) -> Result<KeyValueIter<S>, S::Error> {
         scan_prefix(self.store.clone(), &TreeNodeRef::owned(&self.node), prefix)
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_group_by<'a, F: Fn(&[u8], &TreeNodeRef<S>) -> Result<bool, S::Error> + 'a>(
         &'a self,
         descend: F,
@@ -3462,12 +3476,12 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         })
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_outer_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
-        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<NoStore>>, E> + Copy,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<Detached>>, E> + Copy,
     {
         Ok(RadixTree {
             node: outer_combine(
@@ -3477,11 +3491,11 @@ impl<S: BlobStore + Clone> RadixTree<S> {
                 that.store.clone(),
                 f,
             )?,
-            store: NoStore,
+            store: Detached,
         })
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_outer_combine_with<S2, C, F>(
         &mut self,
         that: &RadixTree<S2>,
@@ -3504,12 +3518,12 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_inner_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
-        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<NoStore>>, E> + Copy,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<Detached>>, E> + Copy,
     {
         Ok(RadixTree {
             node: inner_combine(
@@ -3519,11 +3533,11 @@ impl<S: BlobStore + Clone> RadixTree<S> {
                 that.store.clone(),
                 f,
             )?,
-            store: NoStore,
+            store: Detached,
         })
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_inner_combine_with<S2, C, F>(
         &mut self,
         that: &RadixTree<S2>,
@@ -3546,7 +3560,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_inner_combine_pred<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<bool, E>
     where
         S2: BlobStore + Clone,
@@ -3562,12 +3576,12 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_left_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
-        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<NoStore>>, E> + Copy,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<Detached>>, E> + Copy,
     {
         Ok(RadixTree {
             node: left_combine(
@@ -3577,11 +3591,11 @@ impl<S: BlobStore + Clone> RadixTree<S> {
                 that.store.clone(),
                 f,
             )?,
-            store: NoStore,
+            store: Detached,
         })
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_left_combine_pred<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<bool, E>
     where
         S2: BlobStore + Clone,
@@ -3597,7 +3611,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_left_combine_with<S2, C, F>(
         &mut self,
         that: &RadixTree<S2>,
@@ -3620,7 +3634,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_retain_prefix_with<S2, F>(&mut self, that: &RadixTree<S2>, f: F) -> Result<(), S::Error>
     where
         S2: BlobStore + Clone,
@@ -3636,7 +3650,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_remove_prefix_with<S2, F>(&mut self, that: &RadixTree<S2>, f: F) -> Result<(), S::Error>
     where
         S2: BlobStore + Clone,
@@ -3652,33 +3666,33 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<RadixTree<S>, S::Error> {
         filter_prefix(&TreeNodeRef::owned(&self.node), &self.store, prefix)
             .map(|node| RadixTree::new(node, self.store.clone()))
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_first_value(&self) -> Result<Option<Value<S>>, S::Error> {
         first_value(&TreeNodeRef::owned(&self.node), &self.store)
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_last_value(&self) -> Result<Option<Value<S>>, S::Error> {
         last_value(&TreeNodeRef::owned(&self.node), &self.store)
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_first_entry(&self, prefix: Vec<u8>) -> Result<Option<(Vec<u8>, Value<S>)>, S::Error> {
         first_entry(prefix, &TreeNodeRef::owned(&self.node), &self.store)
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_last_entry(&self, prefix: Vec<u8>) -> Result<Option<(Vec<u8>, Value<S>)>, S::Error> {
         last_entry(prefix, &TreeNodeRef::owned(&self.node), &self.store)
     }
 
-    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_reattach(&mut self) -> Result<(), S::Error> {
         let mut data = Vec::new();
         self.node.serialize(&mut data, &self.store)?;

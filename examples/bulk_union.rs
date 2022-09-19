@@ -29,16 +29,8 @@ fn do_test() -> anyhow::Result<()> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let tree0: RadixTree = elems0
-        .clone()
-        .iter()
-        .map(|(k, v)| (k.as_ref(), v.as_ref()))
-        .collect();
-    let tree1: RadixTree = elems1
-        .clone()
-        .iter()
-        .map(|(k, v)| (k.as_ref(), v.as_ref()))
-        .collect();
+    let tree0: RadixTree = elems0.clone().iter().collect();
+    let tree1: RadixTree = elems1.clone().iter().collect();
     for _ in 0..100 {
         let mut res = tree0.clone();
         let t0 = Instant::now();

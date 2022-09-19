@@ -21,7 +21,7 @@ fn do_test(_store: DynBlobStore) -> anyhow::Result<()> {
         .collect::<BTreeMap<_, _>>();
     let t0 = Instant::now();
     info!("building tree");
-    let tree: RadixTree = elems.clone().into_iter().collect();
+    let tree: RadixTree = elems.clone().iter().collect();
     info!("unattached tree {} s", t0.elapsed().as_secs_f64());
 
     let x = elems.clone();
@@ -38,7 +38,7 @@ fn do_test(_store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
 
     info!("traversing elements...");
-    let tree: radixdb::RadixTree = elems.clone().into_iter().collect();
+    let tree: radixdb::RadixTree = elems.clone().iter().collect();
     let t0 = Instant::now();
     let mut n = 0;
     for _ in elems.iter() {
@@ -61,7 +61,7 @@ fn do_test(_store: DynBlobStore) -> anyhow::Result<()> {
         let t0 = Instant::now();
         let mut n = 0;
         for key in elems.keys() {
-            if tree.get(key.as_ref()).is_some() {
+            if tree.get(key).is_some() {
                 n += 1;
             }
         }

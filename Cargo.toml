@@ -1,6 +1,6 @@
 [package]
 name = "radixdb"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com"]
 
@@ -11,22 +11,18 @@ debug = true
 
 [dependencies]
 anyhow = "1.0.56"
-fnv = { version = "1.0.7", optional = true }
-parking_lot = { version = "0.12.0", optional = true }
 hex = "0.4.3"
 inplace-vec-builder = "0.1.1"
-smallvec = "1.8.0"
 visibility = "0.0.1"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fnv = { version = "1.0.7", optional = true }
+parking_lot = { version = "0.12.0", optional = true }
 memmap = { version = "0.7.0", optional = true }
 
 [features]
 custom-store = []
-fallible-store = ["custom-store", "fnv"]
 mem-store = ["custom-store", "parking_lot"]
-paged-file-store = ["fallible-store", "memmap", "parking_lot"]
-# default = ["fallible-store"]
+paged-file-store = ["custom-store", "memmap", "parking_lot", "fnv"]
+# default = ["custom-store"]
 
 [dev-dependencies]
 thousands = "0.2.0"

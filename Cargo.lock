@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "radixdb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -303,7 +303,6 @@ dependencies = [
  "obey",
  "parking_lot",
  "proptest",
- "smallvec",
  "tempfile",
  "thousands",
  "visibility",

@@ -5,14 +5,14 @@ mod blob;
 pub(crate) mod blob_store;
 #[cfg(feature = "mem-store")]
 mod mem_store;
-#[cfg(all(not(target_arch = "wasm32"), feature = "fallible-store"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "custom-store"))]
 mod paged_file_store;
 
 #[cfg(feature = "custom-store")]
 pub use blob_store::DynBlobStore;
-#[cfg(feature = "fallible-store")]
+#[cfg(feature = "custom-store")]
 pub use blob_store::UnwrapSafeExt;
-pub use blob_store::{Blob, BlobStore, NoError, NoStore};
+pub use blob_store::{Blob, BlobStore, Detached, NoError};
 
 #[cfg(feature = "mem-store")]
 pub use mem_store::MemStore;

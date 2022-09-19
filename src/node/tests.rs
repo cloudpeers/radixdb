@@ -33,10 +33,7 @@ fn arb_owned_tree() -> impl Strategy<Value = RadixTree> {
 }
 
 fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> RadixTree {
-    v.clone()
-        .iter()
-        .map(|(k, v)| (k.as_ref(), v.as_ref()))
-        .collect()
+    v.clone().iter().collect()
 }
 
 fn to_btree_map(t: &RadixTree) -> BTreeMap<Vec<u8>, Vec<u8>> {
@@ -46,25 +43,25 @@ fn to_btree_map(t: &RadixTree) -> BTreeMap<Vec<u8>, Vec<u8>> {
 #[test]
 fn sizes2() {
     assert_eq!(
-        std::mem::size_of::<TreeNode<NoStore>>(),
+        std::mem::size_of::<TreeNode<Detached>>(),
         4 * std::mem::size_of::<usize>()
     );
     assert_eq!(
-        std::mem::size_of::<BorrowedTreeNode<NoStore>>(),
+        std::mem::size_of::<BorrowedTreeNode<Detached>>(),
         4 * std::mem::size_of::<usize>()
     );
     // todo: get this to 4xusize with some union magic?
     assert_eq!(
-        std::mem::size_of::<TreeNodeRef<NoStore>>(),
+        std::mem::size_of::<TreeNodeRef<Detached>>(),
         5 * std::mem::size_of::<usize>()
     );
-    println!("{}", std::mem::size_of::<TreeNode<NoStore>>());
-    println!("{}", std::mem::size_of::<BorrowedTreeNode<NoStore>>());
-    println!("{}", std::mem::size_of::<TreeNodeRef<NoStore>>());
+    println!("{}", std::mem::size_of::<TreeNode<Detached>>());
+    println!("{}", std::mem::size_of::<BorrowedTreeNode<Detached>>());
+    println!("{}", std::mem::size_of::<TreeNodeRef<Detached>>());
 }
 
 #[test]
-fn macro_test() {
+fn macro_test_blob() {
     // from https://en.wikipedia.org/wiki/Radix_tree
     let tree = radixtree! {
         b"romane" => b"",
@@ -90,6 +87,32 @@ fn macro_test() {
 }
 
 #[test]
+fn macro_test_str() {
+    // from https://en.wikipedia.org/wiki/Radix_tree
+    let tree = radixtree! {
+        "romane" => "",
+        "romanus" => "",
+        "romulus" => "",
+        "rubens" => "",
+        "ruber" => "",
+        "rubicon" => "",
+        "rubicundus" => "",
+    };
+    let elems: Vec<(&str, &str)> = vec![
+        ("romane", ""),
+        ("romanus", ""),
+        ("romulus", ""),
+        ("rubens", ""),
+        ("ruber", ""),
+        ("rubicon", ""),
+        ("rubicundus", ""),
+    ];
+    let tree2 = elems.into_iter().collect::<RadixTree>();
+    assert_eq!(tree, tree2);
+    assert!(tree.contains_key("romane"));
+}
+
+#[test]
 fn new_build_bench() {
     let elems = (0..2000_000u64)
         .map(|i| {
@@ -105,15 +128,15 @@ fn new_build_bench() {
     let elems2 = elems.clone();
     let elems3 = elems.clone();
     let elems_bt = elems.iter().cloned().collect::<BTreeMap<_, _>>();
-    let mut t = TreeNode::<NoStore>::EMPTY;
+    let mut t = TreeNode::<Detached>::EMPTY;
     let t0 = Instant::now();
     for (k, v) in elems.clone() {
-        let b = TreeNode::<NoStore>::single(&k, &v);
+        let b = TreeNode::<Detached>::single(&k, &v);
         outer_combine_with(
             &mut t,
-            NoStore,
+            Detached,
             &b.as_ref(),
-            NoStore,
+            Detached,
             DowncastConverter,
             |_, _| Ok(()),
         )
@@ -127,7 +150,7 @@ fn new_build_bench() {
 
     let t0 = Instant::now();
     for (key, _value) in &elems3 {
-        assert!(t.contains_key(&key, &NoStore).unwrap());
+        assert!(t.contains_key(&key, &Detached).unwrap());
     }
     println!("validate contains_key {}", t0.elapsed().as_secs_f64());
 
@@ -139,7 +162,7 @@ fn new_build_bench() {
 
     let t0 = Instant::now();
     for (key, value) in &elems3 {
-        let v: Value<NoStore> = t.get(&key, &NoStore).unwrap().unwrap();
+        let v: Value<Detached> = t.get(&key, &Detached).unwrap().unwrap();
         assert_eq!(v.read().unwrap(), &value[..]);
     }
     println!("validate get {}", t0.elapsed().as_secs_f64());
@@ -179,9 +202,9 @@ fn new_smoke() {
         let mut r = a;
         outer_combine_with(
             &mut r,
-            NoStore,
+            Detached,
             &b.as_ref(),
-            NoStore,
+            Detached,
             DowncastConverter,
             |_, _| Ok(()),
         )
@@ -190,16 +213,16 @@ fn new_smoke() {
     }
 
     {
-        let a = TreeNode::<NoStore>::single(b"aa", b"1");
-        let b = TreeNode::<NoStore>::single(b"ab", b"2");
+        let a = TreeNode::<Detached>::single(b"aa", b"1");
+        let b = TreeNode::<Detached>::single(b"ab", b"2");
         println!("a={:?}", a);
         println!("b={:?}", b);
         let mut r = a;
         outer_combine_with(
             &mut r,
-            NoStore,
+            Detached,
             &b.as_ref(),
-            NoStore,
+            Detached,
             DowncastConverter,
             |_, _| Ok(()),
         )
@@ -484,7 +507,7 @@ proptest! {
         for ((k0, v0), tree) in a.iter().zip(trees) {
             let k0: &[u8] = &k0;
             let v0: &[u8] = &v0;
-            let k1 = tree.node.load_prefix(&NoStore).unwrap().to_vec();
+            let k1 = tree.node.load_prefix(&Detached).unwrap().to_vec();
             let v1 = tree.node.value_opt().map(|x| x.to_vec());
             prop_assert!(tree.node.is_leaf());
             prop_assert_eq!(k0, k1);
@@ -499,7 +522,7 @@ proptest! {
         prop_assert!(trees.len() <= a.len());
         let mut leafs = BTreeMap::new();
         for tree in &trees {
-            let prefix = tree.node.load_prefix(&NoStore).unwrap().to_vec();
+            let prefix = tree.node.load_prefix(&Detached).unwrap().to_vec();
             if prefix.len() <= n {
                 prop_assert!(tree.node.is_leaf());
                 prop_assert!(tree.node.value_opt().is_some());

@@ -254,10 +254,10 @@ impl BlobStore for DynBlobStore {
 
 /// A special store that does nothing, to be used with detached trees that don't use a store
 #[derive(Debug, Clone, Default)]
-pub struct NoStore;
+pub struct Detached;
 
 /// The implementation of NoStore will panic whenever it is used
-impl BlobStore for NoStore {
+impl BlobStore for Detached {
     type Error = NoError;
 
     fn read(&self, _id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {
