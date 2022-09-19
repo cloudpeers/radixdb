@@ -641,6 +641,17 @@ pub struct TreeNode<S> {
     children: ChildrenRef<S>,
 }
 
+/// Define equality only for unattached trees
+impl PartialEq for TreeNode<NoStore> {
+    fn eq(&self, other: &Self) -> bool {
+        self.prefix_ref().slice() == other.prefix_ref().slice()
+            && self.value_ref().slice() == other.value_ref().slice()
+            && self.get_children() == other.get_children()
+    }
+}
+
+impl Eq for TreeNode<NoStore> {}
+
 impl<S: BlobStore> TreeNode<S> {
     fn as_ref(&self) -> TreeNodeRef<S> {
         TreeNodeRef::owned(self)
@@ -3366,11 +3377,19 @@ impl<S: BlobStore> RadixTree<S> {
     }
 }
 
-impl FromIterator<(Vec<u8>, Vec<u8>)> for RadixTree {
-    fn from_iter<T: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: T) -> Self {
+impl PartialEq for RadixTree {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node
+    }
+}
+
+impl Eq for RadixTree {}
+
+impl<'a> FromIterator<(&'a [u8], &'a [u8])> for RadixTree {
+    fn from_iter<T: IntoIterator<Item = (&'a [u8], &'a [u8])>>(iter: T) -> Self {
         let mut tree = RadixTree::default();
         for (k, v) in iter.into_iter() {
-            tree.outer_combine_with(&RadixTree::single(k.as_ref(), v.as_ref()), |_, _| {});
+            tree.outer_combine_with(&RadixTree::single(k, v), |_, _| {});
         }
         tree
     }

@@ -17,8 +17,10 @@
 //! The storage can be fallible, e.g. when reading from a disk or network. That is enabled using the `fallible-storage` feature.
 pub mod node;
 pub mod store;
+mod util;
 use node::TreeNode;
 use store::{BlobStore, NoStore};
+use util::{Hex, Lit};
 
 #[cfg(test)]
 #[macro_use]
@@ -32,60 +34,18 @@ pub struct RadixTree<S: BlobStore = NoStore> {
     store: S,
 }
 
-struct Lit(String);
+#[macro_export(local_inner_macros)]
+macro_rules! radixtree {
+    // trailing comma case
+    ($($key:expr => $value:expr,)+) => (radixtree!($($key => $value),+));
 
-impl std::fmt::Debug for Lit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl<'a> std::fmt::Display for Lit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-/// Utility to output something as hex
-struct Hex<'a>(&'a [u8], usize);
-
-impl<'a> Hex<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self(data, data.len())
-    }
-
-    #[allow(dead_code)]
-    fn partial(data: &'a [u8], len: usize) -> Self {
-        Self(data, len)
-    }
-}
-
-impl<'a> std::fmt::Debug for Hex<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0.len() > self.1 {
-            write!(
-                f,
-                "[{}..., {} bytes]",
-                hex::encode(&self.0[..self.1]),
-                self.0.len()
-            )
-        } else {
-            write!(f, "[{}]", hex::encode(self.0))
+    ( $($key:expr => $value:expr),* ) => {
+        {
+            let mut _elems = ::std::vec::Vec::<(&[u8], &[u8])>::new();
+            $(
+                let _ = _elems.push(($key, $value));
+            )*
+            _elems.into_iter().collect::<RadixTree>()
         }
-    }
-}
-
-impl<'a> std::fmt::Display for Hex<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0.len() > self.1 {
-            write!(
-                f,
-                "[{}..., {} bytes]",
-                hex::encode(&self.0[..self.1]),
-                self.0.len()
-            )
-        } else {
-            write!(f, "[{}]", hex::encode(self.0))
-        }
-    }
+    };
 }

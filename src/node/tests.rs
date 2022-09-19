@@ -1,4 +1,4 @@
-use crate::store::MemStore;
+use crate::{radixtree, store::MemStore};
 use obey::{binary_element_test, binary_property_test, TestSamples};
 use proptest::prelude::*;
 use std::{
@@ -33,7 +33,10 @@ fn arb_owned_tree() -> impl Strategy<Value = RadixTree> {
 }
 
 fn mk_owned_tree(v: &BTreeMap<Vec<u8>, Vec<u8>>) -> RadixTree {
-    v.clone().into_iter().collect()
+    v.clone()
+        .iter()
+        .map(|(k, v)| (k.as_ref(), v.as_ref()))
+        .collect()
 }
 
 fn to_btree_map(t: &RadixTree) -> BTreeMap<Vec<u8>, Vec<u8>> {
@@ -58,6 +61,32 @@ fn sizes2() {
     println!("{}", std::mem::size_of::<TreeNode<NoStore>>());
     println!("{}", std::mem::size_of::<BorrowedTreeNode<NoStore>>());
     println!("{}", std::mem::size_of::<TreeNodeRef<NoStore>>());
+}
+
+#[test]
+fn macro_test() {
+    // from https://en.wikipedia.org/wiki/Radix_tree
+    let tree = radixtree! {
+        b"romane" => b"",
+        b"romanus" => b"",
+        b"romulus" => b"",
+        b"rubens" => b"",
+        b"ruber" => b"",
+        b"rubicon" => b"",
+        b"rubicundus" => b"",
+    };
+    let elems: Vec<(&[u8], &[u8])> = vec![
+        (b"romane", b""),
+        (b"romanus", b""),
+        (b"romulus", b""),
+        (b"rubens", b""),
+        (b"ruber", b""),
+        (b"rubicon", b""),
+        (b"rubicundus", b""),
+    ];
+    let tree2 = elems.into_iter().collect::<RadixTree>();
+    assert_eq!(tree, tree2);
+    assert!(tree.contains_key(b"romane"));
 }
 
 #[test]
