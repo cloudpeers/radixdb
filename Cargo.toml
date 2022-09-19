@@ -3,6 +3,9 @@ name = "radixdb"
 version = "0.2.0"
 edition = "2021"
 authors = ["Rüdiger Klaehn <rklaehn@protonmail.com"]
+license = "MIT OR Apache-2.0"
+keywords = ["database", "tree", "data-structures", "trie", "zerocopy"]
+description = "a radix tree data structure for in memory or zero copy on disk storage"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
