@@ -3332,25 +3332,23 @@ impl RadixTree<NoStore> {
     }
 }
 
-#[cfg_attr(feature = "custom-store", impl_visibility::make(pub))]
 impl RadixTree {
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn attached<S2: BlobStore<Error = NoError>>(&self, store: S2) -> RadixTree<S2> {
         self.try_attached::<S2>(store).unwrap_safe()
     }
-}
 
-#[cfg_attr(feature = "custom-store", impl_visibility::make(pub))]
-impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
-    fn detached<S2: BlobStore<Error = NoError>>(&self) -> RadixTree<NoStore> {
-        self.try_detached().unwrap_safe()
-    }
-}
-
-#[cfg_attr(feature = "fallible-store", impl_visibility::make(pub))]
-impl RadixTree<NoStore> {
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_attached<S: BlobStore>(&self, store: S) -> Result<RadixTree<S>, S::Error> {
         let node = self.node.try_attached(&store)?;
         Ok(RadixTree { node, store })
+    }
+}
+
+impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn detached<S2: BlobStore<Error = NoError>>(&self) -> RadixTree<NoStore> {
+        self.try_detached().unwrap_safe()
     }
 }
 
@@ -3378,12 +3376,12 @@ impl FromIterator<(Vec<u8>, Vec<u8>)> for RadixTree {
     }
 }
 
-#[cfg_attr(feature = "fallible-store", impl_visibility::make(pub))]
 impl<S: BlobStore + Clone> RadixTree<S> {
     pub(crate) fn try_dump(&self) -> Result<(), S::Error> {
         self.node.dump(0, &self.store)
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_detached(&self) -> Result<RadixTree<NoStore>, S::Error> {
         let node = self.node.detached(&self.store)?;
         Ok(RadixTree {
@@ -3393,15 +3391,18 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     }
 
     /// Get the value for a given key
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_get(&self, key: &[u8]) -> Result<Option<Value<S>>, S::Error> {
         self.node.get(key, &self.store)
     }
 
     /// True if key is contained in this set
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_contains_key(&self, key: &[u8]) -> Result<bool, S::Error> {
         self.node.contains_key(key, &self.store)
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_iter(&self) -> KeyValueIter<S> {
         KeyValueIter::new(
             TreeNodeIter::from_arc(Arc::new(vec![self.node.clone()])),
@@ -3410,16 +3411,20 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_values(&self) -> ValueIter<S> {
         ValueIter::new(
             TreeNodeIter::from_arc(Arc::new(vec![self.node.clone()])),
             self.store.clone(),
         )
     }
+
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_scan_prefix(&self, prefix: &[u8]) -> Result<KeyValueIter<S>, S::Error> {
         scan_prefix(self.store.clone(), &TreeNodeRef::owned(&self.node), prefix)
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_group_by<'a, F: Fn(&[u8], &TreeNodeRef<S>) -> Result<bool, S::Error> + 'a>(
         &'a self,
         descend: F,
@@ -3438,6 +3443,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         })
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_outer_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
@@ -3456,6 +3462,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         })
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_outer_combine_with<S2, C, F>(
         &mut self,
         that: &RadixTree<S2>,
@@ -3478,6 +3485,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_inner_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
@@ -3496,6 +3504,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         })
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_inner_combine_with<S2, C, F>(
         &mut self,
         that: &RadixTree<S2>,
@@ -3518,6 +3527,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_inner_combine_pred<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<bool, E>
     where
         S2: BlobStore + Clone,
@@ -3533,6 +3543,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_left_combine<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<RadixTree, E>
     where
         S2: BlobStore + Clone,
@@ -3551,6 +3562,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         })
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_left_combine_pred<S2, E, F>(&self, that: &RadixTree<S2>, f: F) -> Result<bool, E>
     where
         S2: BlobStore + Clone,
@@ -3566,6 +3578,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_left_combine_with<S2, C, F>(
         &mut self,
         that: &RadixTree<S2>,
@@ -3588,6 +3601,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_retain_prefix_with<S2, F>(&mut self, that: &RadixTree<S2>, f: F) -> Result<(), S::Error>
     where
         S2: BlobStore + Clone,
@@ -3603,6 +3617,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_remove_prefix_with<S2, F>(&mut self, that: &RadixTree<S2>, f: F) -> Result<(), S::Error>
     where
         S2: BlobStore + Clone,
@@ -3618,27 +3633,33 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         )
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<RadixTree<S>, S::Error> {
         filter_prefix(&TreeNodeRef::owned(&self.node), &self.store, prefix)
             .map(|node| RadixTree::new(node, self.store.clone()))
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_first_value(&self) -> Result<Option<Value<S>>, S::Error> {
         first_value(&TreeNodeRef::owned(&self.node), &self.store)
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_last_value(&self) -> Result<Option<Value<S>>, S::Error> {
         last_value(&TreeNodeRef::owned(&self.node), &self.store)
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_first_entry(&self, prefix: Vec<u8>) -> Result<Option<(Vec<u8>, Value<S>)>, S::Error> {
         first_entry(prefix, &TreeNodeRef::owned(&self.node), &self.store)
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_last_entry(&self, prefix: Vec<u8>) -> Result<Option<(Vec<u8>, Value<S>)>, S::Error> {
         last_entry(prefix, &TreeNodeRef::owned(&self.node), &self.store)
     }
 
+    #[cfg_attr(feature = "fallible-store", visibility::make(pub))]
     fn try_reattach(&mut self) -> Result<(), S::Error> {
         let mut data = Vec::new();
         self.node.serialize(&mut data, &self.store)?;

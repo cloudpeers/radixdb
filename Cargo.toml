@@ -16,15 +16,16 @@ parking_lot = { version = "0.12.0", optional = true }
 hex = "0.4.3"
 inplace-vec-builder = "0.1.1"
 smallvec = "1.8.0"
-impl-visibility = { git = "https://github.com/rklaehn/impl-visibility" }
 visibility = "0.0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-memmap = "0.7.0"
+memmap = { version = "0.7.0", optional = true }
 
 [features]
-custom-store = ["parking_lot"]
+custom-store = []
 fallible-store = ["custom-store", "fnv"]
+mem-store = ["custom-store", "parking_lot"]
+paged-file-store = ["fallible-store", "memmap", "parking_lot"]
 # default = ["fallible-store"]
 
 [dev-dependencies]

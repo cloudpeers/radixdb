@@ -1,11 +1,10 @@
+use crate::store::MemStore;
 use obey::{binary_element_test, binary_property_test, TestSamples};
 use proptest::prelude::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Instant,
 };
-
-use crate::store::MemStore;
 
 use super::*;
 

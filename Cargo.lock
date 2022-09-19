@@ -128,15 +128,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 
 [[package]]
-name = "impl-visibility"
-version = "0.1.0"
-source = "git+https://github.com/rklaehn/impl-visibility#5a0efbaaadf0a4f350bf72509e8836e2488ddd4a"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
 name = "inplace-vec-builder"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -305,7 +296,6 @@ dependencies = [
  "env_logger",
  "fnv",
  "hex",
- "impl-visibility",
  "inplace-vec-builder",
  "log",
  "maplit",
