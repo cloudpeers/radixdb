@@ -436,9 +436,17 @@ pub struct ValueRef<'a, S: BlobStore = Detached>(
     PhantomData<S>,
 );
 
-impl<'a> ValueRef<'a, Detached> {
+impl<'a> ValueRef<'a> {
     pub fn downcast<S2: BlobStore>(&self) -> &ValueRef<'a, S2> {
         unsafe { std::mem::transmute(self) }
+    }
+
+    pub fn data(&self) -> Option<&[u8]> {
+        if self.is_none() {
+            None
+        } else {
+            Some(self.read().unwrap_err())
+        }
     }
 }
 
@@ -454,7 +462,7 @@ impl<'a, S: BlobStore> ValueRef<'a, S> {
         }
     }
 
-    fn detached(&self, _store: &S) -> Result<Value<Detached>, S::Error>
+    fn detached(&self, _store: &S) -> Result<Value, S::Error>
     where
         S: BlobStore,
     {
@@ -545,13 +553,13 @@ impl<S: BlobStore> Debug for Value<S> {
     }
 }
 
-impl AsRef<[u8]> for Value<Detached> {
+impl AsRef<[u8]> for Value {
     fn as_ref(&self) -> &[u8] {
         self.data.slice(self.hdr)
     }
 }
 
-impl Deref for Value<Detached> {
+impl Deref for Value {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -559,7 +567,7 @@ impl Deref for Value<Detached> {
     }
 }
 
-impl Value<Detached> {
+impl Value {
     pub fn downcast<S2: BlobStore>(self) -> Value<S2> {
         unsafe { std::mem::transmute(self) }
     }
@@ -1577,7 +1585,7 @@ impl<B: BlobStore> NodeConverter<Detached, B> for DowncastConverter {
         node.clone_shortened(store, n).map(|x| x.downcast())
     }
 
-    fn convert_value(&self, bv: &ValueRef<Detached>, _: &Detached) -> Result<Value<B>, NoError> {
+    fn convert_value(&self, bv: &ValueRef, _: &Detached) -> Result<Value<B>, NoError> {
         Ok(bv.downcast::<B>().to_owned())
     }
 }
@@ -1982,7 +1990,7 @@ where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value>, E> + Copy,
 {
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
@@ -2050,7 +2058,7 @@ where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value>, E> + Copy,
 {
     Ok(match (ac, bc) {
         (Some(ac), Some(bc)) => {
@@ -2195,7 +2203,7 @@ where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value>, E> + Copy,
 {
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
@@ -2256,7 +2264,7 @@ where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value>, E> + Copy,
 {
     Ok(match (ac, bc) {
         (Some(ac), Some(bc)) => {
@@ -2465,7 +2473,7 @@ where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value>, E> + Copy,
 {
     let ap = a.load_prefix(&ab)?;
     let bp = b.load_prefix(&bb)?;
@@ -2522,7 +2530,7 @@ where
     A: BlobStore + Clone,
     B: BlobStore + Clone,
     E: From<A::Error> + From<B::Error>,
-    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value<Detached>>, E> + Copy,
+    F: Fn(&ValueRef<A>, &ValueRef<B>) -> Result<Option<Value>, E> + Copy,
 {
     Ok(match (ac, bc) {
         (Some(ac), Some(bc)) => {
@@ -3229,7 +3237,7 @@ impl RadixTree {
     pub fn outer_combine(
         &self,
         that: &RadixTree,
-        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value<Detached>> + Copy,
+        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value> + Copy,
     ) -> RadixTree {
         self.try_outer_combine(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3238,7 +3246,7 @@ impl RadixTree {
     pub fn inner_combine(
         &self,
         that: &RadixTree,
-        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value<Detached>> + Copy,
+        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value> + Copy,
     ) -> RadixTree {
         self.try_inner_combine(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3256,7 +3264,7 @@ impl RadixTree {
     pub fn left_combine(
         &self,
         that: &RadixTree,
-        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value<Detached>> + Copy,
+        f: impl Fn(&ValueRef, &ValueRef) -> Option<Value> + Copy,
     ) -> RadixTree {
         self.try_left_combine(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3300,7 +3308,7 @@ impl RadixTree {
     pub fn outer_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
         that: &RadixTree<S2>,
-        f: impl Fn(&mut Value<Detached>, &ValueRef<S2>) + Copy,
+        f: impl Fn(&mut Value, &ValueRef<S2>) + Copy,
     ) {
         self.try_outer_combine_with(that, DetachConverter, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3309,7 +3317,7 @@ impl RadixTree {
     pub fn inner_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
         that: &RadixTree<S2>,
-        f: impl Fn(&mut Value<Detached>, &ValueRef<S2>) + Copy,
+        f: impl Fn(&mut Value, &ValueRef<S2>) + Copy,
     ) {
         self.try_inner_combine_with(that, DetachConverter, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3318,7 +3326,7 @@ impl RadixTree {
     pub fn left_combine_with<S2: BlobStore<Error = NoError> + Clone>(
         &mut self,
         that: &RadixTree<S2>,
-        f: impl Fn(&mut Value<Detached>, &ValueRef<S2>) + Copy,
+        f: impl Fn(&mut Value, &ValueRef<S2>) + Copy,
     ) {
         self.try_left_combine_with(that, DetachConverter, |a, b| Ok(f(a, b)))
             .unwrap_safe()
@@ -3362,7 +3370,7 @@ impl RadixTree {
 
 impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn detached<S2: BlobStore<Error = NoError>>(&self) -> RadixTree<Detached> {
+    fn detached<S2: BlobStore<Error = NoError>>(&self) -> RadixTree {
         self.try_detached().unwrap_safe()
     }
 }
@@ -3405,7 +3413,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn try_detached(&self) -> Result<RadixTree<Detached>, S::Error> {
+    fn try_detached(&self) -> Result<RadixTree, S::Error> {
         let node = self.node.detached(&self.store)?;
         Ok(RadixTree {
             node,
@@ -3425,6 +3433,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         self.node.contains_key(key.as_ref(), &self.store)
     }
 
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_insert(
         &mut self,
         key: impl AsRef<[u8]>,
@@ -3481,7 +3490,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
-        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<Detached>>, E> + Copy,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value>, E> + Copy,
     {
         Ok(RadixTree {
             node: outer_combine(
@@ -3523,7 +3532,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
-        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<Detached>>, E> + Copy,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value>, E> + Copy,
     {
         Ok(RadixTree {
             node: inner_combine(
@@ -3581,7 +3590,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     where
         S2: BlobStore + Clone,
         E: From<S2::Error> + From<S::Error>,
-        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value<Detached>>, E> + Copy,
+        F: Fn(&ValueRef<S>, &ValueRef<S2>) -> Result<Option<Value>, E> + Copy,
     {
         Ok(RadixTree {
             node: left_combine(

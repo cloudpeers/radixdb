@@ -163,7 +163,7 @@ fn new_build_bench() {
 
     let t0 = Instant::now();
     for (key, value) in &elems3 {
-        let v: Value<Detached> = t.get(key, &Detached).unwrap().unwrap();
+        let v: Value = t.get(key, &Detached).unwrap().unwrap();
         assert_eq!(v.read().unwrap(), &value[..]);
     }
     println!("validate get {}", t0.elapsed().as_secs_f64());

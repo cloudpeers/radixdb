@@ -9,12 +9,56 @@
 //!
 //! Basic usage is not that different from using a std collection such as BTreeMap.
 //!
+//! ## Example
+//!
+//! ```rust
+//! # use radixdb::*;
+//! let mut dict = RadixTree::default();
+//! dict.insert("dog", "Hund");
+//! dict.insert("cat", "Katze");
+//! assert!(dict.contains_key("dog"));
+//! for (k, v) in dict.iter() {
+//!   println!("{:?} {:?}", k, v);
+//! }
+//! ```
+//!
 //! # Advanced usage
 //!
 //! You can provide a custom store for a radix tree, which can be either a contiguous slice of memory, a file on disk, or a custom storage backend.
 //! Custom storage backends are enabled using the `custom-storage` feature.
 //!
-//! The storage can be fallible, e.g. when reading from a disk or network.
+//! The storage is usually fallible, e.g. when reading from a disk or network. When using a fallible storage, every interaction with a radix tree can fail.
+//! Therefore there is a fallible version of all methods.
+//!
+//! ## Example
+//!
+//! ```rust
+//! # use radixdb::*;
+//! # use store::BlobStore;
+//! # fn test() -> anyhow::Result<()> {
+//! // build a small tree as above
+//! let mut dict = RadixTree::default();
+//! dict.insert("dog", "Hund");
+//! dict.insert("cat", "Katze");
+//! // attach it to a store - here we use a memstore, but typically you would use a file store
+//! let store = store::MemStore::default();
+//! let mut dict = dict.try_attached(store.clone())?;
+//! // the store is fallible, so we have to use the try_... variants for interacting with it
+//! assert!(dict.try_contains_key("cat")?);
+//! for r in dict.try_iter() {
+//!   if let Ok((k, v)) = r {
+//!     println!("{:?} {:?}", k, v);
+//!   }
+//! }
+//! // add another entry. This is now in memory
+//! dict.try_insert("rabbit", "Hase")?;
+//! // persist all changes to the store
+//! dict.try_reattach()?;
+//! // sync the store to disk
+//! store.sync()?;
+//! # Ok(())
+//! # }
+//! ```
 pub mod node;
 pub mod store;
 mod util;
