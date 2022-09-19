@@ -16,9 +16,15 @@ hex = "0.4.3"
 inplace-vec-builder = "0.1.1"
 parking_lot = "0.12.0"
 smallvec = "1.8.0"
+impl-visibility = { git = "https://github.com/rklaehn/impl-visibility" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 memmap = "0.7.0"
+
+[features]
+custom-store = []
+fallible-store = ["custom-store"]
+# default = ["fallible-store"]
 
 [dev-dependencies]
 thousands = "0.2.0"
