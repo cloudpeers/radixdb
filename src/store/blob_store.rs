@@ -1,10 +1,7 @@
-use anyhow::Context;
-use parking_lot::Mutex;
 use std::{
     any::Any,
     borrow::Borrow,
     cmp::Ordering,
-    collections::BTreeMap,
     fmt::Debug,
     hash::Hash,
     ops::{Bound, Deref, RangeBounds},
@@ -68,7 +65,7 @@ impl<'a> Borrow<[u8]> for Blob<'a> {
 /// A blob that is self-contained and therefore has a static lifetime
 ///
 /// An owned blob can be created either from a slice with an owner, or an actually static slice.
-pub type OwnedBlob = Blob<'static>;
+pub(crate) type OwnedBlob = Blob<'static>;
 
 impl<'a> Hash for Blob<'a> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -299,6 +296,7 @@ impl From<anyhow::Error> for NoError {
 }
 
 /// Extension trait that adds unwrap_safe for unwrapping results safely when the error type is uninhabited
+
 pub trait UnwrapSafeExt<T> {
     /// Safe unwrap - guaranteed not to panic
     fn unwrap_safe(self) -> T;
@@ -307,52 +305,6 @@ pub trait UnwrapSafeExt<T> {
 impl<T> UnwrapSafeExt<T> for Result<T, NoError> {
     fn unwrap_safe(self) -> T {
         self.unwrap()
-    }
-}
-
-/// A simple in memory store
-#[derive(Default, Clone)]
-pub struct MemStore {
-    data: Arc<Mutex<BTreeMap<u64, Arc<Vec<u8>>>>>,
-}
-impl MemStore {
-    pub fn count(&self) -> usize {
-        self.data.lock().len()
-    }
-}
-
-impl Debug for MemStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let data = self.data.lock();
-        f.debug_struct("MemStore")
-            .field("count", &data.len())
-            .finish()
-    }
-}
-
-impl BlobStore for MemStore {
-    type Error = anyhow::Error;
-
-    fn read(&self, id: &[u8]) -> std::result::Result<OwnedBlob, Self::Error> {
-        anyhow::ensure!(id.len() == 8);
-        let id = u64::from_be_bytes(id.try_into().unwrap());
-        let data = self.data.lock();
-        data.get(&id)
-            .map(|x| Blob::from_arc_vec(x.clone()))
-            .context("value not found")
-    }
-
-    fn write(&self, slice: &[u8]) -> std::result::Result<Vec<u8>, Self::Error> {
-        let mut data = self.data.lock();
-        let max = data.keys().next_back().cloned().unwrap_or(0);
-        let id = max + 1;
-        let blob = Arc::new(slice.to_vec());
-        data.insert(id, blob);
-        Ok(id.to_be_bytes().to_vec())
-    }
-
-    fn sync(&self) -> std::result::Result<(), Self::Error> {
-        Ok(())
     }
 }
 

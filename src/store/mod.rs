@@ -2,13 +2,19 @@
 //!
 //! You only have to interact with these types if you want to use RadixTrees as persistent databases.
 mod blob;
-mod blob_store;
-#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod blob_store;
+#[cfg(feature = "custom-store")]
+mod mem_store;
+#[cfg(all(not(target_arch = "wasm32"), feature = "fallible-store"))]
 mod paged_file_store;
 
-pub use blob_store::{
-    Blob, BlobStore, DynBlobStore, MemStore, NoError, NoStore, OwnedBlob, UnwrapSafeExt,
-};
+#[cfg(feature = "custom-store")]
+pub use blob_store::DynBlobStore;
+#[cfg(feature = "fallible-store")]
+pub use blob_store::UnwrapSafeExt;
+pub use blob_store::{Blob, BlobStore, NoError, NoStore};
+#[cfg(feature = "custom-store")]
+pub use mem_store::MemStore;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "fallible-store"))]
 pub use paged_file_store::PagedFileStore;

@@ -10,7 +10,10 @@ use std::{
 use inplace_vec_builder::InPlaceVecBuilder;
 
 use crate::{
-    store::{Blob, BlobStore, NoError, NoStore, OwnedBlob, UnwrapSafeExt},
+    store::{
+        blob_store::{OwnedBlob, UnwrapSafeExt},
+        Blob, BlobStore, NoError, NoStore,
+    },
     Hex, Lit,
 };
 use std::fmt::Debug;
@@ -428,7 +431,7 @@ impl<'a> BorrowedBlobRef<'a> {
 /// Reference to a value
 ///
 /// Can refer either an owned value of an in memory node, or a borrowed value in a buffer or memory mapped file.
-pub struct ValueRef<'a, S>(
+pub struct ValueRef<'a, S: BlobStore = NoStore>(
     Result<OwnedBlobRef<'a>, BorrowedBlobRef<'a>>,
     PhantomData<S>,
 );
@@ -439,7 +442,7 @@ impl<'a> ValueRef<'a, NoStore> {
     }
 }
 
-impl<'a, S> ValueRef<'a, S> {
+impl<'a, S: BlobStore> ValueRef<'a, S> {
     fn to_owned(&self) -> Value<S> {
         match &self.0 {
             Ok(x) => OwnedValueRef::new(*x).to_owned(),
@@ -498,7 +501,7 @@ impl<'a> OwnedValueRef<'a, NoStore> {
     }
 }
 
-impl<'a, S> OwnedValueRef<'a, S> {
+impl<'a, S: BlobStore> OwnedValueRef<'a, S> {
     fn new(raw: OwnedBlobRef<'a>) -> Self {
         Self(raw, PhantomData)
     }
@@ -526,13 +529,13 @@ impl<'a> Deref for OwnedValueRef<'a, NoStore> {
 }
 
 /// An owned radix tree value
-pub struct Value<S> {
+pub struct Value<S: BlobStore = NoStore> {
     hdr: Header,
     data: CompactOwnedBlob,
     p: PhantomData<S>,
 }
 
-impl<S> Debug for Value<S> {
+impl<S: BlobStore> Debug for Value<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.hdr.is_data() {
             write!(f, "Data{}", Hex::new(self.data.slice(self.hdr)))
@@ -562,7 +565,7 @@ impl Value<NoStore> {
     }
 }
 
-impl<S> Value<S> {
+impl<S: BlobStore> Value<S> {
     const EMPTY: Self = Self {
         hdr: Header::NONE,
         data: CompactOwnedBlob::EMPTY,
@@ -613,7 +616,7 @@ impl<S> Value<S> {
     }
 }
 
-impl<S> Drop for Value<S> {
+impl<S: BlobStore> Drop for Value<S> {
     fn drop(&mut self) {
         self.data.manual_drop(self.hdr);
     }
@@ -657,7 +660,7 @@ impl TreeNode<NoStore> {
     }
 }
 
-impl<S> Debug for TreeNode<S> {
+impl<S: BlobStore> Debug for TreeNode<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctext = Lit(self
             .get_children()
@@ -888,7 +891,7 @@ impl<S: BlobStore> TreeNode<S> {
     }
 }
 
-impl<S> TreeNode<S> {
+impl<S: BlobStore> TreeNode<S> {
     const EMPTY: Self = Self {
         discriminator: 0,
         prefix_hdr: Header::EMPTY,
@@ -1095,7 +1098,7 @@ impl<S> Clone for TreeNode<S> {
 ///
 /// Total size should be 4*PTR_SIZE, so 32 bytes on 64 bit
 #[repr(C)]
-struct BorrowedTreeNode<'a, S> {
+struct BorrowedTreeNode<'a, S: BlobStore> {
     discriminator: u8,
     prefix_hdr: Header,
     value_hdr: Header,
@@ -1109,7 +1112,7 @@ struct BorrowedTreeNode<'a, S> {
     p: PhantomData<&'a S>,
 }
 
-impl<'a, S> Clone for BorrowedTreeNode<'a, S> {
+impl<'a, S: BlobStore> Clone for BorrowedTreeNode<'a, S> {
     fn clone(&self) -> Self {
         Self {
             discriminator: 1,
@@ -1124,9 +1127,9 @@ impl<'a, S> Clone for BorrowedTreeNode<'a, S> {
     }
 }
 
-impl<'a, S> Copy for BorrowedTreeNode<'a, S> {}
+impl<'a, S: BlobStore> Copy for BorrowedTreeNode<'a, S> {}
 
-impl<'a, S> Debug for BorrowedTreeNode<'a, S> {
+impl<'a, S: BlobStore> Debug for BorrowedTreeNode<'a, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BorrowedTreeNode")
             .field("prefix", &self.prefix_ref())
@@ -1138,7 +1141,7 @@ impl<'a, S> Debug for BorrowedTreeNode<'a, S> {
 
 const EMPTY_BYTES: &'static [u8] = &[Header::EMPTY.0, Header::NONE.0, Header::NONE.0];
 
-impl<S: 'static> BorrowedTreeNode<'static, S> {
+impl<S: BlobStore + 'static> BorrowedTreeNode<'static, S> {
     const EMPTY: Self = Self {
         discriminator: 1,
         prefix: &EMPTY_BYTES[0],
@@ -1151,7 +1154,7 @@ impl<S: 'static> BorrowedTreeNode<'static, S> {
     };
 }
 
-impl<'a, S> BorrowedTreeNode<'a, S> {
+impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
     fn to_owned(&self) -> TreeNode<S> {
         let mut res = TreeNode::EMPTY;
         res.set_prefix_borrowed(self.prefix_ref());
@@ -1282,7 +1285,9 @@ impl<'a, S> BorrowedTreeNode<'a, S> {
 
 /// A tree node ref, either a reference to an OwnedTreeNode, or a BorrowedTreeNode
 #[derive(Clone, Copy)]
-pub struct TreeNodeRef<'a, S>(Result<&'a TreeNode<S>, BorrowedTreeNode<'a, S>>);
+pub struct TreeNodeRef<'a, S: BlobStore = NoStore>(
+    Result<&'a TreeNode<S>, BorrowedTreeNode<'a, S>>,
+);
 
 impl<'a, S: BlobStore> Debug for TreeNodeRef<'a, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1516,8 +1521,9 @@ fn common_prefix<'a, T: Eq>(a: &'a [T], b: &'a [T]) -> usize {
     a.iter().zip(b).take_while(|(a, b)| a == b).count()
 }
 
+#[cfg_attr(feature = "custom-store", visibility::make(pub))]
 /// Converter that converts nodes from one kind of store to another
-pub trait NodeConverter<A, B> {
+trait NodeConverter<A, B: BlobStore> {
     fn convert_node(&self, node: &TreeNodeRef<A>, store: &A) -> Result<TreeNode<B>, A::Error>
     where
         A: BlobStore;
@@ -1537,8 +1543,9 @@ pub trait NodeConverter<A, B> {
 /// Converter that converts from a node with NoStore to any other store.
 ///
 /// This is always possible and a noop.
+#[cfg_attr(feature = "custom-store", visibility::make(pub))]
 #[derive(Clone, Copy)]
-pub struct DowncastConverter;
+struct DowncastConverter;
 
 impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
     fn convert_node(
@@ -1565,7 +1572,8 @@ impl<B: BlobStore> NodeConverter<NoStore, B> for DowncastConverter {
 
 /// Identity node converter to simplify plumbing
 #[derive(Clone, Copy)]
-pub struct IdentityConverter;
+#[cfg_attr(feature = "custom-store", visibility::make(pub))]
+struct IdentityConverter;
 
 impl<A: BlobStore> NodeConverter<A, A> for IdentityConverter {
     fn convert_node(&self, node: &TreeNodeRef<A>, _store: &A) -> Result<TreeNode<A>, A::Error> {
@@ -1588,7 +1596,8 @@ impl<A: BlobStore> NodeConverter<A, A> for IdentityConverter {
 
 /// A converter that converts from one store to another store by just completely detaching it
 #[derive(Clone, Copy)]
-pub struct DetachConverter;
+#[cfg_attr(feature = "custom-store", visibility::make(pub))]
+struct DetachConverter;
 
 impl<A: BlobStore, B: BlobStore> NodeConverter<A, B> for DetachConverter {
     fn convert_node(&self, node: &TreeNodeRef<A>, store: &A) -> Result<TreeNode<B>, A::Error> {
@@ -1680,7 +1689,7 @@ where
     }
 }
 
-fn cmp<A, B: BlobStore>(
+fn cmp<A: BlobStore, B: BlobStore>(
     a: &InPlaceVecBuilder<'_, TreeNode<A>>,
     b: &mut TreeNodeIter<'_, B>,
 ) -> Option<Ordering> {
@@ -2957,7 +2966,7 @@ impl Deref for IterKey {
 /// Iterator over all tree values
 ///
 /// This is more efficient than the key value pair iterator since it does not have to keep track of the keys.
-pub struct ValueIter<S: BlobStore> {
+pub struct ValueIter<S: BlobStore = NoStore> {
     stack: Vec<TreeNodeIter<'static, S>>,
     store: S,
 }
@@ -3015,7 +3024,7 @@ impl<S: BlobStore> Iterator for ValueIter<S> {
 ///
 /// The values are constructed as the tree is traversed. Therefore iteration is slightly more expensive than
 /// iterating over just values using [ValueIter]
-pub struct KeyValueIter<S: BlobStore> {
+pub struct KeyValueIter<S: BlobStore = NoStore> {
     path: IterKey,
     stack: Vec<(usize, Option<TreeNodeIter<'static, S>>)>,
     store: S,

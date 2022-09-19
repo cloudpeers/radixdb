@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use super::{BlobStore, OwnedBlob};
+use super::{blob_store::OwnedBlob, BlobStore};
 
 /// A blob store backed by a file that is divided into pages of size `SIZE`
 #[derive(Clone)]
