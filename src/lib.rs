@@ -1,11 +1,22 @@
 //! A radix tree data structure that can be used both in memory in a buffer / on disk.
 pub mod node;
 pub mod store;
-pub use node::RadixTree;
+use node::TreeNode;
+use store::{BlobStore, NoStore};
 
 #[cfg(test)]
 #[macro_use]
 extern crate maplit;
+
+/// A radix tree
+///
+/// Combines a tree node and a store.
+#[derive(Debug, Clone)]
+pub struct RadixTree<S: BlobStore = NoStore> {
+    node: TreeNode<S>,
+    /// The associated store
+    store: S,
+}
 
 struct Lit(String);
 

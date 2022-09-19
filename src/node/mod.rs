@@ -14,7 +14,7 @@ use crate::{
         blob_store::{OwnedBlob, UnwrapSafeExt},
         Blob, BlobStore, NoError, NoStore,
     },
-    Hex, Lit,
+    Hex, Lit, RadixTree,
 };
 use std::fmt::Debug;
 #[cfg(test)]
@@ -3168,16 +3168,6 @@ impl<S: BlobStore, F: Fn(&[u8], &TreeNodeRef<S>) -> Result<bool, S::Error>> Iter
             }
         }
     }
-}
-
-/// A radix tree
-///
-/// Combines a tree node and a store.
-#[derive(Debug, Clone)]
-pub struct RadixTree<S: BlobStore = NoStore> {
-    node: TreeNode<S>,
-    /// The associated store
-    store: S,
 }
 
 impl<S: BlobStore + Default> Default for RadixTree<S> {
