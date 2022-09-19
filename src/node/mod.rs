@@ -1,7 +1,7 @@
 //! Implementation of the radix tree node and associated plumbing
 //!
 //!
-#![allow(dead_code)]
+#![allow(dead_code, clippy::type_complexity, clippy::unit_arg)]
 use std::{
     any::TypeId, borrow::Borrow, cmp::Ordering, fmt, marker::PhantomData, mem::ManuallyDrop,
     ops::Deref, slice, sync::Arc,
@@ -678,7 +678,7 @@ impl<S: BlobStore> Debug for TreeNode<S> {
             .map(|c| format!("n={}", c.len()))
             .unwrap_or_else(|id| {
                 if id.is_empty() {
-                    format!("Empty")
+                    "Empty".to_string()
                 } else {
                     format!("Id{}", Hex::new(id))
                 }
@@ -696,7 +696,7 @@ impl<S: BlobStore> TreeNode<S> {
         let mut res = TreeNode::EMPTY;
         res.set_prefix_slice(self.load_prefix(store)?.as_ref());
         res.set_value(self.load_value(store)?);
-        for mut children in self.load_children(store)? {
+        if let Some(mut children) = self.load_children(store)? {
             let mut rc = Vec::new();
             while let Some(child) = children.next() {
                 rc.push(child.detached(store)?);
@@ -707,7 +707,7 @@ impl<S: BlobStore> TreeNode<S> {
     }
 
     fn dump(&self, indent: usize, store: &S) -> Result<(), S::Error> {
-        let spacer = std::iter::repeat(" ").take(indent).collect::<String>();
+        let spacer = " ".repeat(indent);
         let child_ref_count = self.children.ref_count(self.children_hdr);
         let format_ref_count =
             |x: Option<usize>| x.map(|n| format!(" rc={}", n)).unwrap_or_default();
@@ -780,7 +780,7 @@ impl<S: BlobStore> TreeNode<S> {
     /// True if key is contained in this set
     fn contains_key(&self, key: &[u8], store: &S) -> Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        find(store, &TreeNodeRef(Ok(&self)), key, |r| {
+        find(store, &TreeNodeRef(Ok(self)), key, |r| {
             Ok(if let FindResult::Found(tree) = r {
                 tree.value_opt().is_some()
             } else {
@@ -791,7 +791,7 @@ impl<S: BlobStore> TreeNode<S> {
 
     fn get(&self, key: &[u8], store: &S) -> Result<Option<Value<S>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
-        find(store, &TreeNodeRef(Ok(&self)), key, |r| {
+        find(store, &TreeNodeRef(Ok(self)), key, |r| {
             Ok(if let FindResult::Found(tree) = r {
                 tree.value_opt().map(|x| x.to_owned())
             } else {
@@ -941,7 +941,7 @@ impl<S: BlobStore> TreeNode<S> {
     }
 
     fn first_prefix_byte(&self) -> Option<u8> {
-        self.prefix_ref().slice().get(0).cloned()
+        self.prefix_ref().slice().first().cloned()
     }
 
     fn is_empty(&self) -> bool {
@@ -1150,7 +1150,7 @@ impl<'a, S: BlobStore> Debug for BorrowedTreeNode<'a, S> {
     }
 }
 
-const EMPTY_BYTES: &'static [u8] = &[Header::EMPTY.0, Header::NONE.0, Header::NONE.0];
+const EMPTY_BYTES: &[u8] = &[Header::EMPTY.0, Header::NONE.0, Header::NONE.0];
 
 impl<S: BlobStore + 'static> BorrowedTreeNode<'static, S> {
     const EMPTY: Self = Self {
@@ -1166,6 +1166,7 @@ impl<S: BlobStore + 'static> BorrowedTreeNode<'static, S> {
 }
 
 impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
+    #[allow(clippy::wrong_self_convention)]
     fn to_owned(&self) -> TreeNode<S> {
         let mut res = TreeNode::EMPTY;
         res.set_prefix_borrowed(self.prefix_ref());
@@ -1185,7 +1186,7 @@ impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
     where
         S: BlobStore,
     {
-        let spacer = std::iter::repeat(" ").take(indent).collect::<String>();
+        let spacer = " ".repeat(indent);
         println!("{}TreeNode", spacer);
         println!("{}  prefix={:?}", spacer, self.prefix_ref(),);
         println!("{}  value={:?}", spacer, self.value_ref(),);
@@ -1200,7 +1201,7 @@ impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
     }
 
     fn first_prefix_byte(&self) -> Option<u8> {
-        self.prefix_ref().slice().get(0).cloned()
+        self.prefix_ref().slice().first().cloned()
     }
 
     fn prefix_ref(&self) -> BorrowedBlobRef<'a> {
@@ -1257,21 +1258,21 @@ impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
 
     /// Read one borrowd tree node from a buffer, and return the remainder of the buffer
     pub fn read_one(rest: &'a [u8]) -> Option<(Self, &'a [u8])> {
-        let prefix_hdr = Header::from(*rest.get(0)?);
+        let prefix_hdr = Header::from(*rest.first()?);
         let len = prefix_hdr.len() + 1;
         if rest.len() < len {
             return None;
         }
         let (prefix, rest) = (&rest[0], &rest[len..]);
 
-        let value_hdr = Header::from(*rest.get(0)?);
+        let value_hdr = Header::from(*rest.first()?);
         let len = value_hdr.len() + 1;
         if rest.len() < len {
             return None;
         }
         let (value, rest) = (&rest[0], &rest[len..]);
 
-        let children_hdr = Header::from(*rest.get(0)?);
+        let children_hdr = Header::from(*rest.first()?);
         let len = children_hdr.len() + 1;
         if rest.len() < len {
             return None;
@@ -1289,7 +1290,7 @@ impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
                 children,
                 p: PhantomData,
             },
-            &rest,
+            rest,
         ))
     }
 }
@@ -1674,6 +1675,7 @@ where
         &mut self,
     ) -> Result<Option<(Option<TreeNodeRef<'_, A>>, Option<TreeNodeRef<'_, B>>)>, E> {
         Ok(
+            #[allow(clippy::manual_map)]
             if let (Some(ak), Some(bk)) = (
                 self.a.first_prefix_byte_opt(),
                 self.b.first_prefix_byte_opt(),
@@ -1736,7 +1738,7 @@ impl<'a, S: BlobStore> OwnedTreeNodeIter<'a, S> {
         Self(None, slice.iter())
     }
 
-    fn to_owned(mut self) -> Option<Arc<Vec<TreeNode<S>>>> {
+    fn into_owned(mut self) -> Option<Arc<Vec<TreeNode<S>>>> {
         if let Some(arc) = self.0.as_ref() {
             Some(arc.clone())
         } else if self.is_empty() {
@@ -1815,6 +1817,7 @@ impl<S: BlobStore> BorrowedTreeNodeIter<S> {
         })
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn to_owned(self) -> Option<Arc<Vec<TreeNode<S>>>> {
         if self.is_empty() {
             None
@@ -1901,9 +1904,9 @@ impl<'a, S: BlobStore> TreeNodeIter<'a, S> {
         }
     }
 
-    fn to_owned(self) -> Option<Arc<Vec<TreeNode<S>>>> {
+    fn into_owned(self) -> Option<Arc<Vec<TreeNode<S>>>> {
         match self {
-            Self::Owned(x) => x.to_owned(),
+            Self::Owned(x) => x.into_owned(),
             Self::Borrowed(x) => x.to_owned(),
         }
     }
@@ -2019,8 +2022,8 @@ where
         // value is none
         value = None;
         // children is just the shortened children a and b in the right order
-        let a = DetachConverter.convert_node_shortened(&a, &ab, n)?;
-        let b = DetachConverter.convert_node_shortened(&b, &bb, n)?;
+        let a = DetachConverter.convert_node_shortened(a, &ab, n)?;
+        let b = DetachConverter.convert_node_shortened(b, &bb, n)?;
         let vec = if ap[n] > bp[n] {
             vec![b, a]
         } else {
@@ -2260,15 +2263,12 @@ where
             let mut res = Vec::new();
             let mut iter = OuterJoin::<A, B, E>::new(ac, bc);
             while let Some(x) = iter.next() {
-                match x? {
-                    (Some(a), Some(b)) => {
-                        let r = inner_combine(&a, ab.clone(), &b, bb.clone(), f)?;
-                        if !r.is_empty() {
-                            res.push(r);
-                        }
+                if let (Some(a), Some(b)) = x? {
+                    let r = inner_combine(&a, ab.clone(), &b, bb.clone(), f)?;
+                    if !r.is_empty() {
+                        res.push(r);
                     }
-                    _ => {}
-                };
+                }
             }
             if res.is_empty() {
                 None
@@ -2330,7 +2330,7 @@ where
     Ok(false)
 }
 
-fn inner_combine_children_pred<'a, A, B, E, F>(
+fn inner_combine_children_pred<A, B, E, F>(
     ac: Option<TreeNodeIter<A>>,
     ab: A,
     bc: Option<TreeNodeIter<B>>,
@@ -2599,7 +2599,7 @@ where
     }
 }
 
-fn left_combine_children_pred<'a, A, B, E, F>(
+fn left_combine_children_pred<A, B, E, F>(
     ac: Option<TreeNodeIter<A>>,
     ab: A,
     bc: Option<TreeNodeIter<B>>,
@@ -3249,7 +3249,7 @@ impl RadixTree {
         that: &RadixTree,
         f: impl Fn(&ValueRef, &ValueRef) -> bool + Copy,
     ) -> bool {
-        self.try_inner_combine_pred(&that, |a, b| Ok(f(a, b)))
+        self.try_inner_combine_pred(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
     }
 
@@ -3267,7 +3267,7 @@ impl RadixTree {
         that: &RadixTree,
         f: impl Fn(&ValueRef, &ValueRef) -> bool + Copy,
     ) -> bool {
-        self.try_left_combine_pred(&that, |a, b| Ok(f(a, b)))
+        self.try_left_combine_pred(that, |a, b| Ok(f(a, b)))
             .unwrap_safe()
     }
 
@@ -3667,7 +3667,7 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn try_filter_prefix<'a>(&'a self, prefix: &[u8]) -> Result<RadixTree<S>, S::Error> {
+    fn try_filter_prefix(&self, prefix: &[u8]) -> Result<RadixTree<S>, S::Error> {
         filter_prefix(&TreeNodeRef::owned(&self.node), &self.store, prefix)
             .map(|node| RadixTree::new(node, self.store.clone()))
     }

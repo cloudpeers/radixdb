@@ -38,7 +38,7 @@ pub struct RadixTree<S: BlobStore = Detached> {
 ///
 /// # Example:
 /// ```rust
-/// let tree = radixtree! {
+/// let tree = radixdb::radixtree! {
 ///   b"romane" => b"",
 ///   b"romanus" => b"",
 ///   b"romulus" => b"",
@@ -59,7 +59,7 @@ macro_rules! radixtree {
             $(
                 let _ = _elems.push(($key.as_ref(), $value.as_ref()));
             )*
-            _elems.into_iter().collect::<RadixTree>()
+            _elems.into_iter().collect::<::radixdb::RadixTree>()
         }
     };
 }

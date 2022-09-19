@@ -77,10 +77,6 @@ impl<'a, 'b> PartialEq<Blob<'b>> for Blob<'a> {
     fn eq(&self, other: &Blob<'b>) -> bool {
         self.data == other.data
     }
-
-    fn ne(&self, other: &Blob<'b>) -> bool {
-        self.data != other.data
-    }
 }
 
 impl<'a> Eq for Blob<'a> {}
@@ -124,7 +120,7 @@ impl<'a> Blob<'a> {
                 owner: self.owner,
             }
         } else {
-            OwnedBlob::copy_from_slice(&self.data)
+            OwnedBlob::copy_from_slice(self.data)
         }
     }
 

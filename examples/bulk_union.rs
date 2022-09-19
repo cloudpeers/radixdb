@@ -29,8 +29,8 @@ fn do_test() -> anyhow::Result<()> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let tree0: RadixTree = elems0.clone().iter().collect();
-    let tree1: RadixTree = elems1.clone().iter().collect();
+    let tree0: RadixTree = elems0.iter().collect();
+    let tree1: RadixTree = elems1.iter().collect();
     for _ in 0..100 {
         let mut res = tree0.clone();
         let t0 = Instant::now();
@@ -53,7 +53,7 @@ fn do_test() -> anyhow::Result<()> {
         );
     }
 
-    return Ok(());
+    Ok(())
 }
 
 fn init_logger() {

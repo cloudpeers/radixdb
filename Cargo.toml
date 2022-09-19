@@ -22,7 +22,7 @@ memmap = { version = "0.7.0", optional = true }
 custom-store = []
 mem-store = ["custom-store", "parking_lot"]
 paged-file-store = ["custom-store", "memmap", "parking_lot", "fnv"]
-# default = ["custom-store"]
+default = ["custom-store", "mem-store", "paged-file-store"]
 
 [dev-dependencies]
 thousands = "0.2.0"

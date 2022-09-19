@@ -8,7 +8,7 @@ use radixdb::{
 use tempfile::tempdir;
 
 fn do_test(_store: DynBlobStore) -> anyhow::Result<()> {
-    let elems = (0..2000_000u64)
+    let elems = (0..2_000_000u64)
         .map(|i| {
             if i % 100000 == 0 {
                 info!("{}", i);
@@ -21,7 +21,7 @@ fn do_test(_store: DynBlobStore) -> anyhow::Result<()> {
         .collect::<BTreeMap<_, _>>();
     let t0 = Instant::now();
     info!("building tree");
-    let tree: RadixTree = elems.clone().iter().collect();
+    let tree: RadixTree = elems.iter().collect();
     info!("unattached tree {} s", t0.elapsed().as_secs_f64());
 
     let x = elems.clone();
@@ -38,7 +38,7 @@ fn do_test(_store: DynBlobStore) -> anyhow::Result<()> {
     info!("done {} items, {} s", n, t0.elapsed().as_secs_f32());
 
     info!("traversing elements...");
-    let tree: radixdb::RadixTree = elems.clone().iter().collect();
+    let tree: radixdb::RadixTree = elems.iter().collect();
     let t0 = Instant::now();
     let mut n = 0;
     for _ in elems.iter() {

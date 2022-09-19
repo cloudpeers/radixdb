@@ -121,7 +121,7 @@ impl<const SIZE: usize> Inner<SIZE> {
             let pos = self.file.stream_position()?;
             if pos < offset {
                 let n = (offset - pos).min(1024);
-                self.file.write(&padding[..n as usize])?;
+                self.file.write_all(&padding[..n as usize])?;
             } else {
                 break;
             }
@@ -158,7 +158,7 @@ impl<const SIZE: usize> Inner<SIZE> {
         // make sure the content (not the size) is 8 byte aligned
         // todo: do this as a single write
         while (self.file.stream_position()? + 4) % 8 != 0 {
-            self.file.write(&[0u8])?;
+            self.file.write_all(&[0u8])?;
         }
         let id = self.file.stream_position()?;
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
@@ -391,7 +391,7 @@ mod tests {
                         .map(|offset| (offset, block))).collect::<anyhow::Result<Vec<_>>>().unwrap();
             for (offset, block) in res.iter() {
                 let actual = store.bytes(*offset).unwrap();
-                let expected: &[u8] = &block;
+                let expected: &[u8] = block;
                 prop_assert_eq!(actual.as_ref(), expected);
             }
             println!("{:?}", store);
