@@ -360,14 +360,16 @@ impl<'a> OwnedBlobRef<'a> {
         self.data.slice(self.hdr)
     }
 
-    fn serialize<S: BlobStore>(&self, target: &mut Vec<u8>, store: &S) -> Result<(), S::Error> {
+    fn serialize<S: BlobStore>(&self, target: &mut Vec<u8>, n: usize, store: &S) -> Result<(), S::Error> {
         let slice = self.slice();
         if self.is_id() || slice.len() < 0x80 {
             target.push(self.hdr.into());
             target.extend_from_slice(slice);
         } else {
             let id = store.write(slice)?;
-            target.push(Header::id(id.len()).into());
+            let len = id.len() + n;
+            target.push(Header::id(len).into());
+            target.extend_from_slice(&slice[..n]);
             target.extend_from_slice(&id);
         }
         Ok(())
@@ -752,8 +754,8 @@ impl<S: BlobStore> TreeNode<S> {
     }
 
     fn serialize<S2: BlobStore>(&self, target: &mut Vec<u8>, store: &S2) -> Result<(), S2::Error> {
-        self.prefix_ref().serialize(target, store)?;
-        self.value_ref().serialize(target, store)?;
+        self.prefix_ref().serialize(target, 1, store)?;
+        self.value_ref().serialize(target, 0, store)?;
         match self.get_children() {
             Ok(children) if !children.is_empty() => {
                 let mut serialized = Vec::new();
@@ -891,7 +893,7 @@ impl<S: BlobStore> TreeNode<S> {
 
     fn load_prefix(&self, store: &S) -> Result<Blob<'_>, S::Error> {
         if self.prefix_ref().is_id() {
-            store.read(self.prefix_ref().slice())
+            store.read(&self.prefix_ref().slice()[1..])
         } else {
             Ok(Blob::new(self.prefix_ref().slice()))
         }
@@ -1234,7 +1236,7 @@ impl<'a, S: BlobStore> BorrowedTreeNode<'a, S> {
     {
         match self.prefix_ref().read() {
             Ok(data) => Ok(Blob::new(data)),
-            Err(id) => store.read(id),
+            Err(id) => store.read(&id[1..]),
         }
     }
 
@@ -3216,7 +3218,7 @@ impl RadixTree {
         self.try_values().map(|x| x.unwrap_safe())
     }
 
-    pub fn scan_prefix(&self, prefix: &[u8]) -> impl Iterator<Item = (IterKey, Value)> + '_ {
+    pub fn scan_prefix(&self, prefix: impl AsRef<[u8]>) -> impl Iterator<Item = (IterKey, Value)> + '_ {
         self.try_scan_prefix(prefix)
             .unwrap_safe()
             .map(|x| x.unwrap_safe())
@@ -3462,8 +3464,8 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn try_scan_prefix(&self, prefix: &[u8]) -> Result<KeyValueIter<S>, S::Error> {
-        scan_prefix(self.store.clone(), &TreeNodeRef::owned(&self.node), prefix)
+    fn try_scan_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<KeyValueIter<S>, S::Error> {
+        scan_prefix(self.store.clone(), &TreeNodeRef::owned(&self.node), prefix.as_ref())
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
@@ -3702,10 +3704,10 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn try_reattach(&mut self) -> Result<(), S::Error> {
+    fn try_reattach(&mut self) -> Result<Vec<u8>, S::Error> {
         let mut data = Vec::new();
         self.node.serialize(&mut data, &self.store)?;
         self.node = TreeNode::deserialize(&data)?;
-        Ok(())
+        Ok(data)
     }
 }
