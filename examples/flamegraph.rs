@@ -133,7 +133,7 @@ fn browser_compare() -> anyhow::Result<()> {
         .read(true)
         .write(true)
         .open(&path)?;
-    let db = PagedFileStore::<1048576>::new(file).unwrap();
+    let db = PagedFileStore::new(file, 1048576).unwrap();
     let store: DynBlobStore = Arc::new(db);
     do_test(store)
 }

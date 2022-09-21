@@ -13,54 +13,57 @@ use super::{blob_store::OwnedBlob, BlobStore};
 
 /// A blob store backed by a file that is divided into pages of size `SIZE`
 #[derive(Clone)]
-pub struct PagedFileStore<const SIZE: usize>(Arc<Mutex<Inner<SIZE>>>);
+pub struct PagedFileStore(Arc<Mutex<Inner>>);
 
-impl<const SIZE: usize> Debug for PagedFileStore<SIZE> {
+impl Debug for PagedFileStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let inner = self.0.lock();
         f.debug_struct("PagedFileStore")
             .field("pages", &inner.pages.len())
             .field("recent", &inner.recent.len())
-            .field("size", &(inner.pages.len() * SIZE))
+            .field("size", &((inner.pages.len() as u64) * inner.page_size))
             .finish()
     }
 }
 
-struct Inner<const SIZE: usize> {
+struct Inner {
     file: File,
-    pages: FnvHashMap<u64, Page<SIZE>>,
+    page_size: u64,
+    pages: FnvHashMap<u64, Page>,
     recent: FnvHashMap<u64, OwnedBlob>,
 }
 
 const ALIGN: usize = 8;
 
 #[repr(C, align(8))]
-struct PageInner<const SIZE: usize> {
+struct PageInner {
+    page_size: usize,
     mmap: Mmap,
 }
 
-impl<const SIZE: usize> Debug for PageInner<SIZE> {
+impl Debug for PageInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct(&format!("PageInner<{}>", SIZE))
+        f.debug_struct("PageInner")
+            .field("page_size", &self.page_size)
             .field("mmap", &&self.mmap)
             .finish()
     }
 }
 
-impl<const SIZE: usize> PageInner<SIZE> {
-    fn new(mmap: Mmap) -> Self {
-        assert!(mmap.len() == SIZE);
-        Self { mmap }
+impl PageInner {
+    fn new(mmap: Mmap, page_size: usize) -> Self {
+        assert!(mmap.len() == page_size);
+        Self { mmap, page_size }
     }
 }
 
 #[derive(Debug, Clone)]
-struct Page<const SIZE: usize>(Arc<PageInner<SIZE>>);
+struct Page(Arc<PageInner>);
 
-impl<const SIZE: usize> Page<SIZE> {
-    fn new(mmap: Mmap) -> Self {
-        assert!(mmap.len() == SIZE);
-        Self(Arc::new(PageInner::<SIZE>::new(mmap)))
+impl Page {
+    fn new(mmap: Mmap, page_size: usize) -> Self {
+        assert!(mmap.len() == page_size);
+        Self(Arc::new(PageInner::new(mmap, page_size)))
     }
 
     /// try to get the bytes at the given offset
@@ -74,44 +77,53 @@ impl<const SIZE: usize> Page<SIZE> {
     }
 }
 
-impl<const SIZE: usize> Debug for Inner<SIZE> {
+impl Debug for Inner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PagedFileStore")
             .field("file", &self.file)
+            .field("page_size", &self.page_size)
             .field("pages", &self.pages.len())
             .field("recent", &self.recent.len())
             .finish()
     }
 }
 
-impl<const SIZE: usize> Inner<SIZE> {
-    pub fn new(file: File) -> anyhow::Result<Self> {
-        assert!(SIZE % ALIGN == 0);
+fn page(offset: u64, page_size: u64) -> u64 {
+    offset / page_size
+}
+
+impl Inner {
+    pub fn new(file: File, page_size: u64) -> anyhow::Result<Self> {
+        anyhow::ensure!((page_size as usize) % ALIGN == 0);
         Ok(Self {
             file,
+            page_size,
             pages: Default::default(),
             recent: Default::default(),
         })
     }
-    const fn page(offset: u64) -> u64 {
-        offset / (SIZE as u64)
+    fn offset_within_page(&self, offset: u64) -> usize {
+        (offset % (self.page_size as u64)) as usize
     }
-    const fn offset_within_page(offset: u64) -> usize {
-        (offset % (SIZE as u64)) as usize
-    }
-    const fn offset_of_page(page: u64) -> u64 {
-        page * (SIZE as u64)
+    fn offset_of_page(&self, page: u64) -> u64 {
+        page * (self.page_size as u64)
     }
     fn close_page(&mut self, current_page: u64) -> anyhow::Result<()> {
         // println!("close_page page={} offset={}", current_page, self.file.stream_position()?);
-        let start = Self::offset_of_page(current_page);
-        self.pad_to(start + (SIZE as u64))?;
+        let start = self.offset_of_page(current_page);
+        self.pad_to(start + (self.page_size as u64))?;
         self.file.flush()?;
-        let mmap = unsafe { MmapOptions::new().offset(start).len(SIZE).map(&self.file)? };
+        let mmap = unsafe {
+            MmapOptions::new()
+                .offset(start)
+                .len(self.page_size as usize)
+                .map(&self.file)?
+        };
         // println!("{}", Hex::new(mmap.as_ref()));
-        self.pages.insert(current_page, Page::new(mmap));
+        self.pages
+            .insert(current_page, Page::new(mmap, self.page_size as usize));
         self.recent
-            .retain(|offset, _| Self::page(*offset) != current_page);
+            .retain(|offset, _| page(*offset, self.page_size) != current_page);
         Ok(())
     }
 
@@ -130,8 +142,8 @@ impl<const SIZE: usize> Inner<SIZE> {
     }
 
     fn bytes(&self, offset: u64) -> anyhow::Result<OwnedBlob> {
-        let page = Self::page(offset);
-        let page_offset = Self::offset_within_page(offset);
+        let page = page(offset, self.page_size);
+        let page_offset = self.offset_within_page(offset);
         // first try pages, then recent
         if let Some(page) = self.pages.get(&page) {
             page.bytes(page_offset)
@@ -143,14 +155,17 @@ impl<const SIZE: usize> Inner<SIZE> {
     }
 
     fn append(&mut self, data: &[u8]) -> anyhow::Result<u64> {
-        anyhow::ensure!(data.len() <= SIZE - 8, "block too large for this store");
+        anyhow::ensure!(
+            data.len() <= (self.page_size as usize) - 8,
+            "block too large for this store"
+        );
         // len of the data when stored, including length prefix
         let len = data.len() as u64 + 4;
         let offset = self.file.stream_position()?;
         // new end
         let end = offset + len;
-        let current_page = Self::page(offset);
-        let end_page = Self::page(end);
+        let current_page = page(offset, self.page_size);
+        let end_page = page(end, self.page_size);
         // check if we cross a page boundary
         if end_page != current_page {
             self.close_page(current_page)?;
@@ -178,13 +193,13 @@ fn align(offset: u64) -> u64 {
     res
 }
 
-impl<const SIZE: usize> PagedFileStore<SIZE> {
-    pub fn new(file: File) -> anyhow::Result<Self> {
-        Ok(Self(Arc::new(Mutex::new(Inner::new(file)?))))
+impl PagedFileStore {
+    pub fn new(file: File, page_size: u64) -> anyhow::Result<Self> {
+        Ok(Self(Arc::new(Mutex::new(Inner::new(file, page_size)?))))
     }
 }
 
-impl<const SIZE: usize> BlobStore for PagedFileStore<SIZE> {
+impl BlobStore for PagedFileStore {
     type Error = anyhow::Error;
 
     fn read(&self, id: &[u8]) -> anyhow::Result<OwnedBlob> {
@@ -213,18 +228,18 @@ mod tests {
     use tempfile::tempdir;
     use thousands::Separable;
 
-    const TEST_SIZE: usize = 1024;
+    const TEST_SIZE: u64 = 1024;
 
     fn large_blocks() -> impl Strategy<Value = Vec<Vec<u8>>> {
         proptest::collection::vec(
-            proptest::collection::vec(any::<u8>(), 0..TEST_SIZE - 8),
+            proptest::collection::vec(any::<u8>(), 0..(TEST_SIZE as usize) - 8),
             1..10,
         )
     }
 
     fn small_blocks() -> impl Strategy<Value = Vec<Vec<u8>>> {
         proptest::collection::vec(
-            proptest::collection::vec(any::<u8>(), 0..TEST_SIZE / 10),
+            proptest::collection::vec(any::<u8>(), 0..(TEST_SIZE as usize) / 10),
             1..100,
         )
     }
@@ -321,7 +336,7 @@ mod tests {
             .read(true)
             .write(true)
             .open(&path)?;
-        let db = PagedFileStore::<1048576>::new(file).unwrap();
+        let db = PagedFileStore::new(file, 1048576).unwrap();
         let _store: DynBlobStore = Arc::new(db);
         // do_test(store)
         todo!()
@@ -339,7 +354,7 @@ mod tests {
             .open(&path)?;
         println!("writing all of {:?}", path);
         let t = Instant::now();
-        let db = PagedFileStore::<1048576>::new(file).unwrap();
+        let db = PagedFileStore::new(file, 1048576).unwrap();
         const BLOCK_SIZE: usize = 6666;
         const BLOCK_COUNT: u64 = 1000000;
         const TOTAL_SIZE: u64 = (BLOCK_SIZE as u64) * BLOCK_COUNT;
@@ -383,7 +398,7 @@ mod tests {
         #[test]
         fn paged_file_store_test(blocks in test_blocks()) {
             let file = tempfile::tempfile().unwrap();
-            let mut store = Inner::<TEST_SIZE>::new(file).unwrap();
+            let mut store = Inner::new(file, TEST_SIZE).unwrap();
             let res =
                 blocks
                     .into_iter()
