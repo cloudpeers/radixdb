@@ -360,7 +360,12 @@ impl<'a> OwnedBlobRef<'a> {
         self.data.slice(self.hdr)
     }
 
-    fn serialize<S: BlobStore>(&self, target: &mut Vec<u8>, n: usize, store: &S) -> Result<(), S::Error> {
+    fn serialize<S: BlobStore>(
+        &self,
+        target: &mut Vec<u8>,
+        n: usize,
+        store: &S,
+    ) -> Result<(), S::Error> {
         let slice = self.slice();
         if self.is_id() || slice.len() < 0x80 {
             target.push(self.hdr.into());
@@ -3218,7 +3223,10 @@ impl RadixTree {
         self.try_values().map(|x| x.unwrap_safe())
     }
 
-    pub fn scan_prefix(&self, prefix: impl AsRef<[u8]>) -> impl Iterator<Item = (IterKey, Value)> + '_ {
+    pub fn scan_prefix(
+        &self,
+        prefix: impl AsRef<[u8]>,
+    ) -> impl Iterator<Item = (IterKey, Value)> + '_ {
         self.try_scan_prefix(prefix)
             .unwrap_safe()
             .map(|x| x.unwrap_safe())
@@ -3465,7 +3473,11 @@ impl<S: BlobStore + Clone> RadixTree<S> {
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_scan_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<KeyValueIter<S>, S::Error> {
-        scan_prefix(self.store.clone(), &TreeNodeRef::owned(&self.node), prefix.as_ref())
+        scan_prefix(
+            self.store.clone(),
+            &TreeNodeRef::owned(&self.node),
+            prefix.as_ref(),
+        )
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]

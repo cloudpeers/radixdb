@@ -173,7 +173,7 @@
 //! #### Branch node
 //!
 //! For a branch node, childfen are always stored indirectly.
-//! A record size byte is added to simplify indexing. The record size is set to 
+//! A record size byte is added to simplify indexing. The record size is set to
 //!
 //! ```ignore
 //! { "aa" => "", "ab" => "" }
@@ -183,9 +183,9 @@
 //!     80                    | value: None
 //!       89040000000000000001| children: constant record size 4u8, 8 byte long id
 //! ```
-//! 
+//!
 //! The child id refers to a block of data that contains the 2 children. Both children have a size of 4 bytes.
-//! 
+//!
 //! ```ignore
 //! 0161008001620080
 //! 0161            | prefix: 1 byte long literal "a"

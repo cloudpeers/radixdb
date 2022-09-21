@@ -1,7 +1,11 @@
-use std::{sync::Arc, io::Write};
-use parking_lot::Mutex;
+use crate::{
+    radixtree,
+    store::{blob_store::OwnedBlob, BlobStore},
+    RadixTree,
+};
 use hex_literal::hex;
-use crate::{radixtree, store::{blob_store::OwnedBlob, BlobStore}, RadixTree};
+use parking_lot::Mutex;
+use std::{io::Write, sync::Arc};
 
 #[derive(Debug, Clone)]
 pub struct VecStore(Arc<Mutex<Vec<u8>>>);
@@ -13,7 +17,7 @@ impl BlobStore for VecStore {
         let mut offset = usize::try_from(u64::from_be_bytes(id.try_into()?))?;
         let r = self.0.lock();
         anyhow::ensure!(offset >= 4 && offset <= r.len());
-        let len = usize::try_from(u32::from_be_bytes(r[offset-4..offset].try_into()?))?;
+        let len = usize::try_from(u32::from_be_bytes(r[offset - 4..offset].try_into()?))?;
         offset -= 4;
         anyhow::ensure!(offset >= len);
         let res = r[offset - len..offset].to_vec();
@@ -48,7 +52,16 @@ fn get_bytes(tree: RadixTree) -> Vec<u8> {
 #[test]
 fn serde_tests() {
     assert_eq!(get_bytes(radixtree! { "" => "" }), hex!("000080"));
-    assert_eq!(get_bytes(radixtree! { "hello" => "world!" }), hex!("0568656c6c6f06776f726c642180"));
-    assert_eq!(get_bytes(radixtree! { [b'a'; 256] => [b'b'; 256] }), hex!("8961000000000000010488000000000000020880"));
-    assert_eq!(get_bytes(radixtree! { "aa" => "", "ab" => "" }), hex!("0161808904000000000000000c"));
+    assert_eq!(
+        get_bytes(radixtree! { "hello" => "world!" }),
+        hex!("0568656c6c6f06776f726c642180")
+    );
+    assert_eq!(
+        get_bytes(radixtree! { [b'a'; 256] => [b'b'; 256] }),
+        hex!("8961000000000000010488000000000000020880")
+    );
+    assert_eq!(
+        get_bytes(radixtree! { "aa" => "", "ab" => "" }),
+        hex!("0161808904000000000000000c")
+    );
 }
