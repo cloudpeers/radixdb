@@ -20,6 +20,7 @@ impl Debug for PagedFileStore {
         let inner = self.0.lock();
         f.debug_struct("PagedFileStore")
             .field("pages", &inner.pages.len())
+            .field("page_size", &inner.page_size)
             .field("recent", &inner.recent.len())
             .field("size", &((inner.pages.len() as u64) * inner.page_size))
             .finish()
@@ -35,7 +36,6 @@ struct Inner {
 
 const ALIGN: usize = 8;
 
-#[repr(C, align(8))]
 struct PageInner {
     page_size: usize,
     mmap: Mmap,
@@ -69,9 +69,10 @@ impl Page {
     /// try to get the bytes at the given offset
     fn bytes(&self, offset: usize) -> anyhow::Result<OwnedBlob> {
         let data = self.0.mmap.as_ref();
-        let base = offset + 4;
-        let length = u32::from_be_bytes(data[offset..offset + 4].try_into().unwrap()) as usize;
-        let slice: &[u8] = &data[base..base + length];
+        anyhow::ensure!(offset >= 4);
+        let length = u32::from_be_bytes(data[offset - 4..offset].try_into().unwrap()) as usize;
+        anyhow::ensure!(offset >= length + 4);
+        let slice: &[u8] = &data[offset - 4 - length..offset - 4];
         let slice: &'static [u8] = unsafe { std::mem::transmute(slice) };
         Ok(OwnedBlob::owned_new(slice, Some(self.0.clone())))
     }
@@ -92,6 +93,13 @@ fn page(offset: u64, page_size: u64) -> u64 {
     offset / page_size
 }
 
+fn offset_within_page(offset: u64, page_size: u64) -> usize {
+    (offset % page_size) as usize
+}
+fn offset_of_page(page: u64, page_size: u64) -> u64 {
+    page * page_size
+}
+
 impl Inner {
     pub fn new(file: File, page_size: u64) -> anyhow::Result<Self> {
         anyhow::ensure!((page_size as usize) % ALIGN == 0);
@@ -102,15 +110,9 @@ impl Inner {
             recent: Default::default(),
         })
     }
-    fn offset_within_page(&self, offset: u64) -> usize {
-        (offset % (self.page_size as u64)) as usize
-    }
-    fn offset_of_page(&self, page: u64) -> u64 {
-        page * (self.page_size as u64)
-    }
     fn close_page(&mut self, current_page: u64) -> anyhow::Result<()> {
         // println!("close_page page={} offset={}", current_page, self.file.stream_position()?);
-        let start = self.offset_of_page(current_page);
+        let start = offset_of_page(current_page, self.page_size);
         self.pad_to(start + (self.page_size as u64))?;
         self.file.flush()?;
         let mmap = unsafe {
@@ -142,8 +144,8 @@ impl Inner {
     }
 
     fn bytes(&self, offset: u64) -> anyhow::Result<OwnedBlob> {
-        let page = page(offset, self.page_size);
-        let page_offset = self.offset_within_page(offset);
+        let page = page(offset - 1, self.page_size);
+        let page_offset = offset_within_page(offset, self.page_size);
         // first try pages, then recent
         if let Some(page) = self.pages.get(&page) {
             page.bytes(page_offset)
@@ -170,27 +172,16 @@ impl Inner {
         if end_page != current_page {
             self.close_page(current_page)?;
         }
-        // make sure the content (not the size) is 8 byte aligned
-        // todo: do this as a single write
-        while (self.file.stream_position()? + 4) % 8 != 0 {
-            self.file.write_all(&[0u8])?;
-        }
-        let id = self.file.stream_position()?;
-        self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         self.file.write_all(data)?;
+        self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         self.file.flush()?;
+        let id = self.file.stream_position()?;
         self.recent.insert(id, OwnedBlob::copy_from_slice(data));
+        if id % self.page_size < 4 {
+            assert!(id % 1024 > 4);
+        }
         Ok(id)
     }
-}
-
-#[allow(dead_code)]
-fn align(offset: u64) -> u64 {
-    let mut res = offset;
-    while (res % (ALIGN as u64)) != 0 {
-        res += 1;
-    }
-    res
 }
 
 impl PagedFileStore {
@@ -409,11 +400,11 @@ mod tests {
                 let expected: &[u8] = block;
                 prop_assert_eq!(actual.as_ref(), expected);
             }
-            println!("{:?}", store);
-            for page in store.pages.values() {
-                println!("{:?}", page);
-            }
-            println!();
+            // println!("{:?}", store);
+            // for page in store.pages.values() {
+            //     println!("{:?}", page);
+            // }
+            // println!();
         }
     }
 }

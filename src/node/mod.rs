@@ -3342,7 +3342,7 @@ impl RadixTree {
             .unwrap_safe()
     }
 
-    pub fn filter_prefix(&self, prefix: &[u8]) -> RadixTree {
+    pub fn filter_prefix(&self, prefix: impl AsRef<[u8]>) -> RadixTree {
         self.try_filter_prefix(prefix).unwrap_safe()
     }
 
@@ -3367,21 +3367,9 @@ impl RadixTree {
 
 impl RadixTree {
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn attached<S2: BlobStore<Error = NoError>>(&self, store: S2) -> RadixTree<S2> {
-        self.try_attached::<S2>(store).unwrap_safe()
-    }
-
-    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_attached<S: BlobStore>(&self, store: S) -> Result<RadixTree<S>, S::Error> {
         let node = self.node.try_attached(&store)?;
         Ok(RadixTree { node, store })
-    }
-}
-
-impl<S: BlobStore<Error = NoError> + Clone> RadixTree<S> {
-    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn detached<S2: BlobStore<Error = NoError>>(&self) -> RadixTree {
-        self.try_detached().unwrap_safe()
     }
 }
 
@@ -3690,9 +3678,13 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn try_filter_prefix(&self, prefix: &[u8]) -> Result<RadixTree<S>, S::Error> {
-        filter_prefix(&TreeNodeRef::owned(&self.node), &self.store, prefix)
-            .map(|node| RadixTree::new(node, self.store.clone()))
+    fn try_filter_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<RadixTree<S>, S::Error> {
+        filter_prefix(
+            &TreeNodeRef::owned(&self.node),
+            &self.store,
+            prefix.as_ref(),
+        )
+        .map(|node| RadixTree::new(node, self.store.clone()))
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
@@ -3715,11 +3707,13 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         last_entry(prefix, &TreeNodeRef::owned(&self.node), &self.store)
     }
 
+    /// Writes the entire tree to the store
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_reattach(&mut self) -> Result<Vec<u8>, S::Error> {
         let mut data = Vec::new();
         self.node.serialize(&mut data, &self.store)?;
+        let id = self.store.write(&data)?;
         self.node = TreeNode::deserialize(&data)?;
-        Ok(data)
+        Ok(id)
     }
 }

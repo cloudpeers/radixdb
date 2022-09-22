@@ -43,10 +43,8 @@ impl BlobStore for VecStore {
 fn get_bytes(tree: RadixTree) -> Vec<u8> {
     let store = VecStore(Arc::new(Mutex::new(Vec::new())));
     let mut tree = tree.try_attached(store.clone()).unwrap();
-    let v = store.0.lock();
-    let v: &[u8] = v.as_ref();
-    println!("{}", hex::encode(v));
-    tree.try_reattach().unwrap()
+    let id = tree.try_reattach().unwrap();
+    store.read(&id).unwrap().to_vec()
 }
 
 #[test]
