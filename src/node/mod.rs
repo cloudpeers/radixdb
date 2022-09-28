@@ -1489,6 +1489,7 @@ fn filter_prefix<S: BlobStore>(
     node: &TreeNodeRef<S>,
     store: &S,
     prefix: &[u8],
+    substitution: &[u8],
 ) -> Result<TreeNode<S>, S::Error> {
     find(store, node, prefix, |x| {
         Ok(match x {
@@ -1500,9 +1501,10 @@ fn filter_prefix<S: BlobStore>(
             FindResult::Prefix { tree, matching } => {
                 let tree_prefix = tree.load_prefix(store)?;
                 let mut res = tree.to_owned();
-                let mut prefix = prefix.to_vec();
-                prefix.extend_from_slice(&tree_prefix[matching..]);
-                res.set_prefix_slice(&prefix);
+                let mut tmp = Vec::new();
+                tmp.extend_from_slice(substitution);
+                tmp.extend_from_slice(&tree_prefix[matching..]);
+                res.set_prefix_slice(&tmp);
                 res
             }
             FindResult::NotFound => TreeNode::EMPTY,
@@ -3375,8 +3377,12 @@ impl RadixTree {
             .unwrap_safe()
     }
 
-    pub fn filter_prefix(&self, prefix: impl AsRef<[u8]>) -> RadixTree {
-        self.try_filter_prefix(prefix).unwrap_safe()
+    pub fn filter_prefix(
+        &self,
+        prefix: impl AsRef<[u8]>,
+        substitution: impl AsRef<[u8]>,
+    ) -> RadixTree {
+        self.try_filter_prefix(prefix, substitution).unwrap_safe()
     }
 
     pub fn retain_prefix_with<S2: BlobStore<Error = NoError> + Clone>(
@@ -3758,11 +3764,16 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
-    fn try_filter_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<RadixTree<S>, S::Error> {
+    fn try_filter_prefix(
+        &self,
+        prefix: impl AsRef<[u8]>,
+        substitution: impl AsRef<[u8]>,
+    ) -> Result<RadixTree<S>, S::Error> {
         filter_prefix(
             &TreeNodeRef::owned(&self.node),
             &self.store,
             prefix.as_ref(),
+            substitution.as_ref(),
         )
         .map(|node| RadixTree::new(node, self.store.clone()))
     }

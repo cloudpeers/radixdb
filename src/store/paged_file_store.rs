@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use std::{
     fmt::Debug,
     fs::File,
-    io::{Seek, Write},
+    io::{Read, Seek, SeekFrom, Write},
     sync::Arc,
 };
 
@@ -35,6 +35,7 @@ struct Inner {
 }
 
 const ALIGN: usize = 8;
+const HEADER_SIZE: u64 = 4096;
 
 struct PageInner {
     page_size: usize,
@@ -96,13 +97,41 @@ fn page(offset: u64, page_size: u64) -> u64 {
 fn offset_within_page(offset: u64, page_size: u64) -> usize {
     (offset % page_size) as usize
 }
+
 fn offset_of_page(page: u64, page_size: u64) -> u64 {
-    page * page_size
+    page * page_size + HEADER_SIZE
+}
+
+fn read_size(file: &mut File) -> anyhow::Result<u64> {
+    let mut buf = [0u8; 8];
+    file.seek(SeekFrom::Start(16))?;
+    file.read_exact(&mut buf)?;
+    file.seek(SeekFrom::End(0))?;
+    Ok(u64::from_be_bytes(buf))
+}
+
+fn write_size(file: &mut File, size: u64) -> anyhow::Result<()> {
+    file.seek(SeekFrom::Start(16))?;
+    file.write_all(&size.to_be_bytes())?;
+    file.seek(SeekFrom::End(0))?;
+    Ok(())
 }
 
 impl Inner {
-    pub fn new(file: File, page_size: u64) -> anyhow::Result<Self> {
+    pub fn new(mut file: File, page_size: u64) -> anyhow::Result<Self> {
         anyhow::ensure!((page_size as usize) % ALIGN == 0);
+        let end = file.seek(std::io::SeekFrom::End(0))?;
+        if end == 0 {
+            // write header
+            file.set_len(HEADER_SIZE)?;
+            file.seek(std::io::SeekFrom::End(0))?;
+        } else if end < HEADER_SIZE {
+            // something went seriously wrong
+            anyhow::bail!("Incomplete header!");
+        }
+        let size = read_size(&mut file)?;
+        file.set_len(size + HEADER_SIZE)?;
+        file.seek(std::io::SeekFrom::End(0))?;
         Ok(Self {
             file,
             page_size,
@@ -110,11 +139,12 @@ impl Inner {
             recent: Default::default(),
         })
     }
+
     fn close_page(&mut self, current_page: u64) -> anyhow::Result<()> {
         // println!("close_page page={} offset={}", current_page, self.file.stream_position()?);
         let start = offset_of_page(current_page, self.page_size);
         self.pad_to(start + (self.page_size as u64))?;
-        self.file.flush()?;
+        self.commit()?;
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(start)
@@ -156,6 +186,13 @@ impl Inner {
         }
     }
 
+    fn commit(&mut self) -> anyhow::Result<u64> {
+        self.file.flush()?;
+        let id = self.file.seek(SeekFrom::End(0))? - HEADER_SIZE;
+        write_size(&mut self.file, id)?;
+        Ok(id)
+    }
+
     fn append(&mut self, data: &[u8]) -> anyhow::Result<u64> {
         anyhow::ensure!(
             data.len() <= (self.page_size as usize) - 8,
@@ -163,7 +200,11 @@ impl Inner {
         );
         // len of the data when stored, including length prefix
         let len = data.len() as u64 + 4;
-        let offset = self.file.stream_position()?;
+        let position = self.file.seek(SeekFrom::End(0))?;
+        if position < HEADER_SIZE {
+            panic!();
+        }
+        let offset = position - HEADER_SIZE;
         // new end
         let end = offset + len;
         let current_page = page(offset, self.page_size);
@@ -174,8 +215,7 @@ impl Inner {
         }
         self.file.write_all(data)?;
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
-        self.file.flush()?;
-        let id = self.file.stream_position()?;
+        let id = self.commit()?;
         self.recent.insert(id, OwnedBlob::copy_from_slice(data));
         if id % self.page_size < 4 {
             assert!(id % 1024 > 4);

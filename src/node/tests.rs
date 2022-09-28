@@ -307,7 +307,7 @@ proptest! {
     fn filter_prefix(x in arb_tree_contents(), prefix in any::<Vec<u8>>()) {
         let reference = x;
         let tree = mk_owned_tree(&reference);
-        let filtered = tree.filter_prefix(&prefix);
+        let filtered = tree.filter_prefix(&prefix, &prefix);
         for (k, v) in filtered.iter() {
             prop_assert!(k.as_ref().starts_with(&prefix));
             let t = reference.get(k.as_ref()).unwrap();
