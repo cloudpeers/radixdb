@@ -804,6 +804,18 @@ impl<S: BlobStore> TreeNode<S> {
         })
     }
 
+    /// True if key is contained in this set
+    fn has_prefix(&self, prefix: &[u8], store: &S) -> Result<bool, S::Error> {
+        // if we find a tree at exactly the location, and it has a value, we have a hit
+        find(store, &TreeNodeRef(Ok(self)), prefix, |r| {
+            Ok(if let FindResult::Found(_) = r {
+                true
+            } else {
+                false
+            })
+        })
+    }
+
     fn get(&self, key: &[u8], store: &S) -> Result<Option<Value<S>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(store, &TreeNodeRef(Ok(self)), key, |r| {
@@ -3211,8 +3223,16 @@ impl RadixTree {
         self.try_contains_key(key).unwrap_safe()
     }
 
+    pub fn has_prefix(&self, prefix: impl AsRef<[u8]>) -> bool {
+        self.try_has_prefix(prefix).unwrap_safe()
+    }
+
     pub fn insert(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
         self.try_insert(key, value).unwrap_safe()
+    }
+
+    pub fn remove(&mut self, key: impl AsRef<[u8]>) {
+        self.try_remove(key).unwrap_safe()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (IterKey, Value)> {
@@ -3431,13 +3451,32 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         self.node.contains_key(key.as_ref(), &self.store)
     }
 
+    /// True if key is contained in this set
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_has_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<bool, S::Error> {
+        self.node.has_prefix(prefix.as_ref(), &self.store)
+    }
+
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_insert(
         &mut self,
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) -> Result<(), S::Error> {
-        self.try_outer_combine_with(&RadixTree::single(key, value), DowncastConverter, |_, _| {
+        self.try_outer_combine_with(
+            &RadixTree::single(key, value),
+            DowncastConverter,
+            |value, replacement| {
+                value.set(Some(replacement.downcast()));
+                Ok(())
+            },
+        )
+    }
+
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_remove(&mut self, key: impl AsRef<[u8]>) -> Result<(), S::Error> {
+        self.try_left_combine_with(&RadixTree::single(key, &[]), DowncastConverter, |l, _| {
+            l.set(None);
             Ok(())
         })
     }
