@@ -443,6 +443,15 @@ pub struct ValueRef<'a, S: BlobStore = Detached>(
     PhantomData<S>,
 );
 
+impl<'a, S: BlobStore> Debug for ValueRef<'a, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Ok(value) => write!(f, "{:?}", value),
+            Err(value) => write!(f, "{:?}", value),
+        }
+    }
+}
+
 impl<'a> ValueRef<'a> {
     pub fn downcast<S2: BlobStore>(&self) -> &ValueRef<'a, S2> {
         unsafe { std::mem::transmute(self) }
@@ -452,7 +461,7 @@ impl<'a> ValueRef<'a> {
         if self.is_none() {
             None
         } else {
-            Some(self.read().unwrap_err())
+            Some(self.read().unwrap())
         }
     }
 }
@@ -3409,6 +3418,28 @@ impl<S: BlobStore> RadixTree<S> {
     pub fn store(this: &Self) -> &S {
         &this.store
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.node.is_empty()
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        self.node.is_leaf()
+    }
+
+    pub fn value(&self) -> Option<ValueRef<S>> {
+        let r = self.node.value_ref();
+        if !r.is_none() {
+            Some(ValueRef(Ok(r), PhantomData))
+        } else {
+            None
+        }
+    }
+
+    pub fn prefix(&self) -> ValueRef<S> {
+        let r = self.node.prefix_ref();
+        ValueRef(Ok(r), PhantomData)
+    }
 }
 
 impl PartialEq for RadixTree {
@@ -3430,7 +3461,8 @@ impl<K: AsRef<[u8]>, V: AsRef<[u8]>> FromIterator<(K, V)> for RadixTree {
 }
 
 impl<S: BlobStore + Clone> RadixTree<S> {
-    pub(crate) fn try_dump(&self) -> Result<(), S::Error> {
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_dump(&self) -> Result<(), S::Error> {
         self.node.dump(0, &self.store)
     }
 
