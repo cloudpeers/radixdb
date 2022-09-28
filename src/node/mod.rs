@@ -808,10 +808,10 @@ impl<S: BlobStore> TreeNode<S> {
     fn has_prefix(&self, prefix: &[u8], store: &S) -> Result<bool, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(store, &TreeNodeRef(Ok(self)), prefix, |r| {
-            Ok(if let FindResult::Found(_) = r {
-                true
-            } else {
-                false
+            Ok(match r {
+                FindResult::Found(_) => true,
+                FindResult::Prefix { .. } => true,
+                FindResult::NotFound => false,
             })
         })
     }
@@ -3227,6 +3227,10 @@ impl RadixTree {
         self.try_has_prefix(prefix).unwrap_safe()
     }
 
+    pub fn remove_prefix(&mut self, prefix: impl AsRef<[u8]>) {
+        self.try_remove_prefix(prefix).unwrap_safe()
+    }
+
     pub fn insert(&mut self, key: impl AsRef<[u8]>, value: impl AsRef<[u8]>) {
         self.try_insert(key, value).unwrap_safe()
     }
@@ -3451,10 +3455,15 @@ impl<S: BlobStore + Clone> RadixTree<S> {
         self.node.contains_key(key.as_ref(), &self.store)
     }
 
-    /// True if key is contained in this set
+    /// True if there are keys at or below the given prefix
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_has_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<bool, S::Error> {
         self.node.has_prefix(prefix.as_ref(), &self.store)
+    }
+
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_remove_prefix(&mut self, prefix: impl AsRef<[u8]>) -> Result<(), S::Error> {
+        self.try_remove_prefix_with(&RadixTree::single(prefix, &[]), |_| Ok(true))
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
