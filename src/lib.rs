@@ -161,6 +161,9 @@
 //! The first byte of the prefix is prepended to the id to simplify searching.
 //! For the value, just the id is stored.
 //!
+//! In this case the id is 8 bytes long, but the details depend on the store. E.g. a store
+//! that uses content addressing might use a 32 byte cryptographic hash.
+//!
 //! ```ignore
 //! { [b'a'; 256] => [b'b'; 256] }
 //!
