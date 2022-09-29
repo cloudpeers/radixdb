@@ -32,6 +32,7 @@ struct Inner {
     page_size: u64,
     pages: FnvHashMap<u64, Page>,
     recent: FnvHashMap<u64, OwnedBlob>,
+    last_id: u64,
 }
 
 const ALIGN: usize = 8;
@@ -137,7 +138,38 @@ impl Inner {
             page_size,
             pages: Default::default(),
             recent: Default::default(),
+            last_id: size,
         })
+    }
+
+    fn load_page(&mut self, page: u64) -> anyhow::Result<()> {
+        let start = offset_of_page(page, self.page_size);
+        let mmap = unsafe {
+            MmapOptions::new()
+                .offset(start)
+                .len(self.page_size as usize)
+                .map(&self.file)?
+        };
+        self.pages
+            .insert(page, Page::new(mmap, self.page_size as usize));
+        Ok(())
+    }
+
+    fn load_recent(&mut self, id: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(id >= 4);
+        self.file.seek(SeekFrom::Start(id + HEADER_SIZE - 4))?;
+        let mut size = [0u8; 4];
+        self.file.read_exact(&mut size)?;
+        let size = u32::from_be_bytes(size) as u64;
+        anyhow::ensure!(id >= 4 + size);
+        self.file
+            .seek(SeekFrom::Start(id + HEADER_SIZE - 4 - size))?;
+        let mut buf = vec![0u8; size as usize];
+        self.file.read_exact(&mut buf)?;
+        self.file.seek(SeekFrom::End(0))?;
+        self.recent
+            .insert(id, OwnedBlob::from_arc_vec(Arc::new(buf)));
+        Ok(())
     }
 
     fn close_page(&mut self, current_page: u64) -> anyhow::Result<()> {
@@ -145,15 +177,7 @@ impl Inner {
         let start = offset_of_page(current_page, self.page_size);
         self.pad_to(start + (self.page_size as u64))?;
         self.commit()?;
-        let mmap = unsafe {
-            MmapOptions::new()
-                .offset(start)
-                .len(self.page_size as usize)
-                .map(&self.file)?
-        };
-        // println!("{}", Hex::new(mmap.as_ref()));
-        self.pages
-            .insert(current_page, Page::new(mmap, self.page_size as usize));
+        self.load_page(current_page)?;
         self.recent
             .retain(|offset, _| page(*offset, self.page_size) != current_page);
         Ok(())
@@ -173,23 +197,35 @@ impl Inner {
         Ok(())
     }
 
-    fn bytes(&self, offset: u64) -> anyhow::Result<OwnedBlob> {
+    fn bytes(&mut self, offset: u64) -> anyhow::Result<OwnedBlob> {
+        let last_page = page(self.last_id, self.page_size);
         let page = page(offset - 1, self.page_size);
         let page_offset = offset_within_page(offset, self.page_size);
-        // first try pages, then recent
-        if let Some(page) = self.pages.get(&page) {
-            page.bytes(page_offset)
-        } else if let Some(blob) = self.recent.get(&offset) {
-            Ok(blob.clone())
+        if page < last_page {
+            if !self.pages.contains_key(&page) {
+                self.load_page(page)?;
+            }
+            if let Some(page) = self.pages.get(&page) {
+                page.bytes(page_offset)
+            } else {
+                anyhow::bail!("foo");
+            }
         } else {
-            anyhow::bail!("page not found {}", page);
+            if !self.recent.contains_key(&offset) {
+                self.load_recent(offset)?;
+            }
+            if let Some(blob) = self.recent.get(&offset) {
+                Ok(blob.clone())
+            } else {
+                anyhow::bail!("foo");
+            }
         }
     }
 
     fn commit(&mut self) -> anyhow::Result<u64> {
-        self.file.flush()?;
         let id = self.file.seek(SeekFrom::End(0))? - HEADER_SIZE;
         write_size(&mut self.file, id)?;
+        self.file.flush()?;
         Ok(id)
     }
 
@@ -216,6 +252,7 @@ impl Inner {
         self.file.write_all(data)?;
         self.file.write_all(&(data.len() as u32).to_be_bytes())?;
         let id = self.commit()?;
+        self.last_id = id;
         self.recent.insert(id, OwnedBlob::copy_from_slice(data));
         if id % self.page_size < 4 {
             assert!(id % 1024 > 4);
@@ -227,6 +264,10 @@ impl Inner {
 impl PagedFileStore {
     pub fn new(file: File, page_size: u64) -> anyhow::Result<Self> {
         Ok(Self(Arc::new(Mutex::new(Inner::new(file, page_size)?))))
+    }
+
+    pub fn last_id(&self) -> [u8; 8] {
+        self.0.lock().last_id.to_be_bytes()
     }
 }
 
