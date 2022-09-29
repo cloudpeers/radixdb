@@ -205,20 +205,14 @@ impl Inner {
             if !self.pages.contains_key(&page) {
                 self.load_page(page)?;
             }
-            if let Some(page) = self.pages.get(&page) {
-                page.bytes(page_offset)
-            } else {
-                anyhow::bail!("foo");
-            }
+            let page = self.pages.get(&page).expect("page must exist");
+            page.bytes(page_offset)
         } else {
             if !self.recent.contains_key(&offset) {
                 self.load_recent(offset)?;
             }
-            if let Some(blob) = self.recent.get(&offset) {
-                Ok(blob.clone())
-            } else {
-                anyhow::bail!("foo");
-            }
+            let blob = self.recent.get(&offset).expect("blob must exist");
+            Ok(blob.clone())
         }
     }
 
@@ -266,8 +260,13 @@ impl PagedFileStore {
         Ok(Self(Arc::new(Mutex::new(Inner::new(file, page_size)?))))
     }
 
-    pub fn last_id(&self) -> [u8; 8] {
-        self.0.lock().last_id.to_be_bytes()
+    pub fn last_id(&self) -> Option<[u8; 8]> {
+        let id = self.0.lock().last_id;
+        if id == 0 {
+            None
+        } else {
+            Some(id.to_be_bytes())
+        }
     }
 }
 

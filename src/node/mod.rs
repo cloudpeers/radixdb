@@ -3417,10 +3417,14 @@ impl<S: BlobStore> RadixTree<S> {
         Self::new(TreeNode::<S>::EMPTY, store)
     }
 
-    pub fn try_load(store: S, id: &[u8]) -> Result<Self, S::Error> {
-        let data = store.read(id)?;
-        let node = TreeNode::deserialize(&data)?;
-        Ok(Self::new(node, store))
+    pub fn try_load(store: S, id: Option<impl AsRef<[u8]>>) -> Result<Self, S::Error> {
+        Ok(if let Some(id) = id {
+            let data = store.read(id.as_ref())?;
+            let node = TreeNode::deserialize(&data)?;
+            Self::new(node, store)
+        } else {
+            Self::empty(store)
+        })
     }
 
     fn new(node: TreeNode<S>, store: S) -> Self {
