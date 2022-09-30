@@ -308,8 +308,34 @@ impl<T> UnwrapSafeExt<T> for Result<T, NoError> {
 mod tests {
     #![allow(dead_code)]
     use proptest::prelude::*;
+    use tempfile::tempfile;
+    use std::sync::Arc;
+    use std::any::Any;
+
+    use crate::store::blob_store::OwnedBlob;
 
     const TEST_SIZE: usize = 1024;
+
+    unsafe fn custom_new(slice: &[u8], owner: Arc<dyn Any>) -> OwnedBlob {
+        let slice: &'static [u8] =  std::mem::transmute(slice);
+        OwnedBlob::owned_new(slice, Some(owner))
+    }
+
+    #[test]
+    fn zero_copy_mmap() -> anyhow::Result<()> {
+        use memmap::MmapOptions;
+        use std::{io::Write, sync::Arc};
+        // create a large file
+        let mut large_file = tempfile().unwrap();
+        large_file.write_all(&[0u8; 1024 * 1024])?;
+        // map it and wrap the MMap in an arc
+        let mmap =  Arc::new(unsafe { MmapOptions::new().map(&large_file).unwrap() });
+        // create a bytes that points ot a part of the large file, without allocation
+        // the Bytes instance keeps the mmap alive as long as needed
+        let slice: &'static [u8] = unsafe { std::mem::transmute(&mmap[10..10000]) };
+        let _bytes = OwnedBlob::owned_new(slice, Some(mmap.clone()));
+        Ok(())
+    }
 
     fn large_blocks() -> impl Strategy<Value = Vec<Vec<u8>>> {
         proptest::collection::vec(

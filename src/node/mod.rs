@@ -1495,7 +1495,7 @@ fn filter_prefix<S: BlobStore>(
         Ok(match x {
             FindResult::Found(res) => {
                 let mut res = res.to_owned();
-                res.set_prefix_slice(prefix);
+                res.set_prefix_slice(substitution);
                 res
             }
             FindResult::Prefix { tree, matching } => {
