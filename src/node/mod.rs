@@ -467,7 +467,7 @@ impl<'a> ValueRef<'a> {
 }
 
 impl<'a, S: BlobStore> ValueRef<'a, S> {
-    fn to_owned(&self) -> Value<S> {
+    pub fn to_owned(&self) -> Value<S> {
         match &self.0 {
             Ok(x) => OwnedValueRef::new(*x).to_owned(),
             Err(x) => Value {
