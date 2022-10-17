@@ -12,6 +12,9 @@ description = "a radix tree data structure for in memory or zero copy on disk st
 [profile.release]
 debug = true
 
+[workspace]
+members = ["examples/*", "."]
+
 [dependencies]
 anyhow = "1.0.56"
 hex = "0.4.3"
