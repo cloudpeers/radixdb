@@ -1560,7 +1560,7 @@ fn filter_prefix<S: BlobStore>(
     prefix: &[u8],
     substitution: &[u8],
 ) -> Result<TreeNode<S>, S::Error> {
-    find(store, node, prefix, |x: FindResult<&TreeNodeRef<'_, S>>| {
+    find(store, node, prefix, |x| {
         Ok(match x {
             FindResult::Found(res) => {
                 let mut res = res.to_owned();
