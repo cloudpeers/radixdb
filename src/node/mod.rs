@@ -825,6 +825,19 @@ impl<S: BlobStore> TreeNode<S> {
         })
     }
 
+    /// True if the key is a prefix of the set
+    fn is_prefix(&self, prefix: &[u8], store: &S) -> Result<bool, S::Error> {
+        // if we find a tree at exactly the location, and it has a value, we have a hit
+        find_is_prefix(store, &TreeNodeRef(Ok(self)), prefix, |r| {
+            Ok(match r {
+                FindPrefixResult::Found(tree) => tree.value_opt().is_some(),
+                FindPrefixResult::IsPrefix { .. } => true,
+                FindPrefixResult::NotFound => false,
+            })
+        })
+    }
+    
+
     fn get(&self, key: &[u8], store: &S) -> Result<Option<Value<S>>, S::Error> {
         // if we find a tree at exactly the location, and it has a value, we have a hit
         find(store, &TreeNodeRef(Ok(self)), key, |r| {
@@ -1480,6 +1493,62 @@ fn find<S: BlobStore, T>(
     } else {
         // disjoint, but we still need to store how far we matched
         FindResult::NotFound
+    };
+    f(fr)
+}
+
+enum FindPrefixResult<T> {
+    // Found an exact match
+    Found(T),
+    // did not find anything, T is the closest match, with n remaining (unmatched) in the prefix of T
+    NotFound,
+    IsPrefix
+}
+
+/// find a prefix in a tree. Will either return
+/// - Found(tree) if we found the tree exactly,
+/// - Prefix if we found a tree of which prefix is a prefix
+/// - NotFound if there is no tree
+fn find_is_prefix<S: BlobStore, T>(
+    store: &S,
+    tree: &TreeNodeRef<S>,
+    prefix: &[u8],
+    f: impl FnOnce(FindPrefixResult<&TreeNodeRef<S>>) -> Result<T, S::Error>,
+) -> Result<T, S::Error> {
+    let tree_prefix = tree.load_prefix(store)?;
+    let n = common_prefix(&tree_prefix, prefix);
+    // remaining in tree prefix
+    let rt = tree_prefix.len() - n;
+    // remaining in prefix
+    let rp = prefix.len() - n;
+    let fr = if rp == 0 && rt == 0 {
+        // direct hit, however need to check if this node has a value
+        FindPrefixResult::Found(tree)
+    } else if rp == 0 {
+        // tree does not contain a key that is a direct prefix of the string
+        FindPrefixResult::NotFound
+    } else if rt == 0 {
+        // Here we can check if the current node is has a key,
+        // If yes, FindResult is IsPrefix
+        if tree.value_opt().is_some() {
+            FindPrefixResult::IsPrefix
+        } else {
+            // else we keep looking
+            let c = prefix[n];
+            let tree_children = tree.load_children(store)?;
+            if let Some(tree_children) = tree_children {
+                if let Some(child) = tree_children.find(c) {
+                    return find_is_prefix(store, &child, &prefix[n..], f);
+                } else {
+                    FindPrefixResult::NotFound
+                }
+            } else {
+                FindPrefixResult::NotFound
+            }
+        }
+    } else {
+        // disjoint, but we still need to store how far we matched
+        FindPrefixResult::NotFound
     };
     f(fr)
 }
@@ -3507,6 +3576,11 @@ impl<S: BlobStore + Clone> RadixTree<S> {
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
     fn try_has_prefix(&self, prefix: impl AsRef<[u8]>) -> Result<bool, S::Error> {
         self.node.has_prefix(prefix.as_ref(), &self.store)
+    }
+
+    #[cfg_attr(feature = "custom-store", visibility::make(pub))]
+    fn try_is_prefix(&self, key: impl AsRef<[u8]>) -> Result<bool, S::Error> {
+        self.node.is_prefix(key.as_ref(), &self.store)
     }
 
     #[cfg_attr(feature = "custom-store", visibility::make(pub))]
