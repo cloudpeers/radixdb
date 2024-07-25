@@ -1,5 +1,5 @@
 use fnv::FnvHashMap;
-use memmap::{Mmap, MmapOptions};
+use memmap2::{Mmap, MmapOptions};
 use parking_lot::Mutex;
 
 use std::{

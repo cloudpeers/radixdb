@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn zero_copy_mmap() -> anyhow::Result<()> {
-        use memmap::MmapOptions;
+        use memmap2::MmapOptions;
         use std::{io::Write, sync::Arc};
         // create a large file
         let mut large_file = tempfile().unwrap();

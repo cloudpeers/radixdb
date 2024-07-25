@@ -19,12 +19,12 @@ inplace-vec-builder = "0.1.1"
 visibility = "0.0.1"
 fnv = { version = "1.0.7", optional = true }
 parking_lot = { version = "0.12.0", optional = true }
-memmap = { version = "0.7.0", optional = true }
+memmap2 = { version = "0.9.4", optional = true }
 
 [features]
 custom-store = []
 mem-store = ["custom-store", "parking_lot"]
-paged-file-store = ["custom-store", "memmap", "parking_lot", "fnv"]
+paged-file-store = ["custom-store", "memmap2", "parking_lot", "fnv"]
 default = ["custom-store", "mem-store", "paged-file-store"]
 
 [dev-dependencies]
